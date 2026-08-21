@@ -1,0 +1,31 @@
+tubesync/medianest_bridge/contract/bridge-openapi.v1.yaml
+  s_36f755e68122c7::t_14e491eccc537b 5-8
+tubesync/medianest_bridge/mapping.py
+  s_36f755e68122c7::t_275d87eec04572 1-141
+tubesync/medianest_bridge/README.md
+  s_36f755e68122c7::t_5bb3f546fe353d 81-92
+  s_36f755e68122c7::t_aad794dbd802b2 199-202,205-206
+tubesync/medianest_bridge/tests/test_mapping.py
+  s_36f755e68122c7::t_072391d92c3a8a 1-150,155,157-164
+  s_36f755e68122c7::t_d2b089cecf1d02 151-154,156
+tubesync/medianest_bridge/errors.py
+  s_36f755e68122c7::t_6f4293a6e833ef 5-11
+tubesync/medianest_bridge/contract/contract_fixtures.json
+  s_36f755e68122c7::t_31eaf18970341c 5,162,245-367,388-450
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "91ea8d882f87044e7209ad60b8c9cc0e41ac07e9",
+  "prompts": {},
+  "sessions": {
+    "s_36f755e68122c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2218c4e0-ce8c-47d2-a7f4-2c9f3474c829",
+        "model": "claude-fable-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
