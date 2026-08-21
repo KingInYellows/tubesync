@@ -19,4 +19,7 @@ urlpatterns = [
     path('',
          include('sync.urls', namespace='sync')),
 
+    path('api/medianest/v1/',
+         include('medianest_bridge.urls', namespace='medianest_bridge')),
+
 ]
