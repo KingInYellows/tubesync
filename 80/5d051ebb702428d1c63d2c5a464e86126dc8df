@@ -1,0 +1,24 @@
+tubesync/medianest_bridge/tests/test_sources.py
+  s_36f755e68122c7::t_e67defc7646c75 268-279,281-300
+  s_36f755e68122c7::t_4c46ce7cbea4a7 280
+tubesync/medianest_bridge/tests/test_endpoints.py
+  s_36f755e68122c7::t_c05e295d8754f7 8,25-51,59,63-82
+tubesync/medianest_bridge/contract/contract_fixtures.json
+  s_36f755e68122c7::t_1f40022d6cd895 3,24,29,34,39,44,49,54,59,64,69,74,79,84,89,94,99,104,109,114,119,124,143,157,162,189,194,199,204,209,214,219,237,244,257,262,271,285,293,298,306,314,329,334,342,347,355,363,371,376,381,406,411,424,429,434,448,453,458,463,471,483,488,496,501
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "805d051ebb702428d1c63d2c5a464e86126dc8df",
+  "prompts": {},
+  "sessions": {
+    "s_36f755e68122c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2218c4e0-ce8c-47d2-a7f4-2c9f3474c829",
+        "model": "claude-fable-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
