@@ -265,3 +265,36 @@ class CapabilitiesReflectsT2TestCase(BridgeTestCase):
             if k not in ('health', 'readSources', 'readMedia')
         }
         self.assertTrue(all(v is False for v in write_flags.values()), write_flags)
+
+
+class NonGetMethodRejectionTestCase(BridgeTestCase):
+    '''
+        Verifier LOW finding: encode as suite coverage, not just a manual
+        out-of-band check, that every non-GET method on all three T2
+        routes is blocked by the read-only gate (403 PROVIDER_READ_ONLY,
+        MEDIANEST_BRIDGE_READ_ONLY defaults true) -- 3 routes x 4 methods
+        = 12 combinations.
+    '''
+
+    def _routes(self):
+        source = make_source()
+        return {
+            'source-lookup': f'{SOURCES_URL}?key={source.key}',
+            'source-detail': f'{SOURCES_URL}/{source.pk}',
+            'source-media': f'{SOURCES_URL}/{source.pk}/media',
+        }
+
+    def test_all_non_get_methods_rejected_on_all_three_routes(self):
+        self.enable_bridge()
+        methods = ('post', 'put', 'patch', 'delete')
+        for route_name, path in self._routes().items():
+            for method_name in methods:
+                client_method = getattr(self.client, method_name)
+                with self.subTest(route=route_name, method=method_name):
+                    response = client_method(path, **self.auth_header())
+                    self.assertEqual(
+                        response.status_code, 403,
+                        f'{method_name.upper()} {path} expected 403, got {response.status_code}',
+                    )
+                    body = json.loads(response.content)
+                    self.assertEqual(body['code'], 'PROVIDER_READ_ONLY')

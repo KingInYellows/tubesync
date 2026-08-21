@@ -1,6 +1,6 @@
 {
   "_provenance": {
-    "note": "Generated once from the vendored YAML via PyYAML (a transitive dependency of hat-syslog, not a new Pipfile dependency) and checked in so bridge tests can assert contract shape using only the stdlib json module. test_contract_conformance.py sha256-locks this file against the YAML above and, when PyYAML happens to be importable in the test environment, additionally cross-checks this fixture was derived correctly. Regenerate together with the sha256 whenever the vendored YAML is re-vendored.",
+    "note": "Generated once from the vendored YAML via PyYAML (a transitive dependency of hat-syslog, not a new Pipfile dependency) and checked in so bridge tests can assert contract shape using only the stdlib json module. test_contract_conformance.py sha256-locks this file against the YAML above and, when PyYAML happens to be importable in the test environment, additionally cross-checks this fixture was derived correctly. Regenerate together with the sha256 whenever the vendored YAML is re-vendored. Includes each property's \"pattern\" (e.g. MediaItem.relativePath's anti-absolute-path regex) so conformance tests can enforce it, not just required/enum.",
     "source": "medianest_bridge/contract/bridge-openapi.v1.yaml",
     "source_sha256": "b1d169faf5fe87a9ed38878937392d91337286ab2beeae088b2535ff324d02c1"
   },
@@ -21,86 +21,107 @@
       "properties": {
         "cancelTask": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "createChannelSource": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "createPlaylistSource": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "deleteSource": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "disableSource": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "enableMedia": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "health": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "oneOffVideoDownload": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "plexCollectionCreation": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "plexScan": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "pushEvents": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "readMedia": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "readSources": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "readTasks": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "retryMedia": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "retryTask": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "skipMedia": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "syncSource": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "updateSource": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "validateChannelSource": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "validatePlaylistSource": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         }
       },
@@ -119,6 +140,7 @@
       "properties": {
         "detail": {
           "enum": null,
+          "pattern": null,
           "type": [
             "string",
             "null"
@@ -132,10 +154,12 @@
             "unknown",
             "not_configured"
           ],
+          "pattern": null,
           "type": "string"
         },
         "version": {
           "enum": null,
+          "pattern": null,
           "type": [
             "string",
             "null"
@@ -162,30 +186,37 @@
             "REQUEST_TOO_LARGE",
             "INTERNAL_PROVIDER_ERROR"
           ],
+          "pattern": null,
           "type": "string"
         },
         "detail": {
           "enum": null,
+          "pattern": null,
           "type": "string"
         },
         "requestId": {
           "enum": null,
+          "pattern": null,
           "type": "string"
         },
         "retryable": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "status": {
           "enum": null,
+          "pattern": null,
           "type": "integer"
         },
         "title": {
           "enum": null,
+          "pattern": null,
           "type": "string"
         },
         "type": {
           "enum": null,
+          "pattern": null,
           "type": "string"
         }
       },
@@ -203,12 +234,14 @@
       "properties": {
         "checkedAt": {
           "enum": null,
+          "pattern": null,
           "type": "string"
         },
         "status": {
           "enum": [
             "alive"
           ],
+          "pattern": null,
           "type": "string"
         }
       },
@@ -221,10 +254,12 @@
       "properties": {
         "checkedAt": {
           "enum": null,
+          "pattern": null,
           "type": "string"
         },
         "components": {
           "enum": null,
+          "pattern": null,
           "type": "object"
         },
         "status": {
@@ -233,6 +268,7 @@
             "degraded",
             "unavailable"
           ],
+          "pattern": null,
           "type": "string"
         }
       },
@@ -246,6 +282,7 @@
       "properties": {
         "downloadedAt": {
           "enum": null,
+          "pattern": null,
           "type": [
             "string",
             "null"
@@ -253,10 +290,12 @@
         },
         "eligible": {
           "enum": null,
+          "pattern": null,
           "type": "boolean"
         },
         "error": {
           "enum": null,
+          "pattern": null,
           "type": [
             "string",
             "null"
@@ -264,6 +303,7 @@
         },
         "filename": {
           "enum": null,
+          "pattern": null,
           "type": [
             "string",
             "null"
@@ -271,6 +311,7 @@
         },
         "id": {
           "enum": null,
+          "pattern": null,
           "type": "string"
         },
         "normalizedState": {
@@ -285,10 +326,12 @@
             "removed_upstream",
             "unknown"
           ],
+          "pattern": null,
           "type": "string"
         },
         "publishedAt": {
           "enum": null,
+          "pattern": null,
           "type": [
             "string",
             "null"
@@ -296,10 +339,12 @@
         },
         "rawState": {
           "enum": null,
+          "pattern": null,
           "type": "string"
         },
         "relativePath": {
           "enum": null,
+          "pattern": "^(?![A-Za-z]:)[^/\\\\].*$",
           "type": [
             "string",
             "null"
@@ -307,6 +352,7 @@
         },
         "retryAt": {
           "enum": null,
+          "pattern": null,
           "type": [
             "string",
             "null"
@@ -314,6 +360,7 @@
         },
         "sizeBytes": {
           "enum": null,
+          "pattern": null,
           "type": [
             "integer",
             "null"
@@ -321,14 +368,17 @@
         },
         "sourceId": {
           "enum": null,
+          "pattern": null,
           "type": "string"
         },
         "title": {
           "enum": null,
+          "pattern": null,
           "type": "string"
         },
         "youtubeKey": {
           "enum": null,
+          "pattern": null,
           "type": "string"
         }
       },
@@ -353,10 +403,12 @@
       "properties": {
         "data": {
           "enum": null,
+          "pattern": null,
           "type": "array"
         },
         "page": {
           "enum": null,
+          "pattern": null,
           "type": "object"
         }
       },
@@ -369,14 +421,17 @@
       "properties": {
         "bridgeVersion": {
           "enum": null,
+          "pattern": null,
           "type": "string"
         },
         "tubesyncVersion": {
           "enum": null,
+          "pattern": null,
           "type": "string"
         },
         "upstreamCommit": {
           "enum": null,
+          "pattern": null,
           "type": "string"
         }
       },
@@ -390,18 +445,22 @@
       "properties": {
         "canonicalKey": {
           "enum": null,
+          "pattern": null,
           "type": "string"
         },
         "canonicalUrl": {
           "enum": null,
+          "pattern": null,
           "type": "string"
         },
         "directory": {
           "enum": null,
+          "pattern": null,
           "type": "string"
         },
         "lastCrawlAt": {
           "enum": null,
+          "pattern": null,
           "type": [
             "string",
             "null"
@@ -409,6 +468,7 @@
         },
         "name": {
           "enum": null,
+          "pattern": null,
           "type": "string"
         },
         "normalizedState": {
@@ -420,10 +480,12 @@
             "failed",
             "unknown"
           ],
+          "pattern": null,
           "type": "string"
         },
         "rawState": {
           "enum": null,
+          "pattern": null,
           "type": "object"
         },
         "sourceType": {
@@ -431,10 +493,12 @@
             "channel",
             "playlist"
           ],
+          "pattern": null,
           "type": "string"
         },
         "uuid": {
           "enum": null,
+          "pattern": null,
           "type": "string"
         }
       },
