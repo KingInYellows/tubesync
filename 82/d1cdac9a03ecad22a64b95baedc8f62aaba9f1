@@ -1,0 +1,43 @@
+tubesync/medianest_bridge/README.md
+  s_36f755e68122c7::t_c32ab03979f993 292-294,297-302,307-317
+  s_36f755e68122c7::t_f23f358876b8be 197-199,201,214-245
+  s_36f755e68122c7::t_a910a3923443b1 8-22
+  s_36f755e68122c7::t_1cc517e98efc28 37,42-57,62-85
+tubesync/medianest_bridge/urls.py
+  s_36f755e68122c7::t_302bedbcf48603 4,26-41
+  s_36f755e68122c7::t_d2f6548a7321b8 42
+tubesync/medianest_bridge/tests/test_basicauth_exemption.py
+  s_36f755e68122c7::t_dcd5c1ba9d6608 2-26,29-30,43-44,72-75,87-112,114-131
+  s_36f755e68122c7::t_e82b3e308f870f 76-84,86
+tubesync/tubesync/settings.py
+  s_36f755e68122c7::t_45c66cd49ef548 325-343
+tubesync/medianest_bridge/views_sources.py
+  s_36f755e68122c7::t_4ea3989a050389 1-165
+tubesync/medianest_bridge/views.py
+  s_36f755e68122c7::t_cba2b734fb8993 3-5
+  s_36f755e68122c7::t_03cd0cd6603de9 187-190,199
+  s_36f755e68122c7::t_636e1c2f90a814 59-64
+tubesync/common/middleware.py
+  s_36f755e68122c7::t_63f28a155da7be 30-43
+tubesync/medianest_bridge/tests/test_endpoints.py
+  s_36f755e68122c7::t_fa8e8fb74218e6 113,118-122
+tubesync/medianest_bridge/tests/test_sources.py
+  s_36f755e68122c7::t_bac1bec9ec68d3 16
+  s_36f755e68122c7::t_4ef7cfc6d53e26 1-15,17-267
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "82d1cdac9a03ecad22a64b95baedc8f62aaba9f1",
+  "prompts": {},
+  "sessions": {
+    "s_36f755e68122c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2218c4e0-ce8c-47d2-a7f4-2c9f3474c829",
+        "model": "claude-fable-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
