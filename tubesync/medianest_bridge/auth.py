@@ -32,11 +32,26 @@
     REMOTE_ADDR is used as a fallback for direct-to-Django access with no
     proxy in front (Django's runserver, the test client) where X-Real-IP is
     never set.
+
+    That trust chain has a runtime gap, not just a topology assumption:
+    nothing in this app *verifies* gunicorn is actually loopback-bound.
+    gunicorn.py's own LISTEN_HOST default is 127.0.0.1, but an operator can
+    override it via the LISTEN_HOST env var. If they point it at a
+    non-loopback address, a LAN host can reach gunicorn directly, bypassing
+    nginx entirely, and set X-Real-IP itself -- forging an allowlisted
+    address and defeating the CIDR gate (the bearer token is still
+    required, so this degrades the control rather than removing all auth).
+    cidr_trust_warning() below detects that specific misconfiguration and
+    logs a loud warning; it does not hard-fail, since an operator may have
+    a legitimate alternate ingress this app has no way to verify.
 '''
 import hmac
 import ipaddress
+import os
 
 from . import config
+
+LOOPBACK_LISTEN_HOST_DEFAULT = '127.0.0.1'
 
 
 def client_ip(request):
@@ -44,6 +59,49 @@ def client_ip(request):
     if real_ip:
         return real_ip
     return (request.META.get('REMOTE_ADDR') or '').strip()
+
+
+def _listen_host_is_loopback():
+    '''
+        Mirrors gunicorn.py's own LISTEN_HOST env var and default so this
+        check reflects the same effective bind address gunicorn will
+        actually use, without spawning or introspecting the gunicorn
+        process itself.
+    '''
+    host = (os.environ.get('LISTEN_HOST') or '').strip() or LOOPBACK_LISTEN_HOST_DEFAULT
+    if host.lower() == 'localhost':
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        # Not a literal IP we can classify (e.g. an arbitrary hostname).
+        # Fail toward warning rather than silently assuming it's safe.
+        return False
+
+
+def cidr_trust_warning():
+    '''
+        Returns a warning string when MEDIANEST_BRIDGE_ALLOWED_CIDRS is
+        configured but LISTEN_HOST is not loopback -- the specific
+        misconfiguration that lets a LAN host bypass nginx, reach gunicorn
+        directly, and forge X-Real-IP to impersonate an allowlisted
+        address. Returns None when the condition doesn't hold (no CIDRs
+        configured, or LISTEN_HOST is loopback). Never mentions the bearer
+        token.
+    '''
+    if config.allowed_cidrs() is None:
+        return None
+    if _listen_host_is_loopback():
+        return None
+    return (
+        'medianest_bridge: MEDIANEST_BRIDGE_ALLOWED_CIDRS is configured but '
+        'LISTEN_HOST is not loopback. X-Real-IP is only trustworthy when '
+        'gunicorn is reachable exclusively through the bundled nginx '
+        '(LISTEN_HOST=127.0.0.1, the default) -- with gunicorn reachable '
+        'directly, any host on that network can set X-Real-IP itself and '
+        'impersonate an allowlisted address. CIDR enforcement is degraded '
+        'to a no-op; the bearer token is still required and unaffected.'
+    )
 
 
 def cidr_allowed(request):

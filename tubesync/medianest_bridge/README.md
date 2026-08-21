@@ -116,6 +116,25 @@ This trust chain assumes nginx remains the sole ingress in front of
 gunicorn; if a load balancer or another proxy is ever placed in front of
 nginx, `X-Real-IP`'s trustworthiness needs re-establishing at that new hop.
 
+**This assumption is not verified at the network layer -- only warned
+about.** `LISTEN_HOST` (read by `gunicorn.py`, default `127.0.0.1`) is the
+knob that must stay loopback for the assumption above to hold. Nothing in
+this app can force gunicorn's actual bind address; if an operator sets
+`LISTEN_HOST` to a non-loopback address while
+`MEDIANEST_BRIDGE_ALLOWED_CIDRS` is also configured, a LAN host can reach
+gunicorn directly, bypass nginx, and set `X-Real-IP` itself to impersonate
+an allowlisted address -- silently degrading the CIDR gate to a no-op (the
+bearer token is unaffected and still required, so this is a control
+degradation, not a full auth bypass).
+
+`medianest_bridge/auth.py::cidr_trust_warning()` detects exactly that
+combination (CIDRs configured + `LISTEN_HOST` not loopback, checked via
+the same env var and default `gunicorn.py` itself reads) and
+`BridgeView.dispatch()` logs it loudly on every request while the
+condition holds -- it never hard-fails the app, since an operator may have
+a legitimate alternate ingress this app has no way to verify. The warning
+text never contains the bearer token.
+
 ## Environment variables
 
 | Variable | Default | Meaning |
@@ -125,6 +144,7 @@ nginx, `X-Real-IP`'s trustworthiness needs re-establishing at that new hop.
 | `MEDIANEST_BRIDGE_MAX_BODY_BYTES` | `65536` | Integer. Enforced via `Content-Length` before any field-level validation. |
 | `MEDIANEST_BRIDGE_ALLOWED_CIDRS` | unset (gate disabled) | Comma-separated CIDR list, e.g. `192.168.1.68/32`. A malformed entry fails closed to an empty (deny-all) list rather than silently admitting everything. |
 | `MEDIANEST_BRIDGE_UPSTREAM_SHA` | `unknown` | Build-time git SHA of the tracked upstream commit, injected at image build time. `GET /meta`'s `upstreamCommit` reports the literal string `"unknown"` (not a fabricated value) when unset -- true for every T1-T4 local/CI build, since the fork's own image-publish workflow does not exist until T5. |
+| `LISTEN_HOST` | `127.0.0.1` | **Not a `medianest_bridge` setting** -- read by `gunicorn.py` to choose gunicorn's bind address. Must stay loopback (the default) for the CIDR gate's `X-Real-IP` trust to hold; see the warning behavior described just above. |
 
 None of these are registered as Django settings in `settings.py` -- the app
 reads them directly from the environment (via `common.utils.getenv`, reused
@@ -204,6 +224,10 @@ from the YAML rather than hand-edited.
   auth while Basic Auth is enabled app-wide; a non-bridge route still
   requires Basic Auth; the exemption tuple and the bridge's actual routes
   never drift apart.
+- `test_listen_host_trust.py` -- the `LISTEN_HOST`/CIDR trust warning:
+  emitted when CIDRs are configured and `LISTEN_HOST` is non-loopback, not
+  emitted otherwise, never contains the token, and never blocks the
+  request it's logged alongside.
 
 Run with `cd tubesync && python3 manage.py test medianest_bridge` (or omit
 the app label to run the full suite, upstream included).

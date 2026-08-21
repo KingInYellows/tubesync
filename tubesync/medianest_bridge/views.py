@@ -13,7 +13,7 @@ from django.views.generic import View
 from common.logger import log
 
 from . import config, readiness
-from .auth import bearer_token_valid, cidr_allowed
+from .auth import bearer_token_valid, cidr_allowed, cidr_trust_warning
 from .errors import error_response
 
 SAFE_METHODS = frozenset({'GET', 'HEAD', 'OPTIONS'})
@@ -42,6 +42,15 @@ class BridgeView(View):
         unconfigured bridge should fail closed identically regardless of
         what a caller sends; CIDR before bearer so a network-level reject
         never even looks at (or logs) a credential.
+
+        Immediately before the CIDR check itself, cidr_trust_warning()
+        (auth.py) is evaluated on every request while the bridge is
+        enabled: when MEDIANEST_BRIDGE_ALLOWED_CIDRS is configured but
+        LISTEN_HOST is not loopback, the CIDR gate's trust in X-Real-IP no
+        longer holds (see auth.py's module docstring), and this logs a
+        loud warning rather than silently degrading. It never blocks the
+        request -- an operator may have a legitimate alternate ingress
+        this app cannot verify -- and never mentions the bearer token.
     '''
 
     def dispatch(self, request, *args, **kwargs):
@@ -61,6 +70,9 @@ class BridgeView(View):
                     request_id=request_id,
                     retryable=True,
                 )
+            warning = cidr_trust_warning()
+            if warning:
+                log.warning(warning)
             if not cidr_allowed(request):
                 # Per bridge-openapi.v1.yaml's Unauthorized response
                 # ("Missing or invalid bearer token, or source CIDR not
