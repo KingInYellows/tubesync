@@ -110,13 +110,13 @@ class CapabilitiesEndpointTestCase(BridgeTestCase):
         body = json.loads(response.content)
         assert_matches_schema(self, body, 'Capabilities')
 
-    def test_t1_honesty_only_health_is_true(self):
+    def test_health_is_always_true(self):
         self.enable_bridge()
         response = self.client.get(CAPS_URL, **self.auth_header())
         body = json.loads(response.content)
         self.assertTrue(body['health'])
-        other_flags = {k: v for k, v in body.items() if k != 'health'}
-        self.assertTrue(
-            all(v is False for v in other_flags.values()),
-            f'T1 must report every non-health capability as false, got {other_flags}',
-        )
+        # The full "which flags are true" assertion, including T2's
+        # readSources/readMedia, lives in
+        # tests/test_sources.py::CapabilitiesReflectsT2TestCase -- kept
+        # there so this file doesn't need updating every time a slice
+        # flips another capability true.

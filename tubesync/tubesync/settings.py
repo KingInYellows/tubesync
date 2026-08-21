@@ -322,20 +322,25 @@ BASICAUTH_DISABLE = True
 BASICAUTH_REALM = 'Authenticate to TubeSync'
 BASICAUTH_ALWAYS_ALLOW_URIS = (
     '/healthcheck',
-    # medianest_bridge (api/medianest/v1/) authenticates its own requests
-    # with a bearer token (see medianest_bridge/auth.py); it must not also
-    # be challenged by BasicAuthMiddleware. BasicAuthMiddleware's exemption
-    # check (common/middleware.py) is an exact `request.path in ...` match,
-    # not a prefix match, so every bridge route must be listed individually
-    # here -- a T2/T3 PR adding a new bridge route must add its exact path
-    # too (medianest_bridge/tests/test_basicauth_exemption.py asserts the
-    # two lists stay in sync). This is a deliberate trade-off: an unlisted
-    # sub-path under api/medianest/v1/ fails closed behind Basic Auth
-    # instead of silently bypassing it.
-    '/api/medianest/v1/health/live',
-    '/api/medianest/v1/health/ready',
-    '/api/medianest/v1/meta',
-    '/api/medianest/v1/capabilities',
+    # medianest_bridge (api/medianest/v1/) authenticates every request
+    # itself, completely independent of Basic Auth (see
+    # medianest_bridge/auth.py and BridgeView.dispatch() in
+    # medianest_bridge/views.py) -- so the whole namespace is exempted
+    # here as a single trailing-slash prefix entry, not enumerated
+    # per-route. T1 originally listed each route's exact path
+    # individually, but that broke down once T2 added
+    # path-parameterized routes (e.g. /sources/{sourceUuid}) that a
+    # static tuple of exact strings can never fully enumerate.
+    # common/middleware.py's BasicAuthMiddleware treats a
+    # trailing-slash entry as a prefix match (request.path.startswith),
+    # so this one entry covers every current and future bridge route,
+    # while every other entry in this tuple (e.g. '/healthcheck') keeps
+    # its original exact-match behaviour unchanged. An unmatched
+    # sub-path under this prefix still reaches the bridge's URLconf --
+    # if no route matches, it gets Django's ordinary 404, not a Basic
+    # Auth challenge and not the bridge's own JSON envelope (no bridge
+    # view ever ran).
+    '/api/medianest/v1/',
 )
 BASICAUTH_USERS = {}
 

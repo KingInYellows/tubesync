@@ -27,6 +27,18 @@ class BasicAuthMiddleware(BaseBasicAuthMiddleware):
 
     def process_request(self, request):
         bypass_uris = getattr(settings, 'BASICAUTH_ALWAYS_ALLOW_URIS', [])
-        if request.path in bypass_uris:
-            return None
+        # An entry ending in '/' is a path-prefix match (request.path
+        # startswith the entry); an entry with no trailing slash keeps the
+        # original exact-match behaviour unchanged. This lets a single
+        # entry (e.g. medianest_bridge's own namespace) exempt an entire
+        # family of routes -- including path-parameterized ones a static
+        # tuple of exact strings could never enumerate -- while leaving
+        # every existing exact entry (e.g. '/healthcheck') byte-identical
+        # to before this change.
+        for uri in bypass_uris:
+            if uri.endswith('/'):
+                if request.path.startswith(uri):
+                    return None
+            elif request.path == uri:
+                return None
         return super().process_request(request)
