@@ -1,0 +1,59 @@
+tubesync/medianest_bridge/tests/test_basicauth_exemption.py
+  s_36f755e68122c7::t_0879740cf28c48 1-72
+tubesync/medianest_bridge/tests/test_dispatch.py
+  s_36f755e68122c7::t_74e21545f26ad0 1-196
+tubesync/medianest_bridge/views.py
+  s_36f755e68122c7::t_cf5b7c6960c8c2 1-8,11-189
+  s_36f755e68122c7::t_e72ff677b3f165 9-10
+tubesync/medianest_bridge/tests/test_endpoints.py
+  s_36f755e68122c7::t_47420edb4e3e30 1-122
+tubesync/medianest_bridge/tests/base.py
+  s_36f755e68122c7::t_9a2337e049f531 1-48,50-65
+  s_36f755e68122c7::t_82e98a1739d9ee 49
+tubesync/medianest_bridge/README.md
+  s_36f755e68122c7::t_e9a2502a80e445 1-217
+tubesync/medianest_bridge/tests/test_auth.py
+  s_36f755e68122c7::t_98e36e4755899f 1-113
+tubesync/medianest_bridge/apps.py
+  s_36f755e68122c7::t_18dd8d0173c8f1 1-7
+tubesync/medianest_bridge/tests/test_config.py
+  s_36f755e68122c7::t_d5ea92e519ce2c 1-90
+tubesync/medianest_bridge/errors.py
+  s_36f755e68122c7::t_88185a7124afc0 1-56
+tubesync/tubesync/urls.py
+  s_36f755e68122c7::t_ff48da17b849f3 22-24
+tubesync/medianest_bridge/readiness.py
+  s_36f755e68122c7::t_d5a7a1df7c308f 1-182
+tubesync/medianest_bridge/auth.py
+  s_36f755e68122c7::t_4dae14d4eb72bc 1-83
+tubesync/medianest_bridge/config.py
+  s_36f755e68122c7::t_7e0d0d7ab33fe2 1-94
+tubesync/tubesync/settings.py
+  s_36f755e68122c7::t_1af12c50cef279 33
+  s_36f755e68122c7::t_091782c5685165 323-339
+tubesync/medianest_bridge/urls.py
+  s_36f755e68122c7::t_2a53aaefdb41ff 1-25
+tubesync/medianest_bridge/contract/bridge-openapi.v1.yaml
+  s_36f755e68122c7::t_8861fd33b205b1 1-13
+  s_36f755e68122c7::t_fabd80346498fa 14-1005
+tubesync/medianest_bridge/tests/test_contract_conformance.py
+  s_36f755e68122c7::t_75bd96f6dd1154 1-58
+tubesync/medianest_bridge/contract/contract_fixtures.json
+  s_36f755e68122c7::t_1bab9e21ffef9c 1-266
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "c3058307f83e801b961fe8c6d651c60cb71eee5a",
+  "prompts": {},
+  "sessions": {
+    "s_36f755e68122c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2218c4e0-ce8c-47d2-a7f4-2c9f3474c829",
+        "model": "claude-fable-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
