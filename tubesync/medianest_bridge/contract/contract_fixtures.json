@@ -2,7 +2,7 @@
   "_provenance": {
     "note": "Generated once from the vendored YAML via PyYAML (a transitive dependency of hat-syslog, not a new Pipfile dependency) and checked in so bridge tests can assert contract shape using only the stdlib json module. test_contract_conformance.py sha256-locks this file against the YAML above and, when PyYAML happens to be importable in the test environment, additionally cross-checks this fixture was derived correctly. Regenerate together with the sha256 whenever the vendored YAML is re-vendored.",
     "source": "medianest_bridge/contract/bridge-openapi.v1.yaml",
-    "source_sha256": "5913ed73969e711354932e1459e39434acd2dfed4f6d9df38d8477d361cd7cd5"
+    "source_sha256": "b1d169faf5fe87a9ed38878937392d91337286ab2beeae088b2535ff324d02c1"
   },
   "health_ready_component_names": [
     "application",
@@ -159,6 +159,7 @@
             "SOURCE_NOT_FOUND",
             "MEDIA_NOT_FOUND",
             "RATE_LIMITED",
+            "REQUEST_TOO_LARGE",
             "INTERNAL_PROVIDER_ERROR"
           ],
           "type": "string"
@@ -241,6 +242,129 @@
         "components"
       ]
     },
+    "MediaItem": {
+      "properties": {
+        "downloadedAt": {
+          "enum": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "eligible": {
+          "enum": null,
+          "type": "boolean"
+        },
+        "error": {
+          "enum": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "filename": {
+          "enum": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "enum": null,
+          "type": "string"
+        },
+        "normalizedState": {
+          "enum": [
+            "discovered",
+            "ineligible",
+            "queued",
+            "downloading",
+            "downloaded",
+            "skipped",
+            "failed",
+            "removed_upstream",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "publishedAt": {
+          "enum": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rawState": {
+          "enum": null,
+          "type": "string"
+        },
+        "relativePath": {
+          "enum": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retryAt": {
+          "enum": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sizeBytes": {
+          "enum": null,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sourceId": {
+          "enum": null,
+          "type": "string"
+        },
+        "title": {
+          "enum": null,
+          "type": "string"
+        },
+        "youtubeKey": {
+          "enum": null,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sourceId",
+        "youtubeKey",
+        "title",
+        "publishedAt",
+        "rawState",
+        "normalizedState",
+        "eligible",
+        "relativePath",
+        "filename",
+        "sizeBytes",
+        "downloadedAt",
+        "retryAt",
+        "error"
+      ]
+    },
+    "MediaPage": {
+      "properties": {
+        "data": {
+          "enum": null,
+          "type": "array"
+        },
+        "page": {
+          "enum": null,
+          "type": "object"
+        }
+      },
+      "required": [
+        "data",
+        "page"
+      ]
+    },
     "Meta": {
       "properties": {
         "bridgeVersion": {
@@ -260,6 +384,69 @@
         "bridgeVersion",
         "tubesyncVersion",
         "upstreamCommit"
+      ]
+    },
+    "Source": {
+      "properties": {
+        "canonicalKey": {
+          "enum": null,
+          "type": "string"
+        },
+        "canonicalUrl": {
+          "enum": null,
+          "type": "string"
+        },
+        "directory": {
+          "enum": null,
+          "type": "string"
+        },
+        "lastCrawlAt": {
+          "enum": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "enum": null,
+          "type": "string"
+        },
+        "normalizedState": {
+          "enum": [
+            "provisioning",
+            "active",
+            "syncing",
+            "disabled",
+            "failed",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "rawState": {
+          "enum": null,
+          "type": "object"
+        },
+        "sourceType": {
+          "enum": [
+            "channel",
+            "playlist"
+          ],
+          "type": "string"
+        },
+        "uuid": {
+          "enum": null,
+          "type": "string"
+        }
+      },
+      "required": [
+        "uuid",
+        "sourceType",
+        "canonicalKey",
+        "canonicalUrl",
+        "name",
+        "directory",
+        "rawState",
+        "normalizedState"
       ]
     }
   }

@@ -78,11 +78,18 @@ in this order, each check short-circuiting on failure:
    day one, structurally, not by omission.
 5. **Body-size gate** (`MEDIANEST_BRIDGE_MAX_BODY_BYTES`, default `65536`).
    Checked via `Content-Length` when present. Oversized requests get `413`
-   with code `REQUEST_TOO_LARGE` -- **this is a proposed addition, not
-   (yet) in the vendored contract's `Error.code` enum**; none of the
-   existing codes describe an oversized-body rejection honestly, so this
-   was flagged as a contract gap rather than silently reusing an
-   ill-fitting code (see `medianest_bridge/errors.py`'s module docstring).
+   with code `REQUEST_TOO_LARGE` -- flagged as a contract gap during T1
+   (no existing code described an oversized-body rejection honestly) and
+   accepted by the contract owner as a canonical addition to `Error.code`
+   for the T2 re-vendor (`bridge-openapi.v1.yaml` @
+   `713f9b4ac9efc24e0f285f9af58a50276f29ebb9`); it is a normal contract
+   code now, not a proposed one.
+   T2 note (LOW, carried forward from the T1 verifier, not fixed here):
+   this gate only inspects `Content-Length` -- a chunked or
+   omitted-length request body bypasses it. Harmless while no bridge view
+   reads `request.body` (T1's and T2's endpoints are all GET-only); must
+   be hardened to actual-bytes enforcement in the first PR that adds a
+   body-reading (write) endpoint.
 
 None of this is implemented as Django middleware (`settings.MIDDLEWARE`) --
 that would be a fourth upstream touch point beyond the three enumerated
@@ -189,12 +196,14 @@ sanitized `500 INTERNAL_PROVIDER_ERROR`.
 `medianest_bridge/contract/bridge-openapi.v1.yaml` is a vendored, read-only
 copy of the canonical contract (MediaNest repo,
 `docs/planning/tubesync-integration/bridge-openapi.v1.yaml` @
-`ce17a28773a6f3866c9c9235ae4eae04f4bafff4`). Do not edit it directly --
-re-vendor from the canonical source instead.
+`713f9b4ac9efc24e0f285f9af58a50276f29ebb9`, re-vendored for T2 -- the only
+change from T1's `ce17a28773a6f3866c9c9235ae4eae04f4bafff4` is
+`REQUEST_TOO_LARGE` joining `Error.code`'s enum). Do not edit it directly
+-- re-vendor from the canonical source instead.
 
 `medianest_bridge/contract/contract_fixtures.json` is a small JSON
-extraction (required fields + enums for the schemas T1 exercises) generated
-once from that YAML, so `medianest_bridge/tests/test_endpoints.py` can
+extraction (required fields + enums for the schemas this app exercises)
+generated once from that YAML, so `medianest_bridge/tests/test_endpoints.py` can
 assert response shape using only the stdlib `json` module -- no new Pipfile
 dependency. `test_contract_conformance.py` sha256-locks the fixture against
 the vendored YAML (so the two can never silently drift) and, only when

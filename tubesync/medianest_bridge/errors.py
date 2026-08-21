@@ -2,14 +2,13 @@
     RFC 7807-style error envelope, adopted verbatim from
     bridge-openapi.v1.yaml's components.schemas.Error.
 
-    Every field in ERROR_CODES corresponds to a code in the contract's
-    `code` enum, except REQUEST_TOO_LARGE, which is a proposed addition (see
-    the module docstring note below and the T1 report) -- the contract's
-    slice-1 error enum has no code that fits an oversized-request-body
-    rejection (SOURCE_INVALID is source-validation-specific; none of the
-    others are a plausible fit either). It is used here, clearly marked, and
-    flagged to the MediaNest side as a contract gap rather than silently
-    reusing a code that would mislead a caller about the failure.
+    Every code in _SLUGS corresponds to a code in the vendored contract's
+    `code` enum. REQUEST_TOO_LARGE was flagged as a contract gap during T1
+    (the slice-1 enum had no honest code for an oversized-request-body
+    rejection) and the contract owner accepted it as a canonical addition
+    for the T2 re-vendor (bridge-openapi.v1.yaml @
+    713f9b4ac9efc24e0f285f9af58a50276f29ebb9) -- it is no longer a proposed
+    addition, just a normal contract code, kept in this dict like the rest.
 '''
 from django.http import JsonResponse
 
@@ -29,8 +28,6 @@ _SLUGS = {
     'MEDIA_NOT_FOUND': 'media-not-found',
     'RATE_LIMITED': 'rate-limited',
     'INTERNAL_PROVIDER_ERROR': 'internal-provider-error',
-    # Proposed addition, not yet in the vendored contract's enum -- see
-    # module docstring.
     'REQUEST_TOO_LARGE': 'request-too-large',
 }
 
