@@ -2,8 +2,13 @@
     RFC 7807-style error envelope, adopted verbatim from
     bridge-openapi.v1.yaml's components.schemas.Error.
 
-    Every field in ERROR_CODES corresponds to a code in the contract's
-    `code` enum.
+    Every code in _SLUGS corresponds to a code in the vendored contract's
+    `code` enum. REQUEST_TOO_LARGE was flagged as a contract gap during T1
+    (the slice-1 enum had no honest code for an oversized-request-body
+    rejection) and the contract owner accepted it as a canonical addition
+    for the T2 re-vendor (bridge-openapi.v1.yaml @
+    713f9b4ac9efc24e0f285f9af58a50276f29ebb9) -- it is no longer a proposed
+    addition, just a normal contract code, kept in this dict like the rest.
 '''
 from django.http import JsonResponse
 

@@ -1,7 +1,8 @@
 '''
     T1 diagnostics + auth-skeleton views: GET /health/live, GET /health/ready,
-    GET /meta, GET /capabilities. No source/media/task endpoints -- those are
-    T2/T3 (see the fork's PR description for scope).
+    GET /meta, GET /capabilities. T2's source/media read endpoints live in
+    views_sources.py, built on the same BridgeView here. No write endpoints
+    yet -- those are T3.
 '''
 import uuid
 from datetime import datetime, timezone
@@ -42,7 +43,7 @@ class BridgeView(View):
         dispatch() rather than Django middleware. This is deliberate: adding
         an entry to settings.MIDDLEWARE would be a fourth upstream touch
         point, beyond the three the fork delta is scoped to (INSTALLED_APPS,
-        the URL include, and the BASICAUTH_ALWAYS_ALLOW_URIS exemption).
+        the URL include, and the BASICAUTH_PREFIX_ALLOW_URIS exemption).
 
         CSRF is exempted here (not via settings) for the same reason: the
         bridge is a bearer-token server-to-server API; MediaNest callers
@@ -69,6 +70,12 @@ class BridgeView(View):
 
     def dispatch(self, request, *args, **kwargs):
         request_id = _resolve_request_id(request)
+        # Stashed so a concrete view's own error responses (e.g. 404
+        # SOURCE_NOT_FOUND, 400 SOURCE_INVALID in views_sources.py) can
+        # reuse the exact same request_id dispatch() will echo in the
+        # X-Request-ID response header below, rather than resolving a
+        # second, different one.
+        request._bridge_request_id = request_id
         correlation_id = request.META.get('HTTP_X_CORRELATION_ID', '').strip()
         log.debug(
             'medianest_bridge: request path=%s method=%s request_id=%s correlation_id=%s',
@@ -209,7 +216,10 @@ class CapabilitiesView(BridgeView):
     def get(self, request, *args, **kwargs):
         body = {
             'health': True,
-            'readSources': False,
+            # T2: GET /sources, GET /sources/{uuid}, GET /sources/{uuid}/media
+            # are implemented (read-only). Everything below stays false
+            # until the corresponding write/task endpoints ship in T3+.
+            'readSources': True,
             'validateChannelSource': False,
             'validatePlaylistSource': False,
             'createChannelSource': False,
@@ -218,7 +228,7 @@ class CapabilitiesView(BridgeView):
             'disableSource': False,
             'deleteSource': False,
             'syncSource': False,
-            'readMedia': False,
+            'readMedia': True,
             'retryMedia': False,
             'skipMedia': False,
             'enableMedia': False,

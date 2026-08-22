@@ -5,10 +5,21 @@ versioned JSON API for the [MediaNest](https://github.com/KingInYellows/medianes
 control plane to talk to. It is consumed only by MediaNest's backend, never
 by a browser.
 
-This is **T1 (bridge foundation)**: diagnostics endpoints and the auth
-skeleton only. It does not yet expose source, media, or task endpoints --
-those land in T2 (read API) and T3 (write API), which build on this
-foundation and consume the same vendored contract.
+**T1 (bridge foundation)** shipped diagnostics endpoints and the auth
+skeleton. **T2 (this slice, read API)** adds the contract's read-only source
+and media endpoints on top of that foundation. Write endpoints (create
+source, sync-now) are T3.
+
+T2 deliberately implements only the endpoints the vendored contract
+actually defines today: `GET /sources` (key lookup), `GET
+/sources/{sourceUuid}`, and `GET /sources/{sourceUuid}/media`. It does
+**not** implement a general paginated source list, `GET /media/{mediaId}`,
+or any `/tasks` endpoint -- none of those exist in
+`bridge-openapi.v1.yaml`. The M0 contract is scoped to the vertical-slice
+minimum by design; a broader read surface is a documented roadmap item, to
+be added contract-first (proposed, accepted, re-vendored, then
+implemented) rather than built ahead of the contract, the same pattern
+that added `REQUEST_TOO_LARGE` to `Error.code`.
 
 ## Purpose
 
@@ -23,32 +34,56 @@ signal-driven task scheduling.
 
 ## Fork delta
 
-Exactly three upstream files are touched, all minimal:
+Four upstream files are touched, three of them minimal:
 
 1. `tubesync/tubesync/settings.py` -- `INSTALLED_APPS += 'medianest_bridge'`.
 2. `tubesync/tubesync/urls.py` -- one `include('medianest_bridge.urls')` at
    `api/medianest/v1/`.
-3. `tubesync/tubesync/settings.py` -- `BASICAUTH_ALWAYS_ALLOW_URIS` gains the
-   bridge's four route paths, exempting them from `BasicAuthMiddleware`
-   (see "Auth model" below for why, and why this landed in the same commit
-   as the bridge's own auth).
+3. `tubesync/tubesync/settings.py` -- `BASICAUTH_PREFIX_ALLOW_URIS` gains
+   `'/api/medianest/v1/'`, exempting the whole bridge namespace from
+   `BasicAuthMiddleware` (see "Auth model" below).
+4. `common/middleware.py` -- **a deliberate T2 fork deviation**, approved
+   explicitly for this change: `BasicAuthMiddleware.process_request` now
+   checks a separate `BASICAUTH_PREFIX_ALLOW_URIS` tuple for path-prefix
+   matches (`startswith`), leaving `BASICAUTH_ALWAYS_ALLOW_URIS` as
+   exact-match only (byte-identical to before for every existing entry
+   like `/healthcheck`). This is generically useful beyond the bridge
+   (any future exemption need with dynamic sub-paths), so it's flagged here
+   as a candidate to propose upstream to `meeb/tubesync`, not just kept as
+   a fork-only patch.
 
-No other upstream file is modified. Everything else the bridge needs is
-imported (models, `common.utils.getenv`, `common.logger.log`), never edited.
+Everything else the bridge needs is imported (models,
+`common.utils.getenv`, `common.logger.log`, `sync.tasks` helpers), never
+edited.
 
 ## Auth model
 
 `common/middleware.py`'s `BasicAuthMiddleware` wraps every request in the
-app unless `request.path` is an **exact** match against
-`BASICAUTH_ALWAYS_ALLOW_URIS` (confirmed by reading that file -- it is
-`request.path in bypass_uris`, not a prefix match). Since the bridge's
-`Authorization` header carries a `Bearer <token>` value that Basic Auth's
-own parser cannot understand, the bridge's four T1 routes are listed
-individually in that tuple. Because the match is exact, a future PR adding a
-new bridge route must add its exact path too --
-`medianest_bridge/tests/test_basicauth_exemption.py` asserts the two lists
-never drift apart, and an unlisted sub-path under `api/medianest/v1/` fails
-closed behind Basic Auth rather than silently bypassing it.
+app unless it's exempted via `BASICAUTH_ALWAYS_ALLOW_URIS` (exact match)
+or `BASICAUTH_PREFIX_ALLOW_URIS` (prefix match). T1 originally listed
+each of its four routes as an individual exact-match entry, but that broke
+down once T2 added path-parameterized routes (`/sources/{sourceUuid}`,
+`/sources/{sourceUuid}/media`) -- a static tuple of exact strings can
+never enumerate "every valid source UUID." T2 added one prefix entry,
+`'/api/medianest/v1/'`, in `BASICAUTH_PREFIX_ALLOW_URIS` (see "Fork
+delta" above) -- the entire bridge namespace is exempted as a unit, since
+every route under it enforces its own complete, independent auth in
+`BridgeView.dispatch()` regardless of Basic Auth.
+
+Since the bridge's `Authorization` header carries a `Bearer <token>` value
+that Basic Auth's own parser cannot understand, this exemption is required
+for the bridge to be reachable at all when an operator has Basic Auth
+enabled (`HTTP_USER`/`HTTP_PASS` set).
+
+**Behavior note:** a request to an unmatched sub-path under
+`/api/medianest/v1/` (no bridge route defines it) now falls through to
+Django's ordinary URL-pattern-mismatch handling -- a plain 404, not a
+Basic Auth challenge and not the bridge's own JSON error envelope (no
+bridge view ever ran to produce one). This supersedes T1's "fails closed
+behind Basic Auth" language for unlisted sub-paths, which described the
+old exact-match design; there is no meaningful security regression, since
+no route exists there for either Basic Auth or the bridge's own auth to
+protect.
 
 **The BasicAuth exemption and the bridge's own bearer-token check land in
 the same commit.** Landing the exemption alone, even briefly, would leave
@@ -80,7 +115,13 @@ in this order, each check short-circuiting on failure:
    Checked via `Content-Length` when present; chunked transfer encoding
    without `Content-Length` is rejected with `413 REQUEST_TOO_LARGE`
    because the body cannot be size-checked before read. Oversized requests
-   get `413` with code `REQUEST_TOO_LARGE`.
+   get `413` with code `REQUEST_TOO_LARGE` -- accepted by the contract owner
+   as a canonical addition to `Error.code` for the T2 re-vendor
+   (`bridge-openapi.v1.yaml` @ `713f9b4ac9efc24e0f285f9af58a50276f29ebb9`).
+   T2 note (LOW, partially addressed): requests with no `Content-Length`
+   and no `Transfer-Encoding: chunked` still bypass the gate; harmless while
+   every bridge view is GET-only; must be hardened to actual-bytes
+   enforcement in the first PR that adds a body-reading (write) endpoint.
 
 None of this is implemented as Django middleware (`settings.MIDDLEWARE`) --
 that would be a fourth upstream touch point beyond the three enumerated
@@ -151,9 +192,11 @@ upstream-touch list stays limited to the three files listed above, and an
 operator can rotate the token file's contents or flip `MEDIANEST_BRIDGE_READ_ONLY`
 without a process restart.
 
-## Endpoints (T1)
+## Endpoints
 
-All under `/api/medianest/v1/`, all `GET`, all requiring the bearer token:
+All under `/api/medianest/v1/`, all `GET`, all requiring the bearer token.
+
+**T1 (diagnostics):**
 
 - `GET /health/live` -- liveness only, no database access.
 - `GET /health/ready` -- per-component readiness (`application`,
@@ -166,9 +209,38 @@ All under `/api/medianest/v1/`, all `GET`, all requiring the bearer token:
 - `GET /meta` -- bridge version, upstream `VERSION` string (known stale
   relative to the actual checked-out commit -- see the upstream audit), and
   `upstreamCommit`.
-- `GET /capabilities` -- capability negotiation. T1 reports `health: true`
-  and every other capability `false`, honestly reflecting that no
-  source/media/task endpoints exist yet.
+- `GET /capabilities` -- capability negotiation. As of T2, `health`,
+  `readSources`, and `readMedia` report `true`; every other capability
+  (writes, tasks, Plex actions) stays `false` until the corresponding
+  endpoints ship.
+
+**T2 (read API, `medianest_bridge/views_sources.py`, all backed by
+`medianest_bridge/mapping.py`'s pure Source/Media -> contract-schema
+functions):**
+
+- `GET /sources?key=<canonicalKey>` -- key-based lookup. `key` is
+  required; missing or empty returns `400 SOURCE_INVALID`. Returns
+  `{"data": [...]}` with zero or one item (`Source.key` is unique) --
+  never a general paginated listing.
+- `GET /sources/{sourceUuid}` -- source detail. A malformed UUID segment
+  and a well-formed-but-nonexistent UUID both return
+  `404 SOURCE_NOT_FOUND` (no separate 400 for bad ID syntax). The route
+  uses Django's `<str:...>` path converter rather than `<uuid:...>`
+  specifically so a malformed ID still reaches the view and gets this
+  JSON envelope, instead of Django's ordinary URL-pattern-mismatch 404.
+- `GET /sources/{sourceUuid}/media` -- paginated media for a source
+  (`page`, default `1`; `limit`, default `50`, max `200`). Out-of-bounds
+  or non-integer `page`/`limit` values are rejected with
+  `400 SOURCE_INVALID`, not silently clamped -- the contract's bounds
+  describe a valid request, not an auto-correction instruction. Ordered
+  newest-published-first, matching the existing upstream convention in
+  `sync/views/sources.py::SourceView`.
+
+TubeSync-state -> contract-`normalizedState` mapping has no
+contract-defined precedence, so `mapping.py` documents its own considered
+choices inline -- most notably, TubeSync's `MediaState.UNKNOWN` maps to
+`"discovered"`, not `"unknown"`, since it's a well-determined state
+(indexed, no work item yet), not one the bridge genuinely cannot verify.
 
 Every response (success and error) echoes `X-Request-ID`. A caller-supplied
 `X-Request-ID` header is echoed verbatim when it is a valid UUID; otherwise
@@ -187,12 +259,14 @@ sanitized `500 INTERNAL_PROVIDER_ERROR`.
 `medianest_bridge/contract/bridge-openapi.v1.yaml` is a vendored, read-only
 copy of the canonical contract (MediaNest repo,
 `docs/planning/tubesync-integration/bridge-openapi.v1.yaml` @
-`ce17a28773a6f3866c9c9235ae4eae04f4bafff4`). Do not edit it directly --
-re-vendor from the canonical source instead.
+`713f9b4ac9efc24e0f285f9af58a50276f29ebb9`, re-vendored for T2 -- the only
+change from T1's `ce17a28773a6f3866c9c9235ae4eae04f4bafff4` is
+`REQUEST_TOO_LARGE` joining `Error.code`'s enum). Do not edit it directly
+-- re-vendor from the canonical source instead.
 
 `medianest_bridge/contract/contract_fixtures.json` is a small JSON
-extraction (required fields + enums for the schemas T1 exercises) generated
-once from that YAML, so `medianest_bridge/tests/test_endpoints.py` can
+extraction (required fields + enums for the schemas this app exercises)
+generated once from that YAML, so `medianest_bridge/tests/test_endpoints.py` can
 assert response shape using only the stdlib `json` module -- no new Pipfile
 dependency. `test_contract_conformance.py` sha256-locks the fixture against
 the vendored YAML (so the two can never silently drift) and, only when
@@ -213,19 +287,32 @@ from the YAML rather than hand-edited.
   methods, oversized body, request-ID echo/generation, unhandled-exception
   sanitization, and that the token never appears in a response body or a
   log call.
-- `test_endpoints.py` -- each of the four endpoints' response shape against
-  the vendored contract fixtures, plus the "never fabricate healthy"
-  invariant for `queues`/`workers`/`youtube`.
+- `test_endpoints.py` -- each of the T1 diagnostic endpoints' response
+  shape against the vendored contract fixtures, plus the "never fabricate
+  healthy" invariant for `queues`/`workers`/`youtube`.
 - `test_contract_conformance.py` -- the fixture/YAML sha256 lock described
   above.
-- `test_basicauth_exemption.py` -- bridge routes reachable with bearer-only
-  auth while Basic Auth is enabled app-wide; a non-bridge route still
-  requires Basic Auth; the exemption tuple and the bridge's actual routes
-  never drift apart.
+- `test_basicauth_exemption.py` -- redesigned for T2's prefix-based
+  exemption: the prefix entry is present, every bridge route (including
+  the parameterized ones) resolves under it, a real UUID path reaches the
+  bridge's own auth (not a Basic Auth challenge) while a non-bridge route
+  still requires Basic Auth, and the prefix match has an exact boundary
+  (`/api/medianest/v1x...` does not match).
 - `test_listen_host_trust.py` -- the `LISTEN_HOST`/CIDR trust warning:
   emitted when CIDRs are configured and `LISTEN_HOST` is non-loopback, not
   emitted otherwise, never contains the token, and never blocks the
   request it's logged alongside.
+- `test_mapping.py` -- `mapping.py`'s Source/Media -> contract-schema
+  functions against real ORM rows: state-mapping precedence, the
+  `source_type` channel/playlist collapse, downloaded-vs-undownloaded
+  media field population, and the `MediaState.UNKNOWN` -> `"discovered"`
+  choice.
+- `test_sources.py` -- the three T2 endpoints end-to-end: contract shape
+  (via `test_endpoints.py`'s `assert_matches_schema`), key-lookup
+  required-param handling, malformed/nonexistent-ID 404 handling,
+  pagination bounds (rejected not clamped, including the exact-200
+  boundary), ordering, and that `/capabilities` now reports `readSources`/
+  `readMedia` true while every write/task flag stays false.
 
 Run with `cd tubesync && python3 manage.py test medianest_bridge` (or omit
 the app label to run the full suite, upstream included).

@@ -2,7 +2,10 @@
 #
 # Canonical source: KingInYellows/medianest,
 #   docs/planning/tubesync-integration/bridge-openapi.v1.yaml
-#   @ ce17a28773a6f3866c9c9235ae4eae04f4bafff4 (2026-08-21)
+#   @ 713f9b4ac9efc24e0f285f9af58a50276f29ebb9 (2026-08-21)
+#   (T1 re-vendor was @ ce17a28773a6f3866c9c9235ae4eae04f4bafff4; this
+#   update adds REQUEST_TOO_LARGE to Error.code, nothing else changed --
+#   redocly-validated on the canonical side.)
 #
 # Vendored into this fork so the bridge app's conformance tests
 # (medianest_bridge/tests/test_contract_conformance.py) can validate
@@ -575,6 +578,11 @@ components:
             - SOURCE_NOT_FOUND
             - MEDIA_NOT_FOUND
             - RATE_LIMITED
+            # REQUEST_TOO_LARGE (HTTP 413): added post-T1 at the bridge
+            # implementer's request — the slice-1 enum had no honest code for
+            # an oversized-request-body rejection. The T1 bridge enforces a
+            # bounded body (MEDIANEST_BRIDGE_MAX_BODY_BYTES) on every request.
+            - REQUEST_TOO_LARGE
             - INTERNAL_PROVIDER_ERROR
             - REQUEST_TOO_LARGE
         detail:
