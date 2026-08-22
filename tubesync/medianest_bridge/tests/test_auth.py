@@ -34,6 +34,14 @@ class ClientIpTestCase(BridgeTestCase):
         )
         self.assertEqual(auth.client_ip(request), '203.0.113.5')
 
+    @patch.dict(os.environ, {'LISTEN_HOST': '0.0.0.0'}, clear=False)
+    def test_ignores_x_real_ip_when_listen_host_not_loopback(self):
+        # When gunicorn is reachable directly, X-Real-IP can be forged.
+        request = self.factory.get(
+            '/', REMOTE_ADDR='203.0.113.5', HTTP_X_REAL_IP='192.168.1.68',
+        )
+        self.assertEqual(auth.client_ip(request), '203.0.113.5')
+
 
 class CidrAllowedTestCase(BridgeTestCase):
 

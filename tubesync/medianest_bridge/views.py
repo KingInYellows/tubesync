@@ -29,7 +29,12 @@ def _now_iso():
 
 def _resolve_request_id(request):
     supplied = request.META.get('HTTP_X_REQUEST_ID', '').strip()
-    return supplied or str(uuid.uuid4())
+    if supplied:
+        try:
+            return str(uuid.UUID(supplied))
+        except ValueError:
+            pass
+    return str(uuid.uuid4())
 
 
 def _read_body_is_oversized(request, limit):
@@ -83,7 +88,7 @@ class BridgeView(View):
         dispatch() rather than Django middleware. This is deliberate: adding
         an entry to settings.MIDDLEWARE would be a fourth upstream touch
         point, beyond the three the fork delta is scoped to (INSTALLED_APPS,
-        the URL include, and the BASICAUTH_ALWAYS_ALLOW_URIS exemption).
+        the URL include, and the BASICAUTH_PREFIX_ALLOW_URIS exemption).
 
         CSRF is exempted here (not via settings) for the same reason: the
         bridge is a bearer-token server-to-server API; MediaNest callers

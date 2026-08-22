@@ -1,16 +1,16 @@
 '''
-    Verifies the BASICAUTH_ALWAYS_ALLOW_URIS exemption -- redesigned for T2
-    around a single prefix entry ('/api/medianest/v1/') rather than T1's
-    per-route exact-match tuple, since exact-match semantics structurally
-    cannot cover path-parameterized routes like /sources/{sourceUuid}
-    (every distinct UUID is a different exact path).
+    Verifies the BasicAuth exemption for the bridge namespace via
+    BASICAUTH_PREFIX_ALLOW_URIS (T2 redesign). T1 used per-route exact
+    matches in BASICAUTH_ALWAYS_ALLOW_URIS, which structurally cannot cover
+    path-parameterized routes like /sources/{sourceUuid} (every distinct
+    UUID is a different exact path).
 
-    common/middleware.py::BasicAuthMiddleware.process_request now treats an
-    entry ending in '/' as a startswith() prefix match, and any other entry
-    (e.g. '/healthcheck') as the original exact match, unchanged.
+    common/middleware.py::BasicAuthMiddleware.process_request checks
+    BASICAUTH_ALWAYS_ALLOW_URIS for exact matches and
+    BASICAUTH_PREFIX_ALLOW_URIS for startswith() prefix matches.
 
     Coverage:
-      1. The prefix entry exists in BASICAUTH_ALWAYS_ALLOW_URIS.
+      1. The bridge prefix entry exists in BASICAUTH_PREFIX_ALLOW_URIS.
       2. Every named bridge route's reverse()d path starts with that
          prefix -- catches a route ever being added outside the bridge's
          own URL namespace.
@@ -24,6 +24,8 @@
       4. The prefix match has an exact boundary: '/api/medianest/v1x...'
          (no slash) must NOT be treated as inside the bridge namespace and
          must still get the Basic Auth challenge.
+      5. A trailing-slash entry in BASICAUTH_ALWAYS_ALLOW_URIS remains an
+         exact match, not a prefix match.
 '''
 import base64
 import json
@@ -70,7 +72,22 @@ class BasicAuthExemptionTestCase(BridgeTestCase):
         self.assertNotEqual(response.status_code, 401)
 
     def test_prefix_entry_present(self):
-        self.assertIn(BRIDGE_PREFIX, settings.BASICAUTH_ALWAYS_ALLOW_URIS)
+        self.assertIn(BRIDGE_PREFIX, settings.BASICAUTH_PREFIX_ALLOW_URIS)
+
+    @override_settings(
+        **BASIC_AUTH_OVERRIDES,
+        BASICAUTH_ALWAYS_ALLOW_URIS=('/exact-only/',),
+        BASICAUTH_PREFIX_ALLOW_URIS=(),
+    )
+    def test_trailing_slash_exact_entry_does_not_prefix_match(self):
+        '''
+            A trailing-slash entry in BASICAUTH_ALWAYS_ALLOW_URIS must
+            match only that exact path, not every descendant.
+        '''
+        response = self.client.get('/exact-only/subpath')
+        self.assertEqual(response.status_code, 401)
+        response = self.client.get('/exact-only/')
+        self.assertNotEqual(response.status_code, 401)
 
     def test_every_bridge_route_is_under_the_prefix(self):
         sample_uuid = {'source_uuid': str(uuid.uuid4())}

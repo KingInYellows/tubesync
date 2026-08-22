@@ -322,24 +322,12 @@ BASICAUTH_DISABLE = True
 BASICAUTH_REALM = 'Authenticate to TubeSync'
 BASICAUTH_ALWAYS_ALLOW_URIS = (
     '/healthcheck',
-    # medianest_bridge (api/medianest/v1/) authenticates every request
-    # itself, completely independent of Basic Auth (see
-    # medianest_bridge/auth.py and BridgeView.dispatch() in
-    # medianest_bridge/views.py) -- so the whole namespace is exempted
-    # here as a single trailing-slash prefix entry, not enumerated
-    # per-route. T1 originally listed each route's exact path
-    # individually, but that broke down once T2 added
-    # path-parameterized routes (e.g. /sources/{sourceUuid}) that a
-    # static tuple of exact strings can never fully enumerate.
-    # common/middleware.py's BasicAuthMiddleware treats a
-    # trailing-slash entry as a prefix match (request.path.startswith),
-    # so this one entry covers every current and future bridge route,
-    # while every other entry in this tuple (e.g. '/healthcheck') keeps
-    # its original exact-match behaviour unchanged. An unmatched
-    # sub-path under this prefix still reaches the bridge's URLconf --
-    # if no route matches, it gets Django's ordinary 404, not a Basic
-    # Auth challenge and not the bridge's own JSON envelope (no bridge
-    # view ever ran).
+)
+# Path-prefix exemptions for routes a static exact-match tuple cannot
+# enumerate (e.g. medianest_bridge's path-parameterized /sources/{uuid}
+# routes). Every route under a prefix still enforces its own complete,
+# independent auth in BridgeView.dispatch() regardless of Basic Auth.
+BASICAUTH_PREFIX_ALLOW_URIS = (
     '/api/medianest/v1/',
 )
 BASICAUTH_USERS = {}

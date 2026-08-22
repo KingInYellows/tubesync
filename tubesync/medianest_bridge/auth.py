@@ -31,7 +31,7 @@
 
     REMOTE_ADDR is used as a fallback for direct-to-Django access with no
     proxy in front (Django's runserver, the test client) where X-Real-IP is
-    never set.
+    never set, and also when LISTEN_HOST is non-loopback (see client_ip()).
 
     That trust chain has a runtime gap, not just a topology assumption:
     nothing in this app *verifies* gunicorn is actually loopback-bound.
@@ -55,9 +55,13 @@ LOOPBACK_LISTEN_HOST_DEFAULT = '127.0.0.1'
 
 
 def client_ip(request):
-    real_ip = request.META.get('HTTP_X_REAL_IP', '').strip()
-    if real_ip:
-        return real_ip
+    # X-Real-IP is only trustworthy when gunicorn is loopback-bound and
+    # reachable exclusively through nginx (see module docstring). When
+    # LISTEN_HOST is non-loopback, a direct client can forge the header.
+    if _listen_host_is_loopback():
+        real_ip = request.META.get('HTTP_X_REAL_IP', '').strip()
+        if real_ip:
+            return real_ip
     return (request.META.get('REMOTE_ADDR') or '').strip()
 
 
