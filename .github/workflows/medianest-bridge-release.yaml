@@ -161,14 +161,42 @@ jobs:
         # workflow (push retrigger or a manual workflow_dispatch reusing an
         # old tag) must never silently republish over one (sourcery-ai
         # review). Only meaningful when this run will actually push.
+        #
+        # `docker buildx imagetools inspect` exits nonzero both when the
+        # manifest genuinely doesn't exist AND on auth/network/registry
+        # failures -- treating every nonzero exit as "tag is free" would
+        # let a transient inspection failure silently clobber a real
+        # immutable tag (chatgpt-codex-connector review). Only a response
+        # that explicitly confirms the manifest is absent is treated as
+        # "safe to publish"; anything else retries a few times and then
+        # fails closed rather than guessing.
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
         shell: bash
         run: |
           image='${{ needs.info.outputs.REGISTRY }}/${{ needs.info.outputs.lowercase-github-repository_owner }}/${{ needs.info.outputs.IMAGE_NAME }}:${{ needs.info.outputs.tag }}'
-          if docker buildx imagetools inspect "${image}" >/dev/null 2>&1; then
-            echo "::error::tag '${{ needs.info.outputs.tag }}' already exists at ${image} -- release tags are immutable, publish under a new tag"
-            exit 1
-          fi
+          attempt=1
+          max_attempts=3
+          while :; do
+            output="$(docker buildx imagetools inspect "${image}" 2>&1)"
+            status=$?
+            if [ "${status}" -eq 0 ]; then
+              echo "::error::tag '${{ needs.info.outputs.tag }}' already exists at ${image} -- release tags are immutable, publish under a new tag"
+              exit 1
+            fi
+            case "${output}" in
+              (*'not found'*|*'manifest unknown'*|*'MANIFEST_UNKNOWN'*|*'NAME_UNKNOWN'*|*'no such manifest'*|*'404'*)
+                # A confirmed "manifest absent" response -- genuinely safe
+                # to publish this tag for the first time.
+                break
+                ;;
+            esac
+            if [ "${attempt}" -ge "${max_attempts}" ]; then
+              echo "::error::could not confirm tag '${{ needs.info.outputs.tag }}' is absent from ${image} after ${max_attempts} attempts; inspection failed with an error other than 'manifest not found' (auth/network/registry issue), so refusing to publish rather than risk overwriting an existing immutable tag. Last error: ${output}"
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            sleep 5
+          done
 
       - name: Build and publish
         uses: docker/build-push-action@v7
