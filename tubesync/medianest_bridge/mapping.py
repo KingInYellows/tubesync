@@ -292,8 +292,30 @@ def _task_failure_is_current(task):
         failure is no longer this row's current state (P2 review
         finding: a media item that failed once and later succeeded on
         retry kept reporting a stale error indefinitely).
+
+        That equality check alone is too strict, though (P2 review
+        finding, fresh evidence beyond the above): huey's own retry
+        mechanism re-enqueues the SAME row via a SIGNAL_SCHEDULED before
+        the retry actually starts, and that branch updates scheduled_at
+        to the future retry time without touching failed_at -- while
+        end_at still advances (unconditionally, as above). So
+        failed_at < end_at also occurs the moment a retry is merely
+        scheduled, well before it starts or resolves, and the plain
+        equality check would misreport that still-failed, retry-pending
+        row as no longer failed. scheduled_at is the same signal
+        retryAt's own gate below already uses to mean "a retry is
+        genuinely still pending": SIGNAL_EXECUTING/SIGNAL_COMPLETE never
+        push it forward again once the retry starts, so it only reads
+        as still-in-the-future during this exact window. A failure is
+        therefore still current either when it's the row's latest
+        signal outright, or when a later SCHEDULED signal moved end_at
+        forward but the resulting retry hasn't started yet.
     '''
-    return bool(task) and task.failed_at is not None and task.failed_at == task.end_at
+    if not task or task.failed_at is None:
+        return False
+    if task.failed_at == task.end_at:
+        return True
+    return task.scheduled_at is not None and task.scheduled_at > timezone.now()
 
 
 def _is_stale_given_current_media_state(media, task, *, is_running):

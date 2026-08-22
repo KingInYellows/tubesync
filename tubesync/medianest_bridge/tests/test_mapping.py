@@ -307,6 +307,36 @@ class SerializeMediaTaskStateTestCase(TestCase):
         self.assertIsNone(body['error'])
         self.assertIsNone(body['retryAt'])
 
+    def test_failed_task_awaiting_a_scheduled_retry_still_reports_error(self):
+        # P2 review finding (fresh evidence beyond the stale-error case
+        # above): huey re-enqueues the SAME row for its retry via a
+        # SIGNAL_SCHEDULED before that retry actually starts, and that
+        # signal bumps end_at forward (unconditional, like every
+        # signal) without touching failed_at -- so failed_at != end_at
+        # the moment a retry is merely scheduled, not just once it has
+        # resolved. Unlike the succeeded-retry case, scheduled_at here
+        # is still genuinely in the future (the pending retry's own
+        # run time), which is exactly what distinguishes "awaiting
+        # retry" from "retry already ran": _task_failure_is_current()
+        # must still report this row as currently failed.
+        source = make_source()
+        media = make_media(source)
+        first_attempt_failed_at = timezone.now() - timezone.timedelta(seconds=30)
+        scheduled_signal_at = timezone.now() - timezone.timedelta(seconds=29)
+        retry_at = timezone.now() + timezone.timedelta(seconds=600)
+        make_download_task(
+            media,
+            start_at=timezone.now() - timezone.timedelta(seconds=40),
+            end_at=scheduled_signal_at,
+            scheduled_at=retry_at,
+            failed_at=first_attempt_failed_at,
+            last_error='RuntimeError: network unreachable',
+        )
+        body = mapping.serialize_media(media)
+        self.assertEqual(body['normalizedState'], 'failed')
+        self.assertEqual(body['error'], 'network unreachable')
+        self.assertIsNotNone(body['retryAt'])
+
     def test_failed_task_does_not_mask_skipped_state(self):
         # T2 review P2 finding: a stale failed TaskHistory row must not
         # keep reporting "failed" once media is later marked skipped --
