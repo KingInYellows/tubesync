@@ -72,6 +72,27 @@ def _invalid(request_id, errors):
     )
 
 
+def _clean_form_errors(form):
+    '''
+        T4 verifier MEDIUM fix: str(form.errors) renders as Django's own
+        HTML (`<ul class="errorlist">...</ul>`) -- the verifier
+        reproduced this live in a POST /sources response. This extracts
+        plain-text "field: message" strings instead, via
+        ErrorDict.get_json_data() (Django's own API for exactly this --
+        JSON/API consumers, not HTML rendering). The messages themselves
+        still flow through error_response()'s universal
+        sanitize_error_message() call at the envelope construction
+        point, same as any other detail string -- this function's job is
+        only to stop emitting markup, not to sanitize (that happens once,
+        downstream, for every error response, not per call site).
+    '''
+    messages = []
+    for field, field_errors in form.errors.get_json_data().items():
+        for error in field_errors:
+            messages.append(f'{field}: {error["message"]}')
+    return messages
+
+
 class ValidateSourceView(BridgeView):
     '''
         POST /sources/validate -- validates a candidate source WITHOUT
@@ -195,7 +216,7 @@ class CreateSourceView(SourceLookupView):
         )
         run_edit_source_checks(form)
         if not form.is_valid():
-            return _invalid(request_id, [str(form.errors)])
+            return _invalid(request_id, _clean_form_errors(form))
 
         try:
             source = form.save()

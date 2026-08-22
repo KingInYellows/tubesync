@@ -69,6 +69,51 @@ class SanitizeErrorMessageTestCase(SimpleTestCase):
         self.assertNotIn('hunter2', result)
         self.assertIn('password=<redacted>', result)
 
+    def test_author_key_value_survives(self):
+        '''
+            T4 verifier LOW: an earlier substring-based credential regex
+            redacted "author=" because it contains "auth" as a substring,
+            not a whole segment. "author" != "auth" as a word/segment and
+            must survive untouched.
+        '''
+        message = 'request rejected: author=John Doe was invalid'
+        result = sanitize_error_message(message)
+        self.assertIn('author=John Doe', result)
+
+    def test_primary_key_value_survives(self):
+        '''
+            T4 verifier LOW: "key" is deliberately not a credential word
+            at all (see error_sanitize.py's module docstring) -- a SQL
+            constraint message mentioning "primary_key" is common,
+            diagnostically useful, and not a secret.
+        '''
+        message = 'IntegrityError: duplicate primary_key=42 on sync_source'
+        result = sanitize_error_message(message)
+        self.assertIn('primary_key=42', result)
+
+    def test_turkey_survives(self):
+        '''"turkey" contains "key" as a substring, not a segment.'''
+        message = 'unrelated message mentioning turkey: sandwich'
+        result = sanitize_error_message(message)
+        self.assertIn('turkey: sandwich', result)
+
+    def test_rejected_colon_does_not_swallow_following_credential_kv(self):
+        '''
+            The exact bug this fix addresses: an earlier version's regex
+            matched ANY \\w+ before ':'/'=' first and checked
+            credential-ness afterward, so "rejected:" (a plain English
+            colon, unrelated to any key=value pair) got matched as the
+            "identifier:separator" and greedily swallowed the REAL
+            "auth_token=..." that followed into its "value" group,
+            leaving the actual secret completely unredacted. Verified
+            directly against the failure this test is named for, not
+            just the fixed behavior.
+        '''
+        message = 'request rejected: auth_token=REALSECRETVALUE1234 was invalid'
+        result = sanitize_error_message(message)
+        self.assertNotIn('REALSECRETVALUE1234', result)
+        self.assertIn('auth_token=<redacted>', result)
+
     def test_youtube_channel_id_not_redacted(self):
         '''
             A channel/video ID appearing in an error message is useful

@@ -185,6 +185,14 @@ class BridgeView(View):
             of those return points would be easy to miss one on a future
             edit. One wrapper, one place, applies to all of them
             uniformly.
+
+            The two logging calls below are themselves wrapped in a
+            try/except (T4 verifier LOW): _run_gates()'s own try/except
+            only covers the gate checks and the concrete view's handler,
+            not these two calls, which run after it returns -- so a
+            failure in the logging path itself is caught and logged
+            here rather than propagating as a raw unhandled exception
+            past the response that was already computed.
         '''
         request_id = _resolve_request_id(request)
         # Stashed so a concrete view's own error responses (e.g. 404
@@ -201,9 +209,25 @@ class BridgeView(View):
         start = time.monotonic()
         response = self._run_gates(request, request_id, *args, **kwargs)
         duration_ms = round((time.monotonic() - start) * 1000, 2)
-        _log_outcome(request, response, request_id, duration_ms)
-        if request.method not in SAFE_METHODS:
-            _log_mutation_audit(request, response, request_id, kwargs)
+        try:
+            _log_outcome(request, response, request_id, duration_ms)
+            if request.method not in SAFE_METHODS:
+                _log_mutation_audit(request, response, request_id, kwargs)
+        except Exception:
+            # T4 verifier LOW: _run_gates()'s own try/except already
+            # guarantees a handler exception can never reach the caller
+            # unsanitized, but these two calls happen AFTER _run_gates()
+            # returns, so they were outside that coverage -- a failure
+            # here (e.g. a logging handler error) would otherwise
+            # propagate past dispatch() as a raw unhandled exception,
+            # bypassing error_response() entirely and taking down a
+            # response that was already computed successfully. Logging
+            # failures are logged and swallowed, never allowed to
+            # replace or crash the response already decided above.
+            log.exception(
+                'medianest_bridge: outcome/audit logging failed request_id=%s path=%s',
+                request_id, request.path,
+            )
         return response
 
     def _run_gates(self, request, request_id, *args, **kwargs):

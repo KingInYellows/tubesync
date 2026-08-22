@@ -66,9 +66,45 @@ import os
 import shutil
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 _SUBPROCESS_TIMEOUT_SECONDS = 2
+_BLOCKING_CALL_TIMEOUT_SECONDS = 2
 _CACHE_TTL_SECONDS = 5
+
+
+def _call_with_timeout(fn, *, timeout=_BLOCKING_CALL_TIMEOUT_SECONDS):
+    '''
+        Bounds a blocking call (a DB query, a disk stat) that has no
+        native Python timeout parameter -- unlike the subprocess calls
+        elsewhere in this module, a plain syscall such as statvfs() on a
+        dead network mount can block in the kernel for a very long time,
+        uninterruptible by ordinary Python-level mechanisms. Running it
+        in a throwaway thread and bounding *this* call's wait via
+        Future.result(timeout=...) bounds the caller's wait even though
+        the underlying thread may itself remain stuck forever (a leaked
+        thread on that rare pathological path, not a hung response --
+        the tradeoff this module's checks all make, matching "one slow
+        check can't hang /health/ready").
+
+        Raises FutureTimeoutError on timeout; callers decide what status
+        that maps to (see check_database/check_storage below).
+
+        Deliberately does NOT use `with ThreadPoolExecutor(...) as executor:`
+        -- that context manager's __exit__ calls shutdown(wait=True),
+        which blocks until the submitted thread finishes, defeating the
+        entire point of the timeout the moment the wrapped call actually
+        hangs (caught in review before this shipped, not after).
+        shutdown(wait=False) lets this function return promptly on
+        timeout while the orphaned thread is abandoned to finish (or
+        hang) on its own, unobserved.
+    '''
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(fn)
+    try:
+        return future.result(timeout=timeout)
+    finally:
+        executor.shutdown(wait=False)
 
 # The four huey consumer services this fork ships
 # (config/root/etc/s6-overlay/s6-rc.d/), matching sync/choices.py's
@@ -95,12 +131,26 @@ def check_application():
     return _status('healthy')
 
 
-def check_database():
+def _select_1():
     from django.db import connection
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT 1')
+        cursor.fetchone()
+
+
+def check_database():
+    # T4 verifier LOW: bounded the same way workers/queues' subprocess
+    # calls already are. A plain SELECT 1 is normally instant, but
+    # "normally" stops holding the moment DOWNLOAD_ROOT-style network
+    # storage concerns apply to the DB connection too (a remote
+    # Postgres/MySQL backend per common/utils.py's
+    # parse_database_connection_string(), not just SQLite) -- an
+    # unresponsive network DB should report unavailable within
+    # _BLOCKING_CALL_TIMEOUT_SECONDS, not hang this endpoint.
     try:
-        with connection.cursor() as cursor:
-            cursor.execute('SELECT 1')
-            cursor.fetchone()
+        _call_with_timeout(_select_1)
+    except FutureTimeoutError:
+        return _status('unavailable', detail='database query timed out')
     except Exception:
         return _status('unavailable', detail='database query failed')
     return _status('healthy')
@@ -220,20 +270,44 @@ def _storage_thresholds():
     return warn, critical
 
 
-def check_storage():
+def _stat_download_root():
+    '''
+        The actual blocking syscalls (exists/access/disk_usage -- all
+        stat-family calls) bundled into one unit so a single
+        _call_with_timeout() bounds all of them together, not just
+        disk_usage alone. Returns (exists, writable, usage_or_None).
+    '''
     from django.conf import settings
     root = settings.DOWNLOAD_ROOT
+    exists = root.exists()
+    if not exists:
+        return False, False, None
+    writable = os.access(root, os.W_OK)
+    if not writable:
+        return True, False, None
     try:
-        exists = root.exists()
+        usage = shutil.disk_usage(root)
+    except OSError:
+        usage = None
+    return True, True, usage
+
+
+def check_storage():
+    # T4 verifier LOW: M6 may put DOWNLOAD_ROOT on a network mount: an
+    # unresponsive/dead NFS mount can block a stat-family syscall
+    # (exists/access/disk_usage) in the kernel for a very long time.
+    # Bounded the same way check_database() now is.
+    try:
+        exists, writable, usage = _call_with_timeout(_stat_download_root)
+    except FutureTimeoutError:
+        return _status('unavailable', detail='DOWNLOAD_ROOT stat timed out')
     except OSError:
         return _status('unavailable', detail='DOWNLOAD_ROOT could not be statted')
     if not exists:
         return _status('unavailable', detail='DOWNLOAD_ROOT does not exist')
-    if not os.access(root, os.W_OK):
+    if not writable:
         return _status('unavailable', detail='DOWNLOAD_ROOT is not writable')
-    try:
-        usage = shutil.disk_usage(root)
-    except OSError:
+    if usage is None:
         return _status(
             'healthy', detail='DOWNLOAD_ROOT is writable; free space could not be determined',
         )

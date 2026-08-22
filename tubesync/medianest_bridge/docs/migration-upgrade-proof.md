@@ -4,10 +4,19 @@ Two claims, verified separately, per the T4 hardening brief:
 
 1. **The fork adds zero migrations.** Automated, in the test suite:
    `medianest_bridge/tests/test_migrations.py::ZeroMigrationsTestCase`
-   calls `django.core.management.call_command('makemigrations', '--check',
-   '--dry-run')` and fails if it ever raises `SystemExit` -- i.e. if any
-   model change (in `medianest_bridge` or anywhere else) is ever left
-   uncaptured by an existing migration file. This has also been checked
+   runs `manage.py makemigrations --check --dry-run` as a genuinely
+   separate `subprocess.run(...)` call and fails the test if its exit
+   code is non-zero -- i.e. if any model change (in `medianest_bridge` or
+   anywhere else) is ever left uncaptured by an existing migration file.
+   **Not** `django.core.management.call_command()` in-process: an earlier
+   version tried exactly that, and it corrupted shared Django app/
+   migration-loader state for every test running afterward in the same
+   process (11 unrelated test failures + 1 error appeared across both
+   medianest_bridge and upstream sync tests the moment it ran in-process;
+   confirmed by toggling it on/off, not guessed -- see this test's own
+   docstring for the full account). The subprocess form doesn't share
+   that state with the surrounding test run at all, so it's the correct
+   isolation here, not merely a workaround. This has also been checked
    manually via `manage.py makemigrations --check --dry-run` on every
    T1-T4 commit ("No changes detected" every time -- see each commit
    message/PR body), but it is now a standing assertion in the suite

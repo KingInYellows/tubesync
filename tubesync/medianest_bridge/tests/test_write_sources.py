@@ -268,6 +268,36 @@ class CreateSourceEndpointTestCase(BridgeTestCase):
         self.assertEqual(json.loads(response.content)['code'], 'SOURCE_INVALID')
         self.assertEqual(Source.objects.count(), 0)
 
+    def test_directory_traversal_error_detail_leaks_nothing(self):
+        '''
+            T4 verifier MEDIUM, reproduced live: an earlier version built
+            this error's `detail` from str(form.errors) (Django's own
+            HTML __str__) and embedded settings.DOWNLOAD_ROOT verbatim in
+            the traversal message itself -- the response body literally
+            contained "...within the configured download root.
+            (/workspace/tubesync/downloads)" plus a raw
+            "<ul class="errorlist">" fragment. This asserts on the DETAIL
+            CONTENT directly, not just the status/code -- that's exactly
+            how the original leak stayed invisible to the T3/T4 tests
+            that only checked status and code.
+        '''
+        from django.conf import settings
+
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        response = post_json(
+            self.client, SOURCES_URL,
+            self._valid_channel_body(directory='../../../etc'),
+            **self.auth_header(),
+        )
+        body = json.loads(response.content)
+        detail = body['detail']
+        self.assertNotIn(str(settings.DOWNLOAD_ROOT), detail)
+        self.assertNotIn('<', detail, 'no raw HTML (e.g. <ul class="errorlist">) in the detail')
+        self.assertNotIn('errorlist', detail)
+        # Still actionable: names the offending field and the rule.
+        self.assertIn('directory', detail)
+        self.assertIn('download root', detail)
+
     def test_missing_required_field_returns_400(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
         body = self._valid_channel_body()
