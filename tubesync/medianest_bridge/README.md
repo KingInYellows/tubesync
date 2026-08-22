@@ -217,6 +217,7 @@ text never contains the bearer token.
 | `MEDIANEST_BRIDGE_UPSTREAM_SHA` | `unknown` | Build-time git SHA of the tracked upstream commit, injected at image build time via the `Dockerfile`'s `ARG MEDIANEST_BRIDGE_UPSTREAM_SHA` (T5). `GET /meta`'s `upstreamCommit` reports the literal string `"unknown"` (not a fabricated value) whenever this is unset or empty -- true for the bare/local path (no container involved at all) and for any image build that omits the build-arg. See "Compatibility reporting" below for the wired value, its single canonical source, and build+run proof. |
 | `MEDIANEST_BRIDGE_STORAGE_WARN_BYTES` | `5368709120` (5 GiB) | `storage` readiness component reports `degraded` at or below this many free bytes on `DOWNLOAD_ROOT`. |
 | `MEDIANEST_BRIDGE_STORAGE_CRITICAL_BYTES` | `1073741824` (1 GiB) | `storage` readiness component reports `unavailable` at or below this many free bytes. Defaults are round numbers, not derived from any measured workload -- an operator with a better sense of their own disk growth rate should override them. |
+| `MEDIANEST_BRIDGE_YOUTUBE_PROBE_ENABLED` | `true` | Any value other than exactly `false` (case-insensitive) is treated as `true`. Enables the `youtube` readiness component's real network probe (a `GET https://www.youtube.com/generate_204`, no auth/cookies, cached 120s). Meaningful only under the shared-egress-namespace deployment wiring (DECISIONS #29, M6b routing doc) where this process shares yt-dlp's VPN egress -- set to `false` for any deployment that does NOT use that wiring, where a probe result would describe the wrong network path; the component then honestly reports `not_configured`. See `medianest_bridge/readiness.py`'s module docstring for the full design rationale. |
 | `LISTEN_HOST` | `127.0.0.1` | **Not a `medianest_bridge` setting** -- read by `gunicorn.py` to choose gunicorn's bind address. Must stay loopback (the default) for the CIDR gate's `X-Real-IP` trust to hold; see the warning behavior described just above. |
 
 None of these are registered as Django settings in `settings.py` -- the app
@@ -463,7 +464,11 @@ from the YAML rather than hand-edited.
   log call.
 - `test_endpoints.py` -- each of the T1 diagnostic endpoints' response
   shape against the vendored contract fixtures, plus the "never fabricate
-  healthy" invariant for `queues`/`workers`/`youtube`.
+  healthy" invariant for `queues`/`workers` (still unverifiable outside a
+  real s6-overlay deployment) and that `youtube`'s real probe result
+  (mocked, never a live network call) is actually wired through to the
+  response. See `test_readiness.py::YoutubeProbeTestCase` for the probe's
+  own success/timeout/refused/disabled/caching behavior.
 - `test_contract_conformance.py` -- the fixture/YAML sha256 lock described
   above.
 - `test_basicauth_exemption.py` -- redesigned for T2's prefix-based

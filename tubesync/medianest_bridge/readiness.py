@@ -28,19 +28,76 @@
     under s6-overlay), both checks honestly fall back to "unknown" rather
     than fabricating a status for a precondition that doesn't hold.
 
-    `youtube` stays "unknown" -- deliberately, not by omission. A
-    reachability probe from this process would only be a valid proxy for
-    yt-dlp's own reachability if this process shares yt-dlp's actual
-    egress path, including any VPN routing (ADR-0006 describes a Gluetun
-    VPN boundary on the production DOCKERDOWNLOAD host). This repository
-    has zero references to Gluetun/VPN anywhere (checked directly --
-    `grep -rli 'gluetun\\|vpn'` across the whole tree, no matches); that
-    topology is MediaNest-side deployment infrastructure this repo cannot
-    see. Baking in either assumption (shares egress / doesn't) would be
-    exactly the "VPN egress assumption" this check was told to avoid, so
-    it stays unknown until the deployment topology is confirmed
-    elsewhere -- flagged in the T4 PR body as a question for the
-    deployment docs, not decided silently here.
+    `youtube` is now a real probe (T-side follow-up to M6b's deployment
+    work). T4 left this "unknown" pending confirmation of the production
+    deployment's VPN/network topology -- that confirmation has since
+    landed and closes DECISIONS #29: under the chosen wiring
+    (`network_mode: service:gluetun` plus a LAN carve-out on
+    `FIREWALL_OUTBOUND_SUBNETS`, documented in the M6b deployment/routing
+    doc), the bridge web process genuinely shares yt-dlp's VPN egress for
+    all internet-bound traffic -- a reachability probe from this process
+    IS now a valid proxy for yt-dlp's own reachability, which is the
+    exact precondition T4's version of this check said was missing.
+
+    The probe: a single `GET` to `https://www.youtube.com/generate_204`
+    (Google's own purpose-built connectivity-check convention, the same
+    kind used for `www.gstatic.com/generate_204` elsewhere) -- no auth,
+    no cookies, no custom headers, no yt-dlp invocation, no cookie-file
+    involvement (this app's own test asserts no `headers`/`cookies`/`auth`
+    kwarg is ever passed). Verified live with the *exact* request this
+    code sends -- default `requests` User-Agent, no overrides, run from
+    inside `ts-bridge-test:latest` (the same environment this app's own
+    tests run in): a zero-byte HTTP 204 in ~50ms, no redirect/consent-wall
+    concern (none observed) that a content page would risk. Response
+    detail records only the outcome (HTTP status or exception class name,
+    never the full exception message, which for `requests` can embed the
+    request URL) and latency -- nothing else is logged or returned.
+
+    Bounded by `requests`' own native `timeout=` parameter rather than
+    `_call_with_timeout()`'s `ThreadPoolExecutor` wrapper: unlike
+    `SELECT 1` or `statvfs()`, `requests.get()` already has a reliable
+    timeout with no "blocks in the kernel forever" failure mode to work
+    around, so wrapping it in that pattern too would be redundant rather
+    than defensive. Stated precisely, not glossed over: `timeout=2`
+    applies to the connect phase and the read phase *separately* (this is
+    `requests`/`urllib3`'s own documented semantics, not a bug here), so
+    the worst-case wall time for one probe call is closer to ~4s than a
+    strict 2s ceiling -- looser than `_call_with_timeout`'s true
+    total-wall-time bound, but still fully bounded (fires at most once
+    per `_YOUTUBE_CACHE_TTL_SECONDS`, cached, can never hang
+    indefinitely), which is what actually matters for `/health/ready`
+    never blocking on this check.
+
+    Cached under its own `_YOUTUBE_CACHE_TTL_SECONDS` (120s), separate
+    from `collect_components()`'s shared 5s TTL: an external network
+    probe against a third party is a different cost/frequency tradeoff
+    than a local syscall -- 120s is frequent enough that a real VPN
+    egress loss surfaces within about two polling cycles for anything
+    watching `/health/ready`, infrequent enough not to look like scraping
+    traffic against YouTube's own infrastructure. `check_youtube()`
+    manages this cache internally (its own module-level dict), so
+    `collect_components()`'s generic per-check loop and its own 5s cache
+    are completely unaffected -- this is a one-function, additive change,
+    not a restructuring of the shared cache.
+
+    Enabled by default (`MEDIANEST_BRIDGE_YOUTUBE_PROBE_ENABLED`,
+    defaulting to `true`, same fail-toward-default parsing as
+    `config.py::is_read_only()`) because the M6b production topology is
+    the shared-egress wiring this probe's meaning depends on. Cleanly
+    disableable for any deployment that does NOT use that wiring, where a
+    "youtube unreachable" result would actually be reporting on the wrong
+    network path entirely -- disabling reports `not_configured` (an
+    operator-controlled absence, matching `check_cookies()`'s existing
+    precedent), not `unknown` (which would incorrectly imply this fork
+    still can't determine the answer).
+
+    No change to `aggregate_status()` was needed for this: only
+    `database`/`application` reporting `unavailable` escalates the
+    *overall* status to `unavailable` (see the aggregation rule below);
+    every other component's `degraded`/`unavailable` -- `youtube`
+    included -- already maps to overall `degraded` only, which is exactly
+    "the bridge itself still works for reads even if YouTube is
+    unreachable," the correct signal here.
 
     `plex` stays "unknown"/"not_configured" as in T1 -- reachability was
     out of T1's scope and remains out of T4's (no new endpoints, per the
@@ -74,6 +131,8 @@ import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
+import requests
+
 _SUBPROCESS_TIMEOUT_SECONDS = 2
 _BLOCKING_CALL_TIMEOUT_SECONDS = 2
 _CACHE_TTL_SECONDS = 5
@@ -88,6 +147,11 @@ _blocking_call_executor = ThreadPoolExecutor(
     max_workers=2,
     thread_name_prefix='medianest_bridge_readiness',
 )
+
+# youtube probe: see this module's docstring for the full rationale.
+_YOUTUBE_PROBE_URL = 'https://www.youtube.com/generate_204'
+_YOUTUBE_PROBE_TIMEOUT_SECONDS = 2
+_YOUTUBE_CACHE_TTL_SECONDS = 120
 
 
 def _call_with_timeout(fn, *, timeout=_BLOCKING_CALL_TIMEOUT_SECONDS):
@@ -361,14 +425,54 @@ def check_storage():
     return _status('healthy', detail=detail)
 
 
+_youtube_cache = {'expires_at': 0.0, 'component': None}
+
+
+def _youtube_probe_enabled():
+    from common.utils import getenv
+    return 'false' != getenv('MEDIANEST_BRIDGE_YOUTUBE_PROBE_ENABLED', 'true').strip().lower()
+
+
+def _probe_youtube():
+    '''
+        The actual network call, isolated from check_youtube()'s caching
+        and enabled/disabled logic so each is independently testable.
+        Records only an HTTP status or an exception CLASS NAME (never
+        `str(exc)`, which for `requests` exceptions commonly embeds the
+        full request URL) plus latency -- nothing else about the request
+        or failure is ever included in the returned detail.
+    '''
+    start = time.monotonic()
+    try:
+        response = requests.get(_YOUTUBE_PROBE_URL, timeout=_YOUTUBE_PROBE_TIMEOUT_SECONDS)
+    except requests.exceptions.RequestException as exc:
+        latency_ms = round((time.monotonic() - start) * 1000, 1)
+        return _status(
+            'unavailable',
+            detail=f'{type(exc).__name__} after {latency_ms}ms',
+        )
+    latency_ms = round((time.monotonic() - start) * 1000, 1)
+    if 200 <= response.status_code < 400:
+        return _status('healthy', detail=f'HTTP {response.status_code} in {latency_ms}ms')
+    return _status('unavailable', detail=f'HTTP {response.status_code} in {latency_ms}ms')
+
+
 def check_youtube():
-    return _status(
-        'unknown',
-        detail='reachability from this process is not a confirmed proxy for '
-               'yt-dlp\'s own egress path (possible VPN routing is a '
-               'deployment-topology fact this repo has no visibility into) '
-               '-- see this module\'s docstring',
-    )
+    if not _youtube_probe_enabled():
+        return _status(
+            'not_configured',
+            detail='MEDIANEST_BRIDGE_YOUTUBE_PROBE_ENABLED=false -- probe '
+                   'disabled by operator (correct for any deployment not '
+                   'using the shared-egress-namespace wiring; see this '
+                   'module\'s docstring)',
+        )
+    now = time.monotonic()
+    if _youtube_cache['component'] is not None and _youtube_cache['expires_at'] > now:
+        return _youtube_cache['component']
+    component = _probe_youtube()
+    _youtube_cache['component'] = component
+    _youtube_cache['expires_at'] = now + _YOUTUBE_CACHE_TTL_SECONDS
+    return component
 
 
 def check_cookies():
@@ -423,9 +527,17 @@ _cache = {'expires_at': 0.0, 'components': None}
 
 
 def _reset_cache():
-    '''Test-only: forces the next collect_components() call to recompute.'''
+    '''
+        Test-only: forces the next collect_components() call to recompute,
+        including the youtube probe's own separately-TTL'd cache (see
+        check_youtube() -- it isn't swept up by the shared _cache dict
+        above, so it needs resetting here too or a test could observe a
+        stale probe result left over from an earlier test).
+    '''
     _cache['components'] = None
     _cache['expires_at'] = 0.0
+    _youtube_cache['component'] = None
+    _youtube_cache['expires_at'] = 0.0
 
 
 def collect_components():

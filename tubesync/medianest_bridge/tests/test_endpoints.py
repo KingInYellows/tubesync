@@ -7,7 +7,9 @@
 import json
 import re
 from pathlib import Path
+from unittest.mock import Mock, patch
 
+from .. import readiness
 from .base import BridgeTestCase
 
 FIXTURES_PATH = (
@@ -100,6 +102,28 @@ class HealthLiveEndpointTestCase(BridgeTestCase):
 
 
 class HealthReadyEndpointTestCase(BridgeTestCase):
+    '''
+        youtube (T-side follow-up to M6b) is a real network probe now, not
+        permanently "unknown" -- readiness.requests.get is mocked for
+        every test in this class so /health/ready never makes a live
+        network call from this suite (this program's "no live YouTube in
+        CI" rule), and the readiness cache is reset around each test so
+        no mocked/real result leaks between tests. See
+        test_readiness.py::YoutubeProbeTestCase for the probe's own
+        success/timeout/refused/disabled/caching behavior in detail --
+        this class only needs one fixed, known response to assert
+        contract shape and endpoint-level wiring.
+    '''
+
+    def setUp(self):
+        super().setUp()
+        readiness._reset_cache()
+        self.addCleanup(readiness._reset_cache)
+        mock_response = Mock()
+        mock_response.status_code = 204
+        patcher = patch.object(readiness.requests, 'get', return_value=mock_response)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_shape_matches_contract(self):
         self.enable_bridge()
@@ -115,20 +139,30 @@ class HealthReadyEndpointTestCase(BridgeTestCase):
 
     def test_never_fabricates_healthy_for_unverifiable_components(self):
         '''
-            youtube is permanently "unknown" by design (see readiness.py's
-            module docstring on why a bridge-initiated reachability probe
-            isn't a confirmed proxy for yt-dlp's own egress path). queues
-            and workers became real checks in T4 (readiness.py::check_workers/
-            check_queues, via s6-svstat against /run/service) but this test
-            environment doesn't run under s6-overlay, so they correctly
-            fall back to "unknown" here too -- see test_readiness.py for
-            the healthy/degraded/unavailable cases with /run/service mocked.
+            queues and workers became real checks in T4
+            (readiness.py::check_workers/check_queues, via s6-svstat
+            against /run/service) but this test environment doesn't run
+            under s6-overlay, so they correctly fall back to "unknown"
+            here -- see test_readiness.py for the healthy/degraded/
+            unavailable cases with /run/service mocked.
         '''
         self.enable_bridge()
         response = self.client.get(READY_URL, **self.auth_header())
         body = json.loads(response.content)
-        for name in ('queues', 'workers', 'youtube'):
+        for name in ('queues', 'workers'):
             self.assertEqual(body['components'][name]['status'], 'unknown')
+
+    def test_youtube_reports_the_mocked_probe_result(self):
+        '''
+            Unlike queues/workers above, youtube IS verifiable in this
+            environment now -- it's a real probe, mocked here to a fixed
+            204 so this asserts the endpoint actually wires the probe's
+            real result through, not just a fixed "unknown".
+        '''
+        self.enable_bridge()
+        response = self.client.get(READY_URL, **self.auth_header())
+        body = json.loads(response.content)
+        self.assertEqual(body['components']['youtube']['status'], 'healthy')
 
     def test_overall_status_is_enum_valid(self):
         self.enable_bridge()
