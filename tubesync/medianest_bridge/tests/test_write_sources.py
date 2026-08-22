@@ -4,11 +4,14 @@
 '''
 import json
 import uuid
+from unittest.mock import patch
+
+from django.db import IntegrityError
 
 from common.models import TaskHistory
-from sync.models import Source
+from sync.models import Media, Source
 
-from .base import BridgeTestCase
+from .base import BridgeTestCase, BridgeTransactionTestCase
 from .test_endpoints import assert_matches_schema
 
 VALIDATE_URL = '/api/medianest/v1/sources/validate'
@@ -109,14 +112,24 @@ class ValidateSourceEndpointTestCase(BridgeTestCase):
         self.assertEqual(response.status_code, 400)
 
     def test_never_persists_anything(self):
+        '''
+            Per the original T3 brief: validate must never persist
+            anything, checked against every model a create would touch
+            -- not just Source (the obvious one), but also Media (never
+            relevant to validate, checked for completeness) and
+            TaskHistory (the side effect a real create triggers via
+            source_post_save -- its absence here is what actually proves
+            validate never goes anywhere near Source.save()).
+        '''
         self.enable_bridge()
-        before = Source.objects.count()
+        before = (Source.objects.count(), Media.objects.count(), TaskHistory.objects.count())
         post_json(self.client, VALIDATE_URL, {
             'sourceType': 'channel',
             'canonicalKey': 'UCabcdefghijklmnopqrstuv',
             'canonicalUrl': 'https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv',
         }, **self.auth_header())
-        self.assertEqual(Source.objects.count(), before)
+        after = (Source.objects.count(), Media.objects.count(), TaskHistory.objects.count())
+        self.assertEqual(after, before)
 
     def test_not_blocked_by_read_only_mode(self):
         '''
@@ -282,6 +295,144 @@ class CreateSourceEndpointTestCase(BridgeTestCase):
         response = self.client.get(SOURCES_URL + '?key=nonexistent', **self.auth_header())
         self.assertEqual(response.status_code, 200)
         self.assertEqual(json.loads(response.content), {'data': []})
+
+
+class CreateSourceRaceConditionTestCase(BridgeTransactionTestCase):
+    '''
+        T3 verifier MEDIUM: the pre-checks in CreateSourceView (SELECT
+        for an existing key, SELECT/exists for name/directory) only
+        narrow the common case -- the real convergence mechanism is the
+        try/except IntegrityError around form.save(). Every other
+        conflict test in this file only exercises the pre-check path
+        (the pre-check finds the conflict and returns before ever
+        calling form.save()); none of them touch the except branch
+        itself.
+
+        These tests make the except branch execute for real, without
+        sleeping or threading (deterministic, not a timing race):
+        Source.save() is patched so that, at the exact moment our
+        request's own save() would run, it first creates the
+        "concurrent" row itself -- simulating a second request's commit
+        landing in the gap between our pre-check/form validation (which
+        both ran against a table that didn't have the conflicting row
+        yet, so both legitimately passed) and our own INSERT. The
+        resulting IntegrityError is a real one raised by the DB's own
+        UNIQUE constraint, not a mocked exception, so the except
+        branch's own re-query logic is exercised exactly as it would be
+        against a genuine concurrent conflict.
+
+        Uses BridgeTransactionTestCase, not BridgeTestCase: nesting two
+        real Model.save() calls (the injected "concurrent" row, then the
+        request's own row) inside Django's TestCase-level savepoint
+        wrapping raised "database table is locked" on sqlite instead of
+        the intended IntegrityError -- confirmed empirically, not
+        assumed. TransactionTestCase gives each of these tests a real,
+        unwrapped connection where two independently-committing writes
+        against the same table behave the way they would in production.
+    '''
+
+    def _post_with_injected_concurrent_row(self, body, *, concurrent_source_kwargs):
+        '''
+            Patches Source.save so the first call (this request's own
+            save, triggered by form.save() inside CreateSourceView)
+            creates `concurrent_source_kwargs` as a real row via the
+            *unpatched* save method immediately beforehand, then proceeds
+            with the real (also unpatched) save for the request's own
+            instance -- which now genuinely violates whichever unique
+            constraint the concurrent row shares with it.
+        '''
+        original_save = Source.save
+        created = {}
+
+        def save_with_injected_race(instance, *args, **kwargs):
+            if 'concurrent' not in created:
+                concurrent = Source(**concurrent_source_kwargs)
+                original_save(concurrent, *args, **kwargs)
+                created['concurrent'] = concurrent
+            return original_save(instance, *args, **kwargs)
+
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with patch.object(Source, 'save', save_with_injected_race):
+            response = post_json(self.client, SOURCES_URL, body, **self.auth_header())
+        return response, created.get('concurrent')
+
+    def test_key_collision_race_returns_409_with_true_winners_uuid(self):
+        response, concurrent = self._post_with_injected_concurrent_row(
+            {
+                'sourceType': 'channel',
+                'canonicalKey': 'UCracekeytest1234567',
+                'canonicalUrl': 'https://www.youtube.com/channel/UCracekeytest1234567',
+                'name': 'Our Name',
+                'directory': 'our_dir',
+            },
+            concurrent_source_kwargs=dict(
+                source_type='i', key='UCracekeytest1234567',
+                name='Concurrent Winner', directory='concurrent_winner_dir',
+            ),
+        )
+        self.assertEqual(response.status_code, 409)
+        body = json.loads(response.content)
+        self.assertEqual(body['code'], 'SOURCE_CONFLICT')
+        self.assertEqual(body['existingSourceUuid'], str(concurrent.pk))
+        # Only the concurrent winner exists -- our own row must not have
+        # been left half-created or adopted as a second row.
+        self.assertEqual(Source.objects.filter(key='UCracekeytest1234567').count(), 1)
+
+    def test_name_collision_race_returns_400_namespace_conflict_not_adopted(self):
+        response, concurrent = self._post_with_injected_concurrent_row(
+            {
+                'sourceType': 'channel',
+                'canonicalKey': 'UCracenametest123456',
+                'canonicalUrl': 'https://www.youtube.com/channel/UCracenametest123456',
+                'name': 'Shared Race Name',
+                'directory': 'our_own_dir',
+            },
+            concurrent_source_kwargs=dict(
+                source_type='i', key='UCdifferentkeyforrace',
+                name='Shared Race Name', directory='concurrent_dir',
+            ),
+        )
+        self.assertEqual(response.status_code, 400)
+        body = json.loads(response.content)
+        self.assertEqual(body['code'], 'SOURCE_NAMESPACE_CONFLICT')
+        self.assertNotIn(
+            'existingSourceUuid', body,
+            'a namespace conflict must never carry an adoptable uuid',
+        )
+        self.assertEqual(concurrent.name, 'Shared Race Name')
+        self.assertFalse(Source.objects.filter(key='UCracenametest123456').exists())
+
+    def test_unrecognized_integrity_error_reraised_as_sanitized_500(self):
+        '''
+            No concurrent row is created at all here -- the except
+            block's re-query for both key and name/directory conflicts
+            will find nothing, so it must re-raise rather than silently
+            swallow an IntegrityError it cannot explain, and
+            BridgeView.dispatch()'s catch-all must turn that into a
+            sanitized 500 with no raw exception text or traceback in the
+            response body.
+        '''
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+
+        def always_raise(instance, *args, **kwargs):
+            raise IntegrityError('simulated unrecognized constraint violation')
+
+        with patch.object(Source, 'save', always_raise):
+            response = post_json(self.client, SOURCES_URL, {
+                'sourceType': 'channel',
+                'canonicalKey': 'UCunrecognizedrace123',
+                'canonicalUrl': 'https://www.youtube.com/channel/UCunrecognizedrace123',
+                'name': 'Unrecognized Race',
+                'directory': 'unrecognized_race_dir',
+            }, **self.auth_header())
+
+        self.assertEqual(response.status_code, 500)
+        body = json.loads(response.content)
+        self.assertEqual(body['code'], 'INTERNAL_PROVIDER_ERROR')
+        self.assertNotIn('simulated unrecognized constraint violation', response.content.decode())
+        self.assertNotIn('Traceback', response.content.decode())
+        self.assertNotIn('IntegrityError', response.content.decode())
+        self.assertFalse(Source.objects.filter(key='UCunrecognizedrace123').exists())
 
 
 class SyncSourceEndpointTestCase(BridgeTestCase):
