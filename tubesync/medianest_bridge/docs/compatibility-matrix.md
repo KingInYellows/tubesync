@@ -5,9 +5,12 @@ them can silently drift against each other.
 
 ## 1. Upstream base
 
-**`3b9d72f28dda9c931776f76e7428a72a24a57f82`** -- the `meeb/tubesync`
+**the value in `medianest_bridge/docs/UPSTREAM_SHA`** -- the `meeb/tubesync`
 commit this fork was branched from, confirmed identical to `origin/main`
-and `upstream/main` at fork creation time (T1 upstream audit).
+and `upstream/main` at fork creation time (T1 upstream audit). Not
+duplicated as a literal SHA here (this table is a living reference, not a
+point-in-time snapshot -- see "Single canonical source" immediately below):
+a re-pin only has one file to update.
 
 Single canonical source in this repo: `medianest_bridge/docs/UPSTREAM_SHA`
 (one line, nothing else). Read from that file by:

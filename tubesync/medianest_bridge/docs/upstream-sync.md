@@ -55,8 +55,11 @@ commit that rebases/re-bases the stack, never separately:
 
 ```bash
 git rev-parse upstream/main > tubesync/medianest_bridge/docs/UPSTREAM_SHA
-printf -- '\n' >> tubesync/medianest_bridge/docs/UPSTREAM_SHA   # keep the trailing newline
 ```
+
+(`git rev-parse` already writes the trailing newline the release
+workflow's `tr -d '[:space:]'` read strips anyway -- no second `printf`
+needed; appending one produced a spurious blank second line.)
 
 Every other place that needs this value -- the release workflow's
 build-arg, the compatibility matrix, the migration-upgrade-proof

@@ -75,6 +75,15 @@ jobs:
             tag="${GITHUB_REF#refs/tags/}"
           fi
           test -n "${tag}" || { echo '::error::no image tag resolved'; exit 1; }
+          # A `push` trigger is already restricted to `bridge-v*` by this
+          # workflow's own `on.push.tags` filter above, but `workflow_dispatch`
+          # takes an arbitrary free-text string -- enforce the same namespace
+          # here so a manual run can never publish as `latest` or any other
+          # tag outside the fork's release namespace (sourcery-ai review).
+          case "${tag}" in
+            (bridge-v*) : ;;
+            (*) echo "::error::tag '${tag}' is not in the 'bridge-v*' namespace"; exit 1 ;;
+          esac
           printf -- 'tag=%s\n' "${tag}" >> "${GITHUB_OUTPUT}"
 
       - name: Read pinned upstream-base SHA
@@ -145,6 +154,21 @@ jobs:
           registry: ${{ needs.info.outputs.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refuse to overwrite an existing release tag
+        # Release tags must be immutable so the rollback procedure can rely
+        # on a tag identifying fixed image contents -- rerunning this
+        # workflow (push retrigger or a manual workflow_dispatch reusing an
+        # old tag) must never silently republish over one (sourcery-ai
+        # review). Only meaningful when this run will actually push.
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
+        shell: bash
+        run: |
+          image='${{ needs.info.outputs.REGISTRY }}/${{ needs.info.outputs.lowercase-github-repository_owner }}/${{ needs.info.outputs.IMAGE_NAME }}:${{ needs.info.outputs.tag }}'
+          if docker buildx imagetools inspect "${image}" >/dev/null 2>&1; then
+            echo "::error::tag '${{ needs.info.outputs.tag }}' already exists at ${image} -- release tags are immutable, publish under a new tag"
+            exit 1
+          fi
 
       - name: Build and publish
         uses: docker/build-push-action@v7
