@@ -208,7 +208,9 @@ text never contains the bearer token.
 | `MEDIANEST_BRIDGE_READ_ONLY` | `true` | Any value other than exactly `false` (case-insensitive) is treated as `true` -- fails closed to read-only. |
 | `MEDIANEST_BRIDGE_MAX_BODY_BYTES` | `65536` | Integer. Enforced via `Content-Length` before any field-level validation. |
 | `MEDIANEST_BRIDGE_ALLOWED_CIDRS` | unset (gate disabled) | Comma-separated CIDR list, e.g. `192.168.1.68/32`. A malformed entry fails closed to an empty (deny-all) list rather than silently admitting everything. |
-| `MEDIANEST_BRIDGE_UPSTREAM_SHA` | `unknown` | Build-time git SHA of the tracked upstream commit, injected at image build time. `GET /meta`'s `upstreamCommit` reports the literal string `"unknown"` (not a fabricated value) when unset -- true for every T1-T4 local/CI build, since the fork's own image-publish workflow does not exist until T5. |
+| `MEDIANEST_BRIDGE_UPSTREAM_SHA` | `unknown` | Build-time git SHA of the tracked upstream commit, injected at image build time. `GET /meta`'s `upstreamCommit` reports the literal string `"unknown"` (not a fabricated value) when unset -- true for every T1-T4 local/CI build, since the fork's own image-publish workflow does not exist until T5. See "Compatibility reporting" below for exactly what T5 needs to wire up. |
+| `MEDIANEST_BRIDGE_STORAGE_WARN_BYTES` | `5368709120` (5 GiB) | `storage` readiness component reports `degraded` at or below this many free bytes on `DOWNLOAD_ROOT`. |
+| `MEDIANEST_BRIDGE_STORAGE_CRITICAL_BYTES` | `1073741824` (1 GiB) | `storage` readiness component reports `unavailable` at or below this many free bytes. Defaults are round numbers, not derived from any measured workload -- an operator with a better sense of their own disk growth rate should override them. |
 | `LISTEN_HOST` | `127.0.0.1` | **Not a `medianest_bridge` setting** -- read by `gunicorn.py` to choose gunicorn's bind address. Must stay loopback (the default) for the CIDR gate's `X-Real-IP` trust to hold; see the warning behavior described just above. |
 
 None of these are registered as Django settings in `settings.py` -- the app
@@ -217,6 +219,42 @@ rather than reimplemented) each time they're needed, so the fork's
 upstream-touch list stays limited to the three files listed above, and an
 operator can rotate the token file's contents or flip `MEDIANEST_BRIDGE_READ_ONLY`
 without a process restart.
+
+## Compatibility reporting
+
+`GET /meta` reports `bridgeVersion` (this app's own version constant,
+`config.BRIDGE_VERSION`), `tubesyncVersion` (upstream's own `settings.VERSION`
+string -- known stale relative to the actually-checked-out commit, see the
+upstream audit; not something this app can fix, it's TubeSync's own
+constant), and `upstreamCommit`. Current, verified truthful state of each
+path:
+
+- **Bare local path** (dev server, `manage.py test`, this repo's own CI if
+  Actions is ever enabled without a build-arg pipeline): `upstreamCommit`
+  reports the literal string `"unknown"`, never a fabricated value. Tested
+  directly (`tests/test_endpoints.py::MetaEndpointTestCase`).
+- **Image-build path**: **no wiring exists yet.** `MEDIANEST_BRIDGE_UPSTREAM_SHA`
+  is read from the environment at request time (`config.py::upstream_sha()`),
+  but nothing in this fork's `Dockerfile` sets it during a build -- confirmed
+  by inspecting the `Dockerfile` directly (no `GIT_SHA`/`VCS_REF`/similar
+  `ARG` exists anywhere in it). T4 did **not** add that wiring: Docker/CI
+  changes were explicitly scoped to T5 across T1-T3's task boundaries, and
+  a Dockerfile edit falls on the T5 side of that line. Flagged to the
+  program lead rather than silently added or silently skipped.
+
+  For T5 (or whoever owns the fork's image-build pipeline) to close this
+  gap, the minimal wiring is:
+  ```dockerfile
+  ARG MEDIANEST_BRIDGE_UPSTREAM_SHA=""
+  ENV MEDIANEST_BRIDGE_UPSTREAM_SHA=${MEDIANEST_BRIDGE_UPSTREAM_SHA}
+  ```
+  placed in the final runtime stage, with the build invocation passing
+  `--build-arg MEDIANEST_BRIDGE_UPSTREAM_SHA=$(git rev-parse HEAD)` (or the
+  equivalent `docker/build-push-action` `build-args` entry, matching this
+  fork's existing `IMAGE_NAME`/`FFMPEG_VERSION`/etc. build-arg conventions
+  already visible in `.github/workflows/ci.yaml`). No application code
+  change would be required on top of this -- `config.py::upstream_sha()`
+  already reads exactly this env var name.
 
 ## Endpoints
 
@@ -333,6 +371,43 @@ stack traces or exception messages ever reach a response body -- unhandled
 exceptions are caught by `BridgeView.dispatch()`'s catch-all, logged
 server-side via `common.logger.log.exception(...)`, and returned as a
 sanitized `500 INTERNAL_PROVIDER_ERROR`.
+
+## Structured logging (not a metrics stack)
+
+T4 researched what this fork already has for operational metrics before
+building anything: no Prometheus, no metrics endpoint, no existing hook
+anywhere in the codebase to attach to (confirmed by inspection, not
+assumed -- there is no `django_prometheus`/`prometheus_client` dependency
+in `Pipfile`, and no metrics-shaped view in `common/` or `sync/`).
+Bolting on a new metrics stack for this alone would be a new dependency
+and a new operational surface for a single fork app to carry; the honest
+T4 deliverable instead is consistent, greppable request/outcome logging
+through the same `common.logger.log` this app already uses everywhere
+else -- no new dependency, no new infrastructure.
+
+Every bridge request produces exactly one line via `BridgeView.dispatch()`
+(`views.py::_log_outcome`), regardless of which gate or view produced the
+response:
+
+```
+medianest_bridge: request_complete route=<path> method=<verb> status=<code> duration_ms=<float> request_id=<uuid>
+```
+
+Every mutation *attempt* (any non-GET/HEAD/OPTIONS request to a bridge
+route -- accepted or rejected, including a read-only rejection) also
+produces one audit-shaped line (`views.py::_log_mutation_audit`):
+
+```
+medianest_bridge: mutation_audit route=<path> outcome=<accepted|rejected_<CODE>> source_uuid=<uuid-or-'-'> request_id=<uuid>
+```
+
+`source_uuid` comes from the URL's own `source_uuid` kwarg when the route
+names one (`POST /sources/{uuid}/sync`), or from a successful
+`POST /sources`'s response body (the uuid didn't exist before that
+request). Neither line ever contains the bearer token or a filesystem
+path -- by construction, not by scrubbing: the five/four fields logged
+are route, method, status, duration, request id, outcome, and source
+uuid, none of which can carry either.
 
 ## Contract
 
