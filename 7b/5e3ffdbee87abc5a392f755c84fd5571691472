@@ -1,0 +1,22 @@
+tubesync/medianest_bridge/docs/upstream-sync.md
+  s_6f44432272f3fb::t_d6ef95bc2807d5 122-134
+.github/workflows/release.yaml
+  s_6f44432272f3fb::t_f752ea1e9c314f 54-61,66
+  s_6f44432272f3fb::t_b5163d7c01127e 62-65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "7b5e3ffdbee87abc5a392f755c84fd5571691472",
+  "prompts": {},
+  "sessions": {
+    "s_6f44432272f3fb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0cc3c93c-09c0-4006-8c37-39f39900f896",
+        "model": "claude-fable-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
