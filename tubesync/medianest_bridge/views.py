@@ -28,7 +28,12 @@ def _now_iso():
 
 def _resolve_request_id(request):
     supplied = request.META.get('HTTP_X_REQUEST_ID', '').strip()
-    return supplied or str(uuid.uuid4())
+    if supplied:
+        try:
+            return str(uuid.UUID(supplied))
+        except ValueError:
+            pass
+    return str(uuid.uuid4())
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -121,13 +126,31 @@ class BridgeView(View):
                     request_id=request_id,
                     retryable=False,
                 )
-            content_length = request.META.get('CONTENT_LENGTH')
-            if content_length not in (None, ''):
-                try:
-                    length = int(content_length)
-                except (TypeError, ValueError):
-                    length = None
-                if length is not None and length > config.max_body_bytes():
+            if request.method not in SAFE_METHODS:
+                content_length = request.META.get('CONTENT_LENGTH')
+                length = None
+                if content_length not in (None, ''):
+                    try:
+                        length = int(content_length)
+                    except (TypeError, ValueError):
+                        length = None
+                if length is None:
+                    transfer_encoding = (
+                        request.META.get('HTTP_TRANSFER_ENCODING') or ''
+                    ).lower()
+                    if 'chunked' in transfer_encoding:
+                        return error_response(
+                            status=413,
+                            code='REQUEST_TOO_LARGE',
+                            title='Request body too large',
+                            detail=(
+                                'Chunked request bodies cannot be size-checked '
+                                'before read; use Content-Length instead.'
+                            ),
+                            request_id=request_id,
+                            retryable=False,
+                        )
+                elif length > config.max_body_bytes():
                     return error_response(
                         status=413,
                         code='REQUEST_TOO_LARGE',

@@ -57,12 +57,6 @@ def assert_matches_schema(test, body, schema_name):
         if field not in body:
             continue
         value = body[field]
-        enum = spec.get('enum')
-        if enum:
-            test.assertIn(
-                value, enum,
-                f'{schema_name}.{field}={value!r} not in {enum!r}',
-            )
         type_spec = spec.get('type')
         if type_spec:
             type_names = type_spec if isinstance(type_spec, list) else [type_spec]
@@ -70,6 +64,12 @@ def assert_matches_schema(test, body, schema_name):
                 any(_is_json_type(value, name) for name in type_names),
                 f'{schema_name}.{field}={value!r} ({type(value).__name__}) '
                 f'does not match declared type(s) {type_names!r}',
+            )
+        enum = spec.get('enum')
+        if enum:
+            test.assertIn(
+                value, enum,
+                f'{schema_name}.{field}={value!r} not in {enum!r}',
             )
         pattern = spec.get('pattern')
         if pattern and isinstance(value, str):
@@ -80,6 +80,12 @@ def assert_matches_schema(test, body, schema_name):
             test.assertIsNotNone(
                 re.match(pattern, value),
                 f'{schema_name}.{field}={value!r} does not match pattern {pattern!r}',
+            )
+        if field.endswith('At') and isinstance(value, str):
+            test.assertRegex(
+                value,
+                re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$'),
+                f'{schema_name}.{field}={value!r} is not ISO-8601 date-time',
             )
 
 

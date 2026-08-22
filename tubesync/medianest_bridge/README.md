@@ -112,19 +112,16 @@ in this order, each check short-circuiting on failure:
    implemented now so T2/T3's write endpoints ship read-only-by-default from
    day one, structurally, not by omission.
 5. **Body-size gate** (`MEDIANEST_BRIDGE_MAX_BODY_BYTES`, default `65536`).
-   Checked via `Content-Length` when present. Oversized requests get `413`
-   with code `REQUEST_TOO_LARGE` -- flagged as a contract gap during T1
-   (no existing code described an oversized-body rejection honestly) and
-   accepted by the contract owner as a canonical addition to `Error.code`
-   for the T2 re-vendor (`bridge-openapi.v1.yaml` @
-   `713f9b4ac9efc24e0f285f9af58a50276f29ebb9`); it is a normal contract
-   code now, not a proposed one.
-   T2 note (LOW, carried forward from the T1 verifier, not fixed here):
-   this gate only inspects `Content-Length` -- a chunked or
-   omitted-length request body bypasses it. Harmless while no bridge view
-   reads `request.body` (T1's and T2's endpoints are all GET-only); must
-   be hardened to actual-bytes enforcement in the first PR that adds a
-   body-reading (write) endpoint.
+   Checked via `Content-Length` when present; chunked transfer encoding
+   without `Content-Length` is rejected with `413 REQUEST_TOO_LARGE`
+   because the body cannot be size-checked before read. Oversized requests
+   get `413` with code `REQUEST_TOO_LARGE` -- accepted by the contract owner
+   as a canonical addition to `Error.code` for the T2 re-vendor
+   (`bridge-openapi.v1.yaml` @ `713f9b4ac9efc24e0f285f9af58a50276f29ebb9`).
+   T2 note (LOW, partially addressed): requests with no `Content-Length`
+   and no `Transfer-Encoding: chunked` still bypass the gate; harmless while
+   every bridge view is GET-only; must be hardened to actual-bytes
+   enforcement in the first PR that adds a body-reading (write) endpoint.
 
 None of this is implemented as Django middleware (`settings.MIDDLEWARE`) --
 that would be a fourth upstream touch point beyond the three enumerated
@@ -246,8 +243,8 @@ choices inline -- most notably, TubeSync's `MediaState.UNKNOWN` maps to
 (indexed, no work item yet), not one the bridge genuinely cannot verify.
 
 Every response (success and error) echoes `X-Request-ID`. A caller-supplied
-`X-Request-ID` header is echoed verbatim; otherwise the bridge generates a
-UUID4. `X-Correlation-ID`, if supplied, is logged (paired with the request
+`X-Request-ID` header is echoed verbatim when it is a valid UUID; otherwise
+the bridge generates a new UUID4. `X-Correlation-ID`, if supplied, is logged (paired with the request
 ID) but is not itself part of any response schema.
 
 Errors use the vendored contract's RFC 7807-style envelope

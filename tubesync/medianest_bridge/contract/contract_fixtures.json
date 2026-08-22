@@ -2,7 +2,7 @@
   "_provenance": {
     "note": "Generated once from the vendored YAML via PyYAML (a transitive dependency of hat-syslog, not a new Pipfile dependency) and checked in so bridge tests can assert contract shape using only the stdlib json module. test_contract_conformance.py sha256-locks this file against the YAML above and, when PyYAML happens to be importable in the test environment, additionally cross-checks this fixture was derived correctly. Regenerate together with the sha256 whenever the vendored YAML is re-vendored. Includes each property's \"pattern\" (e.g. MediaItem.relativePath's anti-absolute-path regex) so conformance tests can enforce it, not just required/enum.",
     "source": "medianest_bridge/contract/bridge-openapi.v1.yaml",
-    "source_sha256": "b1d169faf5fe87a9ed38878937392d91337286ab2beeae088b2535ff324d02c1"
+    "source_sha256": "3680c83fa281e9dfcc575d79f0e131c2a1b2eae445a0e364b8443f2c912ae7e8"
   },
   "health_ready_component_names": [
     "application",
@@ -17,162 +17,34 @@
     "ytDlp"
   ],
   "schemas": {
-    "Capabilities": {
-      "properties": {
-        "cancelTask": {
-          "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        },
-        "createChannelSource": {
-          "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        },
-        "createPlaylistSource": {
-          "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        },
-        "deleteSource": {
-          "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        },
-        "disableSource": {
-          "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        },
-        "enableMedia": {
-          "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        },
-        "health": {
-          "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        },
-        "oneOffVideoDownload": {
-          "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        },
-        "plexCollectionCreation": {
-          "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        },
-        "plexScan": {
-          "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        },
-        "pushEvents": {
-          "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        },
-        "readMedia": {
-          "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        },
-        "readSources": {
-          "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        },
-        "readTasks": {
-          "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        },
-        "retryMedia": {
-          "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        },
-        "retryTask": {
-          "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        },
-        "skipMedia": {
-          "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        },
-        "syncSource": {
-          "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        },
-        "updateSource": {
-          "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        },
-        "validateChannelSource": {
-          "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        },
-        "validatePlaylistSource": {
-          "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        }
-      },
+    "Error": {
       "required": [
-        "health",
-        "readSources",
-        "validateChannelSource",
-        "validatePlaylistSource",
-        "createChannelSource",
-        "createPlaylistSource",
-        "syncSource",
-        "readMedia"
-      ]
-    },
-    "ComponentStatus": {
+        "type",
+        "title",
+        "status",
+        "code",
+        "detail",
+        "requestId",
+        "retryable"
+      ],
       "properties": {
-        "detail": {
+        "type": {
+          "type": "string",
           "enum": null,
-          "pattern": null,
-          "type": [
-            "string",
-            "null"
-          ]
+          "pattern": null
+        },
+        "title": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
         },
         "status": {
-          "enum": [
-            "healthy",
-            "degraded",
-            "unavailable",
-            "unknown",
-            "not_configured"
-          ],
-          "pattern": null,
-          "type": "string"
-        },
-        "version": {
+          "type": "integer",
           "enum": null,
-          "pattern": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "status"
-      ]
-    },
-    "Error": {
-      "properties": {
+          "pattern": null
+        },
         "code": {
+          "type": "string",
           "enum": [
             "PROVIDER_UNAVAILABLE",
             "PROVIDER_AUTHENTICATION_FAILED",
@@ -184,204 +56,498 @@
             "MEDIA_NOT_FOUND",
             "RATE_LIMITED",
             "REQUEST_TOO_LARGE",
-            "INTERNAL_PROVIDER_ERROR"
+            "INTERNAL_PROVIDER_ERROR",
+            "REQUEST_TOO_LARGE"
           ],
-          "pattern": null,
-          "type": "string"
+          "pattern": null
         },
         "detail": {
+          "type": "string",
           "enum": null,
-          "pattern": null,
-          "type": "string"
+          "pattern": null
         },
         "requestId": {
+          "type": "string",
           "enum": null,
-          "pattern": null,
-          "type": "string"
+          "pattern": null
         },
         "retryable": {
+          "type": "boolean",
           "enum": null,
-          "pattern": null,
-          "type": "boolean"
-        },
-        "status": {
-          "enum": null,
-          "pattern": null,
-          "type": "integer"
-        },
-        "title": {
-          "enum": null,
-          "pattern": null,
-          "type": "string"
-        },
-        "type": {
-          "enum": null,
-          "pattern": null,
-          "type": "string"
+          "pattern": null
         }
-      },
-      "required": [
-        "type",
-        "title",
-        "status",
-        "code",
-        "detail",
-        "requestId",
-        "retryable"
-      ]
+      }
     },
     "HealthLive": {
-      "properties": {
-        "checkedAt": {
-          "enum": null,
-          "pattern": null,
-          "type": "string"
-        },
-        "status": {
-          "enum": [
-            "alive"
-          ],
-          "pattern": null,
-          "type": "string"
-        }
-      },
       "required": [
         "status",
         "checkedAt"
-      ]
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "alive"
+          ],
+          "pattern": null
+        },
+        "checkedAt": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        }
+      }
+    },
+    "ComponentStatus": {
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "healthy",
+            "degraded",
+            "unavailable",
+            "unknown",
+            "not_configured"
+          ],
+          "pattern": null
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": null,
+          "pattern": null
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": null,
+          "pattern": null
+        }
+      }
     },
     "HealthReady": {
+      "required": [
+        "status",
+        "checkedAt",
+        "components"
+      ],
       "properties": {
-        "checkedAt": {
-          "enum": null,
-          "pattern": null,
-          "type": "string"
-        },
-        "components": {
-          "enum": null,
-          "pattern": null,
-          "type": "object"
-        },
         "status": {
+          "type": "string",
           "enum": [
             "healthy",
             "degraded",
             "unavailable"
           ],
-          "pattern": null,
-          "type": "string"
+          "pattern": null
+        },
+        "checkedAt": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "components": {
+          "type": "object",
+          "enum": null,
+          "pattern": null
         }
-      },
-      "required": [
-        "status",
-        "checkedAt",
-        "components"
-      ]
+      }
     },
-    "MediaItem": {
+    "Meta": {
+      "required": [
+        "bridgeVersion",
+        "tubesyncVersion",
+        "upstreamCommit"
+      ],
       "properties": {
-        "downloadedAt": {
+        "bridgeVersion": {
+          "type": "string",
           "enum": null,
-          "pattern": null,
-          "type": [
-            "string",
-            "null"
-          ]
+          "pattern": null
         },
-        "eligible": {
+        "tubesyncVersion": {
+          "type": "string",
           "enum": null,
-          "pattern": null,
-          "type": "boolean"
+          "pattern": null
         },
-        "error": {
+        "upstreamCommit": {
+          "type": "string",
           "enum": null,
-          "pattern": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "filename": {
+          "pattern": null
+        }
+      }
+    },
+    "Capabilities": {
+      "required": [
+        "health",
+        "readSources",
+        "validateChannelSource",
+        "validatePlaylistSource",
+        "createChannelSource",
+        "createPlaylistSource",
+        "syncSource",
+        "readMedia"
+      ],
+      "properties": {
+        "health": {
+          "type": "boolean",
           "enum": null,
-          "pattern": null,
-          "type": [
-            "string",
-            "null"
-          ]
+          "pattern": null
         },
-        "id": {
+        "readSources": {
+          "type": "boolean",
           "enum": null,
-          "pattern": null,
-          "type": "string"
+          "pattern": null
         },
-        "normalizedState": {
+        "validateChannelSource": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "validatePlaylistSource": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "createChannelSource": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "createPlaylistSource": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "updateSource": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "disableSource": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "deleteSource": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "syncSource": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "readMedia": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "retryMedia": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "skipMedia": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "enableMedia": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "readTasks": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "cancelTask": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "retryTask": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "oneOffVideoDownload": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "pushEvents": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "plexScan": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "plexCollectionCreation": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        }
+      }
+    },
+    "SourceProfile": {
+      "required": [],
+      "properties": {
+        "resolution": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "videoCodec": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "audioCodec": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "downloadCap": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "subtitles": {
+          "type": "array",
+          "enum": null,
+          "pattern": null
+        },
+        "autoSubtitles": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "sponsorBlock": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "deleteOldMedia": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "deleteRemovedMedia": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "deleteFilesOnDisk": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        }
+      }
+    },
+    "ValidateSourceRequest": {
+      "required": [
+        "sourceType",
+        "canonicalKey",
+        "canonicalUrl"
+      ],
+      "properties": {
+        "sourceType": {
+          "type": "string",
           "enum": [
-            "discovered",
-            "ineligible",
-            "queued",
-            "downloading",
-            "downloaded",
-            "skipped",
-            "failed",
-            "removed_upstream",
-            "unknown"
+            "channel",
+            "playlist"
           ],
-          "pattern": null,
-          "type": "string"
+          "pattern": null
         },
-        "publishedAt": {
+        "canonicalKey": {
+          "type": "string",
           "enum": null,
-          "pattern": null,
+          "pattern": null
+        },
+        "canonicalUrl": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "profile": {
+          "type": null,
+          "enum": null,
+          "pattern": null
+        }
+      }
+    },
+    "ValidatedSource": {
+      "required": [
+        "sourceType",
+        "canonicalKey",
+        "canonicalUrl",
+        "displayName"
+      ],
+      "properties": {
+        "sourceType": {
+          "type": "string",
+          "enum": [
+            "channel",
+            "playlist"
+          ],
+          "pattern": null
+        },
+        "canonicalKey": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "canonicalUrl": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "displayName": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "thumbnailUrl": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "enum": null,
+          "pattern": null
+        }
+      }
+    },
+    "CreateSourceRequest": {
+      "required": [
+        "sourceType",
+        "canonicalKey",
+        "canonicalUrl",
+        "name",
+        "directory"
+      ],
+      "properties": {
+        "sourceType": {
+          "type": "string",
+          "enum": [
+            "channel",
+            "playlist"
+          ],
+          "pattern": null
+        },
+        "canonicalKey": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "canonicalUrl": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "name": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "directory": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "profile": {
+          "type": null,
+          "enum": null,
+          "pattern": null
+        }
+      }
+    },
+    "Source": {
+      "required": [
+        "uuid",
+        "sourceType",
+        "canonicalKey",
+        "canonicalUrl",
+        "name",
+        "directory",
+        "rawState",
+        "normalizedState"
+      ],
+      "properties": {
+        "uuid": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "sourceType": {
+          "type": "string",
+          "enum": [
+            "channel",
+            "playlist"
+          ],
+          "pattern": null
+        },
+        "canonicalKey": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "canonicalUrl": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "name": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "directory": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
         },
         "rawState": {
+          "type": "object",
           "enum": null,
-          "pattern": null,
-          "type": "string"
+          "pattern": null
         },
-        "relativePath": {
-          "enum": null,
-          "pattern": "^(?![A-Za-z]:)[^/\\\\].*$",
+        "normalizedState": {
+          "type": "string",
+          "enum": [
+            "provisioning",
+            "active",
+            "syncing",
+            "disabled",
+            "failed",
+            "unknown"
+          ],
+          "pattern": null
+        },
+        "lastCrawlAt": {
           "type": [
             "string",
             "null"
-          ]
-        },
-        "retryAt": {
+          ],
           "enum": null,
-          "pattern": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "sizeBytes": {
-          "enum": null,
-          "pattern": null,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "sourceId": {
-          "enum": null,
-          "pattern": null,
-          "type": "string"
-        },
-        "title": {
-          "enum": null,
-          "pattern": null,
-          "type": "string"
-        },
-        "youtubeKey": {
-          "enum": null,
-          "pattern": null,
-          "type": "string"
+          "pattern": null
         }
-      },
+      }
+    },
+    "MediaItem": {
       "required": [
         "id",
         "sourceId",
@@ -397,121 +563,128 @@
         "downloadedAt",
         "retryAt",
         "error"
-      ]
-    },
-    "MediaPage": {
+      ],
       "properties": {
-        "data": {
+        "id": {
+          "type": "string",
           "enum": null,
-          "pattern": null,
-          "type": "array"
+          "pattern": null
         },
-        "page": {
+        "sourceId": {
+          "type": "string",
           "enum": null,
-          "pattern": null,
-          "type": "object"
-        }
-      },
-      "required": [
-        "data",
-        "page"
-      ]
-    },
-    "Meta": {
-      "properties": {
-        "bridgeVersion": {
-          "enum": null,
-          "pattern": null,
-          "type": "string"
+          "pattern": null
         },
-        "tubesyncVersion": {
+        "youtubeKey": {
+          "type": "string",
           "enum": null,
-          "pattern": null,
-          "type": "string"
+          "pattern": null
         },
-        "upstreamCommit": {
+        "title": {
+          "type": "string",
           "enum": null,
-          "pattern": null,
-          "type": "string"
-        }
-      },
-      "required": [
-        "bridgeVersion",
-        "tubesyncVersion",
-        "upstreamCommit"
-      ]
-    },
-    "Source": {
-      "properties": {
-        "canonicalKey": {
-          "enum": null,
-          "pattern": null,
-          "type": "string"
+          "pattern": null
         },
-        "canonicalUrl": {
-          "enum": null,
-          "pattern": null,
-          "type": "string"
-        },
-        "directory": {
-          "enum": null,
-          "pattern": null,
-          "type": "string"
-        },
-        "lastCrawlAt": {
-          "enum": null,
-          "pattern": null,
+        "publishedAt": {
           "type": [
             "string",
             "null"
-          ]
-        },
-        "name": {
-          "enum": null,
-          "pattern": null,
-          "type": "string"
-        },
-        "normalizedState": {
-          "enum": [
-            "provisioning",
-            "active",
-            "syncing",
-            "disabled",
-            "failed",
-            "unknown"
           ],
-          "pattern": null,
-          "type": "string"
+          "enum": null,
+          "pattern": null
         },
         "rawState": {
+          "type": "string",
           "enum": null,
-          "pattern": null,
-          "type": "object"
+          "pattern": null
         },
-        "sourceType": {
+        "normalizedState": {
+          "type": "string",
           "enum": [
-            "channel",
-            "playlist"
+            "discovered",
+            "ineligible",
+            "queued",
+            "downloading",
+            "downloaded",
+            "skipped",
+            "failed",
+            "removed_upstream",
+            "unknown"
           ],
-          "pattern": null,
-          "type": "string"
+          "pattern": null
         },
-        "uuid": {
+        "eligible": {
+          "type": "boolean",
           "enum": null,
-          "pattern": null,
-          "type": "string"
+          "pattern": null
+        },
+        "relativePath": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": null,
+          "pattern": "^(?![A-Za-z]:)[^/\\\\].*$"
+        },
+        "filename": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": null,
+          "pattern": null
+        },
+        "sizeBytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "enum": null,
+          "pattern": null
+        },
+        "downloadedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": null,
+          "pattern": null
+        },
+        "retryAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": null,
+          "pattern": null
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": null,
+          "pattern": null
         }
-      },
+      }
+    },
+    "MediaPage": {
       "required": [
-        "uuid",
-        "sourceType",
-        "canonicalKey",
-        "canonicalUrl",
-        "name",
-        "directory",
-        "rawState",
-        "normalizedState"
-      ]
+        "data",
+        "page"
+      ],
+      "properties": {
+        "data": {
+          "type": "array",
+          "enum": null,
+          "pattern": null
+        },
+        "page": {
+          "type": "object",
+          "enum": null,
+          "pattern": null
+        }
+      }
     }
   }
 }
