@@ -1,7 +1,8 @@
 from django.urls import path
 
 from .views import CapabilitiesView, HealthLiveView, HealthReadyView, MetaView
-from .views_sources import SourceDetailView, SourceLookupView, SourceMediaView
+from .views_sources import SourceDetailView, SourceMediaView
+from .views_write import CreateSourceView, SyncSourceView, ValidateSourceView
 
 app_name = 'medianest_bridge'
 
@@ -23,8 +24,16 @@ urlpatterns = [
          CapabilitiesView.as_view(),
          name='capabilities'),
 
+    path('sources/validate',
+         ValidateSourceView.as_view(),
+         name='source-validate'),
+
+    # CreateSourceView subclasses SourceLookupView (views_sources.py) --
+    # GET is T2's key lookup, POST is T3's create-or-adopt. The
+    # contract's /sources path item has both operations at one path, so
+    # both verbs are handled by one view class here.
     path('sources',
-         SourceLookupView.as_view(),
+         CreateSourceView.as_view(),
          name='source-lookup'),
 
     # <str:...>, not Django's <uuid:...> converter: a malformed UUID
@@ -39,5 +48,9 @@ urlpatterns = [
     path('sources/<str:source_uuid>/media',
          SourceMediaView.as_view(),
          name='source-media'),
+
+    path('sources/<str:source_uuid>/sync',
+         SyncSourceView.as_view(),
+         name='source-sync'),
 
 ]

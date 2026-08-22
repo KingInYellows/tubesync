@@ -154,7 +154,14 @@ class BodySizeGateTestCase(BridgeTestCase):
         # passed and the request reached the view.
         self.assertEqual(response.status_code, 405)
 
-    def test_chunked_transfer_encoding_without_content_length_returns_413(self):
+    def test_chunked_transfer_encoding_without_content_length_is_checked_by_actual_read(
+        self,
+    ):
+        '''
+            T3 hardening reads actual bytes (bounded to limit + 1) rather than
+            rejecting chunked transfer encoding outright. An empty/small body
+            passes the size gate and reaches the view.
+        '''
         self.enable_bridge(
             MEDIANEST_BRIDGE_READ_ONLY='false',
             MEDIANEST_BRIDGE_MAX_BODY_BYTES='1024',
@@ -167,9 +174,7 @@ class BodySizeGateTestCase(BridgeTestCase):
         )
         request.META.pop('CONTENT_LENGTH', None)
         response = HealthLiveView.as_view()(request)
-        self.assertEqual(response.status_code, 413)
-        body = json.loads(response.content)
-        self.assertEqual(body['code'], 'REQUEST_TOO_LARGE')
+        self.assertEqual(response.status_code, 405)
 
 
 class RequestIdTestCase(BridgeTestCase):
