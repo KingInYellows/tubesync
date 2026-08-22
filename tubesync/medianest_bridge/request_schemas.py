@@ -52,7 +52,12 @@ def _errors_for_common_fields(body):
         url = body['canonicalUrl']
         if not isinstance(url, str) or not (1 <= len(url) <= 2048):
             errors.append('canonicalUrl must be a string of 1-2048 characters.')
-    if 'profile' in body and body['profile'] is not None:
+    if 'profile' in body:
+        # Present-but-null is still validated, not treated as omitted:
+        # the vendored contract's SourceProfile schema is `type: object`
+        # with no nullable/anyOf-null variant, so `"profile": null` is a
+        # schema-invalid value, not an absent one. _errors_for_profile()
+        # already rejects a non-dict value (None included) correctly.
         errors.extend(_errors_for_profile(body['profile']))
     return errors
 

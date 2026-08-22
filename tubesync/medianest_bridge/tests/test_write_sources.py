@@ -85,6 +85,20 @@ class ValidateSourceEndpointTestCase(BridgeTestCase):
         }, **self.auth_header())
         self.assertEqual(response.status_code, 400)
 
+    def test_null_profile_returns_400_not_treated_as_omitted(self):
+        # The vendored SourceProfile schema is `type: object` with no
+        # nullable/anyOf-null variant, so an explicit `"profile": null`
+        # is a schema-invalid value, not equivalent to omitting the key.
+        self.enable_bridge()
+        response = post_json(self.client, VALIDATE_URL, {
+            'sourceType': 'channel',
+            'canonicalKey': 'UCabc',
+            'canonicalUrl': 'https://www.youtube.com/channel/UCabc',
+            'profile': None,
+        }, **self.auth_header())
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(json.loads(response.content)['code'], 'SOURCE_INVALID')
+
     def test_invalid_source_type_enum_returns_400(self):
         self.enable_bridge()
         response = post_json(self.client, VALIDATE_URL, {
@@ -483,6 +497,52 @@ class CreateSourceRaceConditionTestCase(BridgeTransactionTestCase):
         self.assertNotIn('simulated unrecognized constraint violation', response.content.decode())
         self.assertNotIn('Traceback', response.content.decode())
         self.assertNotIn('IntegrityError', response.content.decode())
+
+    def test_key_collision_race_at_form_validation_returns_409_not_400(self):
+        '''
+            A concurrent create can also win the race in an earlier
+            window than form.save()'s own IntegrityError recovery covers:
+            source_forms.build_source_form() calls form.is_valid(), which
+            runs Django's own ModelForm.validate_unique() against
+            key/name/directory (all unique=True on Source) and queries
+            the DB itself. If a concurrent row lands between our manual
+            pre-check and that call, validate_unique() catches it and
+            form.is_valid() returns False -- without ever reaching
+            form.save() or its except IntegrityError block. Landed here
+            (not via TransactionTestCase/a real UNIQUE violation) because
+            validate_unique() fails gracefully via its own SELECT, not a
+            raised DB exception.
+        '''
+        from medianest_bridge import views_write
+
+        original_build_source_form = views_write.build_source_form
+        created = {}
+
+        def build_source_form_with_injected_race(*, source_type, key, name, directory):
+            if 'concurrent' not in created:
+                created['concurrent'] = Source.objects.create(
+                    source_type='i', key=key,
+                    name='Concurrent Winner', directory='concurrent_winner_dir_2',
+                )
+            return original_build_source_form(
+                source_type=source_type, key=key, name=name, directory=directory,
+            )
+
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with patch.object(views_write, 'build_source_form', build_source_form_with_injected_race):
+            response = post_json(self.client, SOURCES_URL, {
+                'sourceType': 'channel',
+                'canonicalKey': 'UCformracekeytest1234',
+                'canonicalUrl': 'https://www.youtube.com/channel/UCformracekeytest1234',
+                'name': 'Our Name Form Race',
+                'directory': 'our_dir_form_race',
+            }, **self.auth_header())
+
+        self.assertEqual(response.status_code, 409)
+        body = json.loads(response.content)
+        self.assertEqual(body['code'], 'SOURCE_CONFLICT')
+        self.assertEqual(body['existingSourceUuid'], str(created['concurrent'].pk))
+        self.assertEqual(Source.objects.filter(key='UCformracekeytest1234').count(), 1)
         self.assertFalse(Source.objects.filter(key='UCunrecognizedrace123').exists())
 
 

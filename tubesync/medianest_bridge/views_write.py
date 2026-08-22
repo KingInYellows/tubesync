@@ -192,6 +192,35 @@ class CreateSourceView(SourceLookupView):
             source_type=tubesync_source_type, key=canonical_key,
             name=name, directory=directory,
         )
+        if not form.is_valid():
+            # A concurrent create may have won the actual DB-level
+            # uniqueness check Django's own ModelForm.validate_unique()
+            # performs during build_source_form()'s own form.is_valid()
+            # call -- reached here, before form.save() and its own
+            # IntegrityError recovery below, if the race lands in this
+            # earlier window (key/name/directory are all unique=True on
+            # Source, so validate_unique() queries for exactly this).
+            # Re-query rather than trust the stale pre-check result, so a
+            # genuine key collision still returns 409 SOURCE_CONFLICT
+            # with the winner's uuid for adoption, not a generic 400 that
+            # gives the caller nothing to adopt.
+            #
+            # Checked BEFORE run_edit_source_checks() deliberately: that
+            # function calls form.save(commit=False), which raises
+            # ValueError unconditionally whenever form.errors is
+            # non-empty (Django's own BaseModelForm.save(), regardless of
+            # commit=), for ANY reason -- including this race. Only an
+            # already-valid form is safe to hand it.
+            winner = Source.objects.filter(key=canonical_key).first()
+            if winner:
+                return _conflict(request_id, winner)
+            if (
+                Source.objects.filter(name=name).exists()
+                or Source.objects.filter(directory=directory).exists()
+            ):
+                return _namespace_conflict(request_id)
+            return _invalid(request_id, [str(form.errors)])
+
         run_edit_source_checks(form)
         if not form.is_valid():
             return _invalid(request_id, [str(form.errors)])
