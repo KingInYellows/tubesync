@@ -1,0 +1,162 @@
+name: MediaNest Bridge Release Image
+
+# Fork-owned publish workflow for the medianest_bridge image (T5). This file
+# is intentionally separate from upstream's own .github/workflows/ci.yaml
+# and release.yaml, and neither of those files is modified by this change:
+# a merge/rebase from upstream (meeb/tubesync) can never conflict on this
+# file, and this file's fork-specific concerns (a distinct tag namespace,
+# the MEDIANEST_BRIDGE_UPSTREAM_SHA build-arg) stay entirely on the fork
+# side. See medianest_bridge/docs/upstream-sync.md for the fork's upstream
+# sync process this file is designed to survive unmodified.
+#
+# BLOCKED until GitHub Actions is enabled for this fork repository
+# (KingInYellows/tubesync) -- a recorded open item for Brad in the
+# program's requirements. This file has been authored and validated with
+# `actionlint` but has never actually run: it cannot run until Actions is
+# turned on for this repository. Do not infer a successful run from this
+# file's mere presence.
+#
+# Reuses this repo's own existing composite actions (.github/actions/*),
+# unmodified, the same way upstream's own release.yaml does -- FFmpeg-Builds
+# and yt-dlp/ejs release lookups are the same real external dependency this
+# Dockerfile has always had; this workflow does not invent a new one.
+
+env:
+  IMAGE_NAME: tubesync
+  REGISTRY: ghcr.io
+
+on:
+  push:
+    tags:
+      # A tag namespace distinct from upstream's own version tags (e.g.
+      # `v0.18.3`), so a future `git fetch upstream && git merge` can never
+      # produce a colliding tag with a fork release. Chosen, not inherited
+      # from upstream -- see medianest_bridge/docs/upstream-sync.md.
+      - 'bridge-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          Image tag to build/publish (e.g. bridge-v1.0.0-t5). Required for a
+          manual run since there is no tag ref to read one from.
+        required: true
+        type: string
+      push:
+        description: >-
+          Push the built image to ghcr.io. Leave unchecked for a build-only
+          dry run that still exercises the full build but publishes nothing.
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  info:
+    runs-on: ubuntu-latest
+    outputs:
+      IMAGE_NAME: ${{ env.IMAGE_NAME }}
+      REGISTRY: ${{ env.REGISTRY }}
+      tag: ${{ steps.tag.outputs.tag }}
+      upstream-sha: ${{ steps.upstream-sha.outputs.sha }}
+      lowercase-github-repository_owner: ${{ steps.owner.outputs.lowercase }}
+      ffmpeg-date: ${{ steps.ffmpeg.outputs.date }}
+      ffmpeg-version: ${{ steps.ffmpeg.outputs.version }}
+      ytdlp-latest-release: ${{ steps.yt-dlp.outputs.latest-release }}
+      ejs-latest-release: ${{ steps.ejs.outputs.latest-release }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve image tag
+        id: tag
+        shell: bash
+        run: |
+          if [ '${{ github.event_name }}' = 'workflow_dispatch' ]; then
+            tag='${{ inputs.tag }}'
+          else
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          test -n "${tag}" || { echo '::error::no image tag resolved'; exit 1; }
+          printf -- 'tag=%s\n' "${tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Read pinned upstream-base SHA
+        id: upstream-sha
+        shell: bash
+        run: |
+          # medianest_bridge/docs/UPSTREAM_SHA is the single canonical
+          # source for this value (see that file and
+          # medianest_bridge/README.md's "Compatibility reporting" section
+          # -- bridge-openapi.v1.yaml's Meta.upstreamCommit is documented
+          # as "Full git SHA of the upstream commit the fork tracks", the
+          # fixed upstream base this fork branched from, NOT this image's
+          # own build commit). Read here, not duplicated as a literal SHA
+          # in this workflow file, so an upstream re-sync only has one
+          # place to update.
+          file='tubesync/medianest_bridge/docs/UPSTREAM_SHA'
+          test -f "${file}" || { echo "::error::${file} not found"; exit 1; }
+          sha="$(tr -d '[:space:]' < "${file}")"
+          case "${sha}" in
+            ([0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) : ;;
+            (*) echo "::error::${file} does not contain a 40-character lowercase hex SHA: [${sha}]"; exit 1 ;;
+          esac
+          printf -- 'sha=%s\n' "${sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Lowercase github repository owner
+        id: owner
+        uses: ./.github/actions/string-case
+        with:
+          string: ${{ github.repository_owner }}
+
+      - name: Retrieve yt-dlp/FFmpeg-Builds releases with GitHub CLI
+        id: ffmpeg
+        uses: ./.github/actions/FFmpeg
+
+      - name: Retrieve yt-dlp/yt-dlp releases with GitHub CLI
+        id: yt-dlp
+        uses: ./.github/actions/yt-dlp
+
+      - name: Retrieve yt-dlp/ejs releases with GitHub CLI
+        id: ejs
+        uses: ./.github/actions/yt-dlp
+        with:
+          repository_name: ejs
+
+  build-and-publish:
+    needs: ['info']
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: ${{ github.repository }}-${{ github.workflow }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to ${{ needs.info.outputs.REGISTRY }}
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ needs.info.outputs.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish
+        uses: docker/build-push-action@v7
+        with:
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
+          tags: |
+            ${{ needs.info.outputs.REGISTRY }}/${{ needs.info.outputs.lowercase-github-repository_owner }}/${{ needs.info.outputs.IMAGE_NAME }}:${{ needs.info.outputs.tag }}
+          build-args: |
+            IMAGE_NAME=${{ needs.info.outputs.IMAGE_NAME }}
+            FFMPEG_DATE=${{ needs.info.outputs.ffmpeg-date }}
+            FFMPEG_VERSION=${{ needs.info.outputs.ffmpeg-version }}
+            YTDLP_DATE=${{ fromJSON(needs.info.outputs.ytdlp-latest-release).tag.name }}
+            YTDLP_EJS_VERSION=${{ fromJSON(needs.info.outputs.ejs-latest-release).tag.name }}
+            MEDIANEST_BRIDGE_UPSTREAM_SHA=${{ needs.info.outputs.upstream-sha }}
