@@ -1,0 +1,40 @@
+tubesync/medianest_bridge/docs/compatibility-matrix.md
+  s_36f755e68122c7::t_6c14da7e3ffac1 81
+  s_36f755e68122c7::t_6f3708844ef469 1-80,82-93
+Dockerfile
+  s_36f755e68122c7::t_13284214dc4fad 799-818,821
+tubesync/medianest_bridge/docs/image-build-proof.md
+  s_36f755e68122c7::t_90243e4e3daa9c 1-56,78-189
+  s_36f755e68122c7::t_71cb18bf4c56e4 57-77
+.github/workflows/medianest-bridge-release.yaml
+  s_36f755e68122c7::t_55eba2bd44ae5b 1-162
+tubesync/medianest_bridge/README.md
+  s_36f755e68122c7::t_e5f481ba246842 216
+  s_36f755e68122c7::t_5169d212899bd1 241-269
+  s_36f755e68122c7::t_518d4bd3c6a048 508-523
+  s_36f755e68122c7::t_b15121a9597701 37,54-58
+tubesync/medianest_bridge/docs/agpl-compliance.md
+  s_36f755e68122c7::t_b70e189a11a5f6 1-106
+tubesync/medianest_bridge/docs/rollback.md
+  s_36f755e68122c7::t_bdc8e9e13de3ad 1-58
+tubesync/medianest_bridge/docs/upstream-sync.md
+  s_36f755e68122c7::t_0e1c345654b4c3 1-118
+tubesync/medianest_bridge/docs/UPSTREAM_SHA
+  s_36f755e68122c7::t_c8f6de598623cb 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "3933e81d733aeb71c3438b23ceb54695fdf18b56",
+  "prompts": {},
+  "sessions": {
+    "s_36f755e68122c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2218c4e0-ce8c-47d2-a7f4-2c9f3474c829",
+        "model": "claude-fable-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
