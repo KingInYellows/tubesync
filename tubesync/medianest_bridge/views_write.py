@@ -255,7 +255,13 @@ class SyncSourceView(BridgeView):
         sync_dedup.find_pending_or_running_index_task() -- see that
         module's docstring for why get_source_index_task() alone (used by
         upstream's own SourceSyncNowView, which does NOT dedup at all) is
-        insufficient per the contract's own instruction.
+        insufficient per the contract's own instruction, and for the
+        current TRACEABILITY obligation #1 verification status (the
+        scheduled-not-started case -- including the ADR-0006
+        double-indexing scenario, create's 10-minute-delayed task
+        followed by an immediate sync-now call -- is dynamically verified
+        in this harness; the actively-running case and real-consumer
+        concurrency remain owed to M6/T4-T5 integration).
     '''
 
     def post(self, request, source_uuid, *args, **kwargs):

@@ -24,12 +24,28 @@
     ever firing a terminal signal cannot permanently block sync-now for
     a source.
 
-    Per the contract's own caveat ("This predicate is a T3 implementation
-    detail pending dynamic verification... this operation MUST NOT be
-    assumed to be a no-op-safe idempotent call until that verification
-    lands"): this is a static reading of the signal-handler code, not a
-    dynamically-verified guarantee against a live huey consumer. Treat it
-    as best-effort dedup, not a proven idempotency guarantee.
+    TRACEABILITY obligation #1 status (the contract's own caveat: "This
+    predicate is a T3 implementation detail pending dynamic
+    verification... this operation MUST NOT be assumed to be a no-op-safe
+    idempotent call until that verification lands"), reported precisely,
+    not overclaimed:
+
+    - VERIFIED, dynamically, in this harness: the scheduled-not-started
+      case -- medianest_bridge/tests/test_write_sources.py's
+      test_repeated_sync_does_not_duplicate_pending_task (a bare repeated
+      sync-now call) and test_create_then_immediate_sync_converges_to_one_task
+      (the ADR-0006 double-indexing scenario: create's 10-minute-delayed
+      task followed immediately by a 30-second-delay sync-now call) both
+      assert start_at IS NULL on the pending row before proving the
+      second call does not schedule a duplicate. This is the natural
+      state of a TaskHistory row in a test environment with no live huey
+      consumer -- not simulated -- since TaskHistory.schedule() writes
+      its row synchronously (common/models/tasks.py::th_schedule) but
+      only common/huey.py's EXECUTING signal handler ever sets start_at.
+    - NOT yet verified: the actively-running case (start_at == end_at)
+      and the predicate's behavior against a live huey consumer under
+      real concurrency. That confirmation remains owed to the M6/T4-T5
+      integration environment, where a running consumer actually exists.
 '''
 from django.conf import settings
 from django.db.models import F, Q

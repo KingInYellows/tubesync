@@ -315,20 +315,81 @@ class SyncSourceEndpointTestCase(BridgeTestCase):
         )
 
     def test_repeated_sync_does_not_duplicate_pending_task(self):
+        '''
+            TRACEABILITY obligation #1, scheduled-not-started half: proves
+            the dedup predicate catches a task that has been scheduled but
+            never picked up by a worker (start_at IS NULL), which
+            get_source_index_task() alone (running() only) would miss --
+            not just a coincidental "second call is a no-op" result.
+
+            start_at IS NULL is the natural state here, not simulated:
+            TaskHistory.schedule() writes its row synchronously
+            (common/models/tasks.py::th_schedule) but never sets start_at
+            itself -- only common/huey.py's EXECUTING signal handler does,
+            and this test environment has no live huey consumer to fire
+            that signal. Asserted explicitly below rather than left
+            implicit, so this test cannot silently stop testing what it
+            claims to if that environment assumption ever changes.
+        '''
         source = self._make_source()
         TaskHistory.objects.all().delete()
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
         self.client.post(self._sync_url(source), **self.auth_header())
-        first_count = TaskHistory.objects.filter(name='sync.tasks.index_source').count()
-        self.assertEqual(first_count, 1)
+        pending = TaskHistory.objects.get(name='sync.tasks.index_source')
+        self.assertIsNone(
+            pending.start_at,
+            'precondition for this test: the pending task must be '
+            'scheduled-but-not-started (start_at IS NULL), not merely '
+            'present, or this is not exercising the case '
+            'get_source_index_task() alone would miss',
+        )
 
         response = self.client.post(self._sync_url(source), **self.auth_header())
         self.assertEqual(response.status_code, 202)
         second_count = TaskHistory.objects.filter(name='sync.tasks.index_source').count()
         self.assertEqual(
             second_count, 1,
-            'a second sync-now call while the first is still pending must '
-            'not schedule a duplicate index_source task',
+            'a second sync-now call while the first is still scheduled-'
+            'but-not-started must not schedule a duplicate index_source task',
+        )
+
+    def test_create_then_immediate_sync_converges_to_one_task(self):
+        '''
+            The ADR-0006 double-indexing scenario, dynamically verified in
+            this harness (not merely reasoned about): POST /sources alone
+            schedules index_source with a 10-minute delay
+            (source_post_save signal); POST /sources/{uuid}/sync uses a
+            30-second delay. Calling sync-now immediately after create
+            must converge to ONE index_source TaskHistory row, not two --
+            the freshly-created 10-minute-delayed row is itself
+            scheduled-not-started (start_at IS NULL), so the same dedup
+            predicate that covers repeated sync-now calls must also cover
+            this create-then-sync sequence.
+        '''
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        create_response = post_json(self.client, SOURCES_URL, {
+            'sourceType': 'channel',
+            'canonicalKey': 'UCconvergetest1234567',
+            'canonicalUrl': 'https://www.youtube.com/channel/UCconvergetest1234567',
+            'name': 'Converge Test',
+            'directory': 'converge_test',
+        }, **self.auth_header())
+        self.assertEqual(create_response.status_code, 201)
+        self.assertEqual(
+            TaskHistory.objects.filter(name='sync.tasks.index_source').count(), 1,
+            'create alone should schedule exactly one index_source task',
+        )
+        source_uuid = json.loads(create_response.content)['uuid']
+
+        sync_response = self.client.post(
+            f'{SOURCES_URL}/{source_uuid}/sync', **self.auth_header(),
+        )
+        self.assertEqual(sync_response.status_code, 202)
+        self.assertEqual(
+            TaskHistory.objects.filter(name='sync.tasks.index_source').count(), 1,
+            'sync-now immediately after create must converge to one '
+            'index_source task, not schedule a second (double-indexing) '
+            'one alongside the 10-minute-delayed create-time task',
         )
 
     def test_nonexistent_source_returns_404(self):

@@ -20,7 +20,14 @@
        literal YouTube channel ID, URL https://www.youtube.com/channel/{key})
        not 'c''s (a /c/{name} handle, legacy and unstable). Consequence:
        MediaNest must supply a real YouTube channel ID as canonicalKey for
-       channel sources, not an @handle string.
+       channel sources, not an @handle string. ENDORSED by the contract
+       owner: slice-1 MediaNest accepts channel submissions only as
+       /channel/UC... URLs (or playlists) -- @handle and /c/name forms
+       are rejected on the MediaNest side with SOURCE_INVALID guidance,
+       since deterministic no-network derivation of a channel ID from a
+       handle is impossible. canonicalKey arriving at POST /sources is
+       therefore always a real channel ID or playlist ID, never a handle
+       this app would need to resolve itself.
 
     2. ValidateSourceRequest has no `directory` field, and (per DECISIONS
        #27 on the canonical contract, confirming this app's own
