@@ -1,0 +1,21 @@
+tubesync/medianest_bridge/docs/migration-upgrade-proof.md
+  s_36f755e68122c7::t_11ac05e39d59fc 1-121
+tubesync/medianest_bridge/tests/test_migrations.py
+  s_36f755e68122c7::t_c8d6b4215b8ef2 1-55
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "a23f089f4fde5d20ae670e38e1894bfbe8e83c48",
+  "prompts": {},
+  "sessions": {
+    "s_36f755e68122c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2218c4e0-ce8c-47d2-a7f4-2c9f3474c829",
+        "model": "claude-fable-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
