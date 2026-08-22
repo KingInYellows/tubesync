@@ -45,11 +45,24 @@ class ContractFixturesLockTestCase(SimpleTestCase):
         schemas = doc['components']['schemas']
         fixtures = json.loads(FIXTURES_PATH.read_text(encoding='utf-8'))
         for name, expected in fixtures['schemas'].items():
-            live_required = schemas[name].get('required', [])
+            live_schema = schemas[name]
+            live_required = live_schema.get('required', [])
             self.assertEqual(
                 sorted(expected['required']), sorted(live_required),
                 f'{name}.required drifted from the live YAML',
             )
+            live_properties = live_schema.get('properties', {})
+            for prop_name, expected_prop in expected['properties'].items():
+                live_prop = live_properties[prop_name]
+                self.assertEqual(
+                    expected_prop.get('type'), live_prop.get('type'),
+                    f'{name}.{prop_name}.type drifted from the live YAML',
+                )
+                if 'enum' in expected_prop:
+                    self.assertEqual(
+                        expected_prop['enum'], live_prop.get('enum'),
+                        f'{name}.{prop_name}.enum drifted from the live YAML',
+                    )
         live_component_names = sorted(
             schemas['HealthReady']['properties']['components']['required'],
         )

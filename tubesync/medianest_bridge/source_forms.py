@@ -48,9 +48,10 @@ from django.core.exceptions import SuspiciousFileOperation, ValidationError
 from django.forms.models import model_to_dict
 from django.utils._os import safe_join
 
-from sync.choices import Val, YouTube_SourceType
+from sync.choices import Val, YouTube_SourceType, youtube_validation_urls
 from sync.forms import SourceForm
 from sync.models import Source
+from sync.utils import validate_url
 
 CONTRACT_SOURCE_TYPES = ('channel', 'playlist')
 
@@ -80,6 +81,30 @@ _LIST_SHAPED_FIELDS = {'sponsorblock_categories'}
 
 def contract_source_type_to_tubesync(contract_source_type):
     return _CONTRACT_TO_TUBESYNC_SOURCE_TYPE[contract_source_type]
+
+
+def validate_canonical_url(contract_source_type, canonical_key, canonical_url):
+    '''
+        Validates canonicalUrl shape for the declared sourceType and
+        requires the URL's extracted key to equal canonicalKey. Used by
+        both POST /sources/validate and POST /sources.
+    '''
+    errors = []
+    tubesync_source_type = contract_source_type_to_tubesync(contract_source_type)
+    validator = youtube_validation_urls.get(tubesync_source_type)
+    try:
+        extracted_key = validate_url(canonical_url, validator)
+    except ValidationError as exc:
+        errors.append(
+            f'canonicalUrl does not match sourceType {contract_source_type!r}: {exc}',
+        )
+        return errors
+    if extracted_key != canonical_key:
+        errors.append(
+            f'canonicalUrl identifies key {extracted_key!r} but '
+            f'canonicalKey is {canonical_key!r}',
+        )
+    return errors
 
 
 def default_form_data():

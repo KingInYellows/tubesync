@@ -1,9 +1,10 @@
 import json
+import uuid
 from unittest.mock import patch
 
 from django.test import RequestFactory
 
-from ..views import BridgeView
+from ..views import BridgeView, HealthLiveView
 from .base import BRIDGE_TOKEN, BridgeTestCase
 
 LIVE_URL = '/api/medianest/v1/health/live'
@@ -105,8 +106,23 @@ class ReadOnlyGateTestCase(BridgeTestCase):
         response = self.client.post(LIVE_URL, **self.auth_header())
         self.assertEqual(response.status_code, 405)
 
+    def test_post_without_csrf_token_reaches_bridge_gates_not_csrf_middleware(self):
+        # CsrfViewMiddleware would return an HTML 403 before dispatch()
+        # unless BridgeView is CSRF-exempt. A JSON PROVIDER_READ_ONLY (or
+        # 405 when read-only is off) proves the request reached the bridge.
+        self.enable_bridge()
+        client = self.client_class(enforce_csrf_checks=True)
+        response = client.post(LIVE_URL, **self.auth_header())
+        self.assertEqual(response.status_code, 403)
+        body = json.loads(response.content)
+        self.assertEqual(body['code'], 'PROVIDER_READ_ONLY')
+
 
 class BodySizeGateTestCase(BridgeTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.factory = RequestFactory()
 
     def test_oversized_body_returns_413(self):
         self.enable_bridge(
@@ -138,29 +154,64 @@ class BodySizeGateTestCase(BridgeTestCase):
         # passed and the request reached the view.
         self.assertEqual(response.status_code, 405)
 
+    def test_chunked_transfer_encoding_without_content_length_is_checked_by_actual_read(
+        self,
+    ):
+        '''
+            T3 hardening reads actual bytes (bounded to limit + 1) rather than
+            rejecting chunked transfer encoding outright. An empty/small body
+            passes the size gate and reaches the view.
+        '''
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_READ_ONLY='false',
+            MEDIANEST_BRIDGE_MAX_BODY_BYTES='1024',
+        )
+        request = self.factory.generic(
+            'POST',
+            LIVE_URL,
+            HTTP_TRANSFER_ENCODING='chunked',
+            **self.auth_header(),
+        )
+        request.META.pop('CONTENT_LENGTH', None)
+        response = HealthLiveView.as_view()(request)
+        self.assertEqual(response.status_code, 405)
+
 
 class RequestIdTestCase(BridgeTestCase):
 
-    def test_echoes_supplied_request_id(self):
+    def test_echoes_supplied_valid_uuid_request_id(self):
         self.enable_bridge()
+        supplied = '550e8400-e29b-41d4-a716-446655440000'
         response = self.client.get(
-            LIVE_URL, HTTP_X_REQUEST_ID='caller-supplied-id', **self.auth_header(),
+            LIVE_URL, HTTP_X_REQUEST_ID=supplied, **self.auth_header(),
         )
-        self.assertEqual(response.headers['X-Request-ID'], 'caller-supplied-id')
+        self.assertEqual(response.headers['X-Request-ID'], supplied)
 
     def test_generates_request_id_when_absent(self):
         self.enable_bridge()
         response = self.client.get(LIVE_URL, **self.auth_header())
-        self.assertTrue(response.headers.get('X-Request-ID'))
+        generated = response.headers.get('X-Request-ID')
+        self.assertTrue(generated)
+        uuid.UUID(generated)
+
+    def test_invalid_supplied_request_id_is_replaced_with_uuid(self):
+        self.enable_bridge()
+        response = self.client.get(
+            LIVE_URL, HTTP_X_REQUEST_ID='caller-supplied-id', **self.auth_header(),
+        )
+        generated = response.headers['X-Request-ID']
+        self.assertNotEqual(generated, 'caller-supplied-id')
+        uuid.UUID(generated)
 
     def test_error_envelope_request_id_matches_header(self):
         self.enable_bridge()
+        supplied = '6ba7b810-9dad-11d1-80b4-00c04fd430c8'
         response = self.client.get(
-            LIVE_URL, HTTP_X_REQUEST_ID='err-id', HTTP_AUTHORIZATION='Bearer wrong',
+            LIVE_URL, HTTP_X_REQUEST_ID=supplied, HTTP_AUTHORIZATION='Bearer wrong',
         )
         body = json.loads(response.content)
-        self.assertEqual(body['requestId'], 'err-id')
-        self.assertEqual(response.headers['X-Request-ID'], 'err-id')
+        self.assertEqual(body['requestId'], supplied)
+        self.assertEqual(response.headers['X-Request-ID'], supplied)
 
 
 class _BoomView(BridgeView):

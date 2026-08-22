@@ -22,6 +22,7 @@
 import uuid
 
 from django.core.paginator import EmptyPage, Paginator
+from django.db.models import F
 from django.http import JsonResponse
 
 from sync.models import Media, Source
@@ -149,7 +150,8 @@ class SourceMediaView(BridgeView):
         queryset = (
             Media.objects
             .filter(source=source)
-            .order_by('-published', 'pk')
+            .select_related('source')
+            .order_by(F('published').desc(nulls_last=True), 'pk')
             .defer('metadata')
         )
         paginator = Paginator(queryset, limit)
@@ -158,7 +160,17 @@ class SourceMediaView(BridgeView):
         except EmptyPage:
             items = []
         else:
-            items = [mapping.serialize_media(item) for item in page_obj.object_list]
+            media_rows = list(page_obj.object_list)
+            download_tasks = mapping.batch_media_download_tasks(
+                [media.pk for media in media_rows],
+            )
+            items = [
+                mapping.serialize_media(
+                    media,
+                    download_task=download_tasks.get(str(media.pk), False),
+                )
+                for media in media_rows
+            ]
         return JsonResponse({
             'data': items,
             'page': {'page': page, 'limit': limit, 'total': paginator.count},

@@ -286,9 +286,13 @@ def check_ffmpeg():
             timeout=_SUBPROCESS_TIMEOUT_SECONDS,
             check=False,
         )
-        first_line = (result.stdout or '').splitlines()[0] if result.stdout else None
     except Exception:
-        first_line = None
+        return _status('unavailable', detail='ffmpeg version probe failed')
+    if result.returncode != 0:
+        return _status('unavailable', detail='ffmpeg version probe exited nonzero')
+    first_line = (result.stdout or '').splitlines()[0] if result.stdout else None
+    if not first_line:
+        return _status('unavailable', detail='ffmpeg version probe produced no output')
     return _status('healthy', version=first_line)
 
 

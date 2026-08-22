@@ -85,6 +85,12 @@ paths:
                 $ref: "#/components/schemas/HealthLive"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReadOnly"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "503":
+          $ref: "#/components/responses/ProviderUnavailable"
 
   /health/ready:
     get:
@@ -110,6 +116,12 @@ paths:
                 $ref: "#/components/schemas/HealthReady"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReadOnly"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "503":
+          $ref: "#/components/responses/ProviderUnavailable"
 
   /meta:
     get:
@@ -134,6 +146,12 @@ paths:
                 $ref: "#/components/schemas/Meta"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReadOnly"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "503":
+          $ref: "#/components/responses/ProviderUnavailable"
 
   /capabilities:
     get:
@@ -155,6 +173,12 @@ paths:
                 $ref: "#/components/schemas/Capabilities"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReadOnly"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "503":
+          $ref: "#/components/responses/ProviderUnavailable"
 
   /sources/validate:
     post:
@@ -512,6 +536,25 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    ProviderUnavailable:
+      description: >-
+        PROVIDER_UNAVAILABLE — the bridge is disabled (typically because
+        MEDIANEST_BRIDGE_TOKEN_FILE is unset, unreadable, or empty). The
+        bridge fails closed: an unconfigured bridge is not reachable at all.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RequestTooLarge:
+      description: >-
+        REQUEST_TOO_LARGE — the request body exceeds
+        MEDIANEST_BRIDGE_MAX_BODY_BYTES, or uses chunked transfer encoding
+        without a Content-Length header (which cannot be size-checked before
+        read).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
 
   schemas:
     Error:
@@ -549,6 +592,7 @@ components:
             # bounded body (MEDIANEST_BRIDGE_MAX_BODY_BYTES) on every request.
             - REQUEST_TOO_LARGE
             - INTERNAL_PROVIDER_ERROR
+            - REQUEST_TOO_LARGE
         detail:
           type: string
         requestId:

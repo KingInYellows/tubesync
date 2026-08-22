@@ -9,16 +9,10 @@
 '''
 import json
 
-from django.core.exceptions import ValidationError
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.http import JsonResponse
-from django.utils.translation import gettext_lazy as _
 
-from common.models import TaskHistory
-from sync.choices import youtube_validation_urls
 from sync.models import Source
-from sync.tasks import index_source
-from sync.utils import validate_url
 
 from . import mapping
 from .errors import error_response
@@ -27,9 +21,10 @@ from .source_forms import (
     build_source_form,
     contract_source_type_to_tubesync,
     run_edit_source_checks,
+    validate_canonical_url,
     validate_source_type_and_key,
 )
-from .sync_dedup import find_pending_or_running_index_task
+from .sync_dedup import schedule_sync_now_index
 from .views import BridgeView
 from .views_sources import SourceLookupView, _get_source_or_error
 
@@ -127,14 +122,11 @@ class ValidateSourceView(BridgeView):
         canonical_url = body['canonicalUrl']
         tubesync_source_type = contract_source_type_to_tubesync(contract_source_type)
 
-        validator = youtube_validation_urls.get(tubesync_source_type)
-        try:
-            validate_url(canonical_url, validator)
-        except ValidationError as exc:
-            return _invalid(
-                request_id,
-                [f'canonicalUrl does not match sourceType {contract_source_type!r}: {exc}'],
-            )
+        url_errors = validate_canonical_url(
+            contract_source_type, canonical_key, canonical_url,
+        )
+        if url_errors:
+            return _invalid(request_id, url_errors)
 
         field_errors = validate_source_type_and_key(
             source_type=tubesync_source_type, key=canonical_key,
@@ -195,9 +187,16 @@ class CreateSourceView(SourceLookupView):
 
         contract_source_type = body['sourceType']
         canonical_key = body['canonicalKey']
+        canonical_url = body['canonicalUrl']
         name = body['name']
         directory = body['directory']
         tubesync_source_type = contract_source_type_to_tubesync(contract_source_type)
+
+        url_errors = validate_canonical_url(
+            contract_source_type, canonical_key, canonical_url,
+        )
+        if url_errors:
+            return _invalid(request_id, url_errors)
 
         existing = Source.objects.filter(key=canonical_key).first()
         if existing:
@@ -214,6 +213,35 @@ class CreateSourceView(SourceLookupView):
             source_type=tubesync_source_type, key=canonical_key,
             name=name, directory=directory,
         )
+        if not form.is_valid():
+            # A concurrent create may have won the actual DB-level
+            # uniqueness check Django's own ModelForm.validate_unique()
+            # performs during build_source_form()'s own form.is_valid()
+            # call -- reached here, before form.save() and its own
+            # IntegrityError recovery below, if the race lands in this
+            # earlier window (key/name/directory are all unique=True on
+            # Source, so validate_unique() queries for exactly this).
+            # Re-query rather than trust the stale pre-check result, so a
+            # genuine key collision still returns 409 SOURCE_CONFLICT
+            # with the winner's uuid for adoption, not a generic 400 that
+            # gives the caller nothing to adopt.
+            #
+            # Checked BEFORE run_edit_source_checks() deliberately: that
+            # function calls form.save(commit=False), which raises
+            # ValueError unconditionally whenever form.errors is
+            # non-empty (Django's own BaseModelForm.save(), regardless of
+            # commit=), for ANY reason -- including this race. Only an
+            # already-valid form is safe to hand it.
+            winner = Source.objects.filter(key=canonical_key).first()
+            if winner:
+                return _conflict(request_id, winner)
+            if (
+                Source.objects.filter(name=name).exists()
+                or Source.objects.filter(directory=directory).exists()
+            ):
+                return _namespace_conflict(request_id)
+            return _invalid(request_id, [str(form.errors)])
+
         run_edit_source_checks(form)
         if not form.is_valid():
             return _invalid(request_id, _clean_form_errors(form))
@@ -291,16 +319,12 @@ class SyncSourceView(BridgeView):
         if error:
             return error
 
-        if not find_pending_or_running_index_task(str(source.pk)):
-            TaskHistory.schedule(
-                index_source,
-                str(source.pk),
-                delay=index_source.settings.get('delay'),
-                vn_fmt=_('Index media from source "{}" once'),
-                vn_args=(source.name,),
-            )
+        with transaction.atomic():
+            locked_source = Source.objects.select_for_update().get(pk=source.pk)
+            schedule_sync_now_index(locked_source)
         # else: a non-completed index_source task already exists for
-        # this source -- accepted (202) without scheduling a duplicate.
+        # this source -- accepted (202) without scheduling a duplicate,
+        # or a slower scheduled row was advanced to sync-now's delay.
 
         return _json_response(mapping.serialize_source(source), status=202)
 

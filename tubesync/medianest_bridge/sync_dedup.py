@@ -18,11 +18,47 @@
       - start_at set, != end_at     -> a later signal (COMPLETE/ERROR)
                                         moved end_at forward -> terminal
 
-    "non-completed" is the union of the first two states. Bounded to
-    MAX_RUN_TIME (matching sync.tasks.get_running_tasks()'s own
-    staleness window) so a worker that crashed mid-execution without
-    ever firing a terminal signal cannot permanently block sync-now for
-    a source.
+    "non-completed" is the union of the first two states. Both branches
+    are bounded by MAX_RUN_TIME (matching sync.tasks.get_running_tasks()'s
+    own staleness window), but against different columns, deliberately:
+
+      - actively-executing (start_at == end_at): bounded by end_at, so a
+        worker that crashed mid-execution without ever firing a terminal
+        signal cannot permanently block sync-now for a source.
+      - scheduled-but-not-started (start_at IS NULL): bounded by
+        scheduled_at, not end_at. end_at on a pending row records when it
+        was last enqueued/rescheduled (SIGNAL_ENQUEUED/SIGNAL_SCHEDULED
+        both set it to "now" at signal time, not the run time), so
+        cutting off on end_at would make a legitimately still-scheduled
+        task -- e.g. sync/signals.py's source_pre_save scheduling
+        index_source at task_run_at_dt, potentially days out for a long
+        index_schedule -- fall outside the window well before its actual
+        scheduled_at ever arrives. scheduled_at doesn't have that problem:
+        a task that is really still queued always has scheduled_at at or
+        after its own run time, however long ago it was last touched, so
+        it stays visible regardless of end_at. A task whose scheduled_at
+        has already passed by more than MAX_RUN_TIME, conversely, should
+        have executed by now and didn't -- that's the same "worker went
+        away" signal the running branch guards against, just for a task
+        that never got as far as EXECUTING. This also closes a revoke
+        path RevokeTaskView/_revoke_pending_index_task below don't cover:
+        common/huey.py's on_executing_remove_duplicates() can revoke a
+        duplicate task when a higher-priority one starts executing, and
+        that SIGNAL_REVOKED handling (historical_task) neither sets
+        start_at nor the [revoked] prefix (only SIGNAL_ENQUEUED's branch
+        ever sets verbose_name) -- without a scheduled_at bound, that
+        terminal-but-unmarked row would otherwise sit in "pending" forever.
+
+    Rows explicitly marked [revoked] (RevokeTaskView / this module's own
+    _revoke_pending_index_task) are excluded outright, regardless of
+    scheduled_at -- a revoked scheduled-but-never-started task still has
+    start_at IS NULL but is terminal, not queued.
+
+    schedule_sync_now_index() advances a slower scheduled-but-not-started
+    task (e.g. create's 10-minute-delay row) to sync-now's shorter delay
+    by revoking the old huey task, deleting the stale TaskHistory row, and
+    scheduling a fresh index_source -- converging to one runnable row without
+    leaving a duplicate alongside the create-time schedule.
 
     TRACEABILITY obligation #1 status (the contract's own caveat: "This
     predicate is a T3 implementation detail pending dynamic
@@ -50,19 +86,114 @@
 from django.conf import settings
 from django.db.models import F, Q
 from django.utils import timezone
+from django.utils.translation import gettext_lazy as _
 
 from common.models import TaskHistory
-from sync.tasks import get_model_tasks
+from sync.tasks import get_model_tasks, index_source
 
 INDEX_SOURCE_TASK_NAME = 'sync.tasks.index_source'
+_REVOKED_VERBOSE_PREFIX = '[revoked] '
 
 
 def find_pending_or_running_index_task(source_uuid_str):
+    '''
+        Returns the single most relevant matching row, deterministically
+        ordered rather than trusting an implicit DB order: TaskHistory has
+        no Meta.ordering, and Django's own docs are explicit that
+        .first()/.last() on an unordered queryset is undefined. That
+        matters here because upstream's own SourceSyncNowView
+        (sync/views/sources.py) does not dedup at all -- a native
+        dashboard sync-now click can leave a pending index_source row for
+        a source that a later bridge sync-now call must also see. Ordered
+        running-first (start_at non-null sorts before the pending
+        branch's NULL, via desc(nulls_last=True)) since an actively
+        executing task can't be preempted anyway, then soonest-
+        scheduled-first among pending rows -- so if multiple pending
+        rows exist (e.g. a native click's already-fast task alongside
+        this bridge's own slower create-time schedule),
+        schedule_sync_now_index() sees the fastest one and correctly
+        leaves it alone (its own scheduled_at <= sync-now's own delay)
+        instead of picking an arbitrary slower row, advancing that one,
+        and leaving the already-fast native task to also fire --
+        converging to two live tasks instead of one.
+    '''
     max_run_time = getattr(settings, 'MAX_RUN_TIME', 3600)
     cutoff = timezone.now() - timezone.timedelta(seconds=max_run_time)
-    base = TaskHistory.objects.filter(
-        Q(start_at__isnull=True) | Q(start_at=F('end_at')),
-        end_at__gt=cutoff,
-    )
+    base = TaskHistory.objects.exclude(
+        verbose_name__startswith=_REVOKED_VERBOSE_PREFIX,
+    ).filter(
+        Q(start_at__isnull=True, scheduled_at__gt=cutoff) |
+        Q(start_at=F('end_at'), end_at__gt=cutoff)
+    ).order_by(F('start_at').desc(nulls_last=True), 'scheduled_at')
     tqs = get_model_tasks(source_uuid_str, name=INDEX_SOURCE_TASK_NAME, qs=base)
     return tqs.first()
+
+
+def _is_actively_running(task):
+    return task.start_at is not None and task.start_at == task.end_at
+
+
+def _revoke_pending_index_task(pending_task):
+    '''
+        Marks pending_task [revoked] rather than deleting it.
+
+        common/huey.py's historical_task listens for every signal on
+        every queue (register_huey_signals()'s bare signal(queue=qn)
+        registration), SIGNAL_REVOKED included, and reacts to
+        queue.revoke_by_id() below by calling
+        TaskHistory.objects.get_or_create(task_id=pending_task.task_id,
+        ...) whenever that signal eventually fires (asynchronously, once
+        a live huey consumer processes it -- not necessarily before this
+        function returns). Deleting the row here would only be a race:
+        get_or_create would then recreate an unmarked row with the same
+        task_id, start_at still NULL (SIGNAL_REVOKED does not set it) and
+        no [revoked] prefix (only SIGNAL_ENQUEUED's branch ever sets
+        verbose_name, and only when the row does not already have one) --
+        resurrecting exactly the ghost "pending" row this function exists
+        to get rid of, still matched by find_pending_or_running_index_task()'s
+        own predicate above. Marking the still-existing row instead means
+        that get_or_create finds it by task_id and preserves the prefix.
+    '''
+    from django_huey import DJANGO_HUEY, get_queue
+
+    huey_queues = {
+        q.name: q for q in map(get_queue, DJANGO_HUEY.get('queues', {}))
+    }
+    queue = huey_queues.get(pending_task.queue)
+    if queue is not None:
+        queue.revoke_by_id(id=pending_task.task_id, revoke_once=True)
+    if not (pending_task.verbose_name or '').startswith(_REVOKED_VERBOSE_PREFIX):
+        pending_task.verbose_name = (
+            _REVOKED_VERBOSE_PREFIX + (pending_task.verbose_name or pending_task.name)
+        )
+        pending_task.save(update_fields=['verbose_name'])
+
+
+def schedule_sync_now_index(source):
+    '''
+        Schedules index_source for sync-now, deduplicating against
+        pending/running rows and advancing a slower scheduled-but-not-
+        started row to sync-now's delay when create already scheduled a
+        longer-delayed index.
+    '''
+    source_uuid_str = str(source.pk)
+    sync_delay = index_source.settings.get('delay') or 30
+    now = timezone.now()
+    sync_eta = now + timezone.timedelta(seconds=sync_delay)
+
+    pending = find_pending_or_running_index_task(source_uuid_str)
+    if pending is not None:
+        if _is_actively_running(pending):
+            return
+        if pending.start_at is None and pending.scheduled_at > sync_eta:
+            _revoke_pending_index_task(pending)
+        else:
+            return
+
+    TaskHistory.schedule(
+        index_source,
+        source_uuid_str,
+        delay=sync_delay,
+        vn_fmt=_('Index media from source "{}" once'),
+        vn_args=(source.name,),
+    )
