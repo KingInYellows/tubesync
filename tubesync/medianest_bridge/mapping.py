@@ -13,6 +13,7 @@ from functools import reduce
 from operator import or_ as _or_
 
 from django.db.models import Q
+from django.utils import timezone
 
 from common.models import TaskHistory
 from sync.choices import MediaState, Val, YouTube_SourceType
@@ -241,26 +242,65 @@ def map_media_state(raw_state):
     return _STATE_MAP.get(raw_state, 'unknown')
 
 
+def _task_has_override(task):
+    '''
+        True when this download_media_file task was scheduled with
+        override=True -- as sync/views/media.py's MediaRedownloadView
+        does. download_media_file(media_id, override=False) forwards
+        override straight into Media.download_checklist(skip_checks=...),
+        bypassing its media.skip / source.download_media rejection
+        entirely, so a task carrying override=True is not a no-op even
+        while skip/ineligible currently applies, and must not be
+        suppressed by _is_stale_given_current_media_state() below.
+
+        task_params[1] is repr(task_obj.kwargs) (common/models/tasks.py
+        ::th_schedule) -- a string, not a real dict -- so this is a
+        string check, matching how this codebase already keys off
+        task_params elsewhere (e.g. the istartswith prefix match in
+        batch_media_download_tasks()).
+    '''
+    if not task or len(task.task_params) < 2:
+        return False
+    return "'override': True" in (task.task_params[1] or '')
+
+
+def _is_stale_given_current_media_state(media, task, *, is_running):
+    '''
+        True when `task` no longer represents media's actual current
+        fate, because a later, explicit signal (skip, or the source
+        having download_media turned off) makes it irrelevant --
+        regardless of whether the task already failed or is merely still
+        pending. Never true for a currently-running task: an active
+        download always wins, matching get_download_state()'s own
+        precedence.
+
+        Covers two review findings:
+          - A terminal failure kept reporting "failed" after the fact
+            (get_download_state()'s skip/source.download_media checks
+            are unreachable whenever any task is passed in at all).
+          - A merely-pending (not yet started, not failed) task kept
+            reporting "queued" after the fact, even though
+            sync/models/media__tasks.py's download_checklist() will
+            reject it as a no-op the moment it actually starts (media.skip
+            or not source.download_media) -- UNLESS it carries
+            override=True, which bypasses that rejection, so such a task
+            is excluded from this suppression via _task_has_override().
+    '''
+    if not task or is_running:
+        return False
+    if not (media.skip or not media.source.download_media):
+        return False
+    return not _task_has_override(task)
+
+
 def serialize_media(media, *, download_task=_MISSING):
     if download_task is _MISSING:
         task = get_relevant_media_download_task(str(media.pk))
     else:
         task = download_task or False
 
-    # A terminal failure must not keep reporting "failed" once a later,
-    # explicit signal (skip, or the source having download_media turned
-    # off) makes it irrelevant. get_download_state()'s own skip/
-    # source.download_media checks are unreachable whenever any task is
-    # passed in at all (its `if task:` branch always returns before
-    # reaching them), so a failed-then-skipped media would otherwise
-    # report "failed" until the TaskHistory row ages out via task-
-    # history cleanup (normally up to 30 days). Safe to drop the task
-    # here without risking masking an active download: has_error() and
-    # "currently running" are mutually exclusive on the same row (see
-    # get_download_state()'s own if running(task): ... elif
-    # task.has_error(): ...), so a task with has_error() True is by
-    # construction never the running one.
-    if task and task.has_error() and (media.skip or not media.source.download_media):
+    is_running = bool(task) and getattr(task, 'locked_by_pid_running', lambda: False)()
+    if _is_stale_given_current_media_state(media, task, is_running=is_running):
         task = False
 
     raw_state = media.get_download_state(task or None)
@@ -290,14 +330,23 @@ def serialize_media(media, *, download_task=_MISSING):
         'sizeBytes': media.downloaded_filesize,
         'downloadedAt': _iso(media.download_date),
         # download_media_file's own @db_task decorator (sync/tasks.py)
-        # sets no retries= -- huey never automatically re-enqueues it on
-        # failure, and nothing else in this codebase reschedules a failed
-        # row either (confirmed: no retry/reschedule logic anywhere
-        # touches a failed_at row for this task name). A failed row's own
-        # scheduled_at is therefore always when THAT attempt ran, never a
-        # future retry time, so retryAt is unconditionally null here --
-        # not something this task type can ever have until upstream
-        # actually adds a retry mechanism for it.
-        'retryAt': None,
+        # sets no retries=, so its own scheduled_at never gets pushed
+        # forward on failure -- but sync/views/media.py's
+        # MediaRedownloadView explicitly passes retries=3, retry_delay=600
+        # when scheduling a manual redownload, and huey's own retry
+        # mechanism reschedules the SAME row (same task_id) to a genuine
+        # future scheduled_at on that path (common/huey.py's
+        # historical_task updates scheduled_at again on the subsequent
+        # SCHEDULED signal, without clearing the prior failed_at/
+        # last_error the ERROR signal already set). So "does this row
+        # still have a pending retry" is exactly "is its own scheduled_at
+        # still in the future" -- true for a mid-retry manual redownload,
+        # false for an exhausted/never-configured-to-retry failure, where
+        # scheduled_at is stuck at whenever that attempt itself ran.
+        'retryAt': (
+            _iso(task.scheduled_at)
+            if (task and has_error and task.scheduled_at > timezone.now())
+            else None
+        ),
         'error': get_error_message(task) if (task and has_error) else None,
     }

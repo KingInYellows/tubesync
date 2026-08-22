@@ -227,11 +227,34 @@ class SerializeMediaTaskStateTestCase(TestCase):
         self.assertIsNone(body['retryAt'])
         self.assertIsNone(body['error'])
 
-    def test_terminally_failed_task_maps_to_failed_with_error_no_retry(self):
-        # download_media_file has no huey retries= configured and
-        # nothing else reschedules a failed row, so retryAt is always
-        # null -- scheduled_at on a failed row records when THAT attempt
-        # ran, never a future retry (T2 review P2 finding).
+    def test_exhausted_failed_task_maps_to_failed_with_error_no_retry(self):
+        # An automatic download_media_file failure (no retries=
+        # configured for that call) never gets its scheduled_at pushed
+        # forward -- it stays at whenever that attempt itself ran, in
+        # the past. retryAt must be null: there is no pending retry.
+        source = make_source()
+        media = make_media(source)
+        past = timezone.now() - timezone.timedelta(seconds=30)
+        make_download_task(
+            media,
+            start_at=past,
+            end_at=timezone.now(),
+            scheduled_at=past,
+            failed_at=timezone.now(),
+            last_error='RuntimeError: network unreachable',
+        )
+        body = mapping.serialize_media(media)
+        self.assertEqual(body['normalizedState'], 'failed')
+        self.assertIsNone(body['retryAt'])
+        self.assertEqual(body['error'], 'network unreachable')
+
+    def test_failed_task_with_a_genuine_pending_retry_reports_retry_at(self):
+        # sync/views/media.py's MediaRedownloadView schedules
+        # download_media_file with retries=3, retry_delay=600 -- huey's
+        # own retry mechanism reschedules the SAME row to a real future
+        # scheduled_at after a failure, without clearing failed_at/
+        # last_error (T2 review P2 finding: "fresh evidence beyond the
+        # earlier terminal-failure case").
         source = make_source()
         media = make_media(source)
         past = timezone.now() - timezone.timedelta(seconds=30)
@@ -246,7 +269,7 @@ class SerializeMediaTaskStateTestCase(TestCase):
         )
         body = mapping.serialize_media(media)
         self.assertEqual(body['normalizedState'], 'failed')
-        self.assertIsNone(body['retryAt'])
+        self.assertIsNotNone(body['retryAt'])
         self.assertEqual(body['error'], 'network unreachable')
 
     def test_failed_task_does_not_mask_skipped_state(self):
@@ -282,6 +305,48 @@ class SerializeMediaTaskStateTestCase(TestCase):
         body = mapping.serialize_media(media)
         self.assertEqual(body['normalizedState'], 'ineligible')
         self.assertIsNone(body['error'])
+
+    def test_pending_task_does_not_mask_skipped_state(self):
+        # T2 review P2 finding: sync/models/media__tasks.py's
+        # download_checklist() rejects a still-pending download the
+        # moment it starts if media.skip is set -- reporting "queued"
+        # for that no-op-in-waiting is as misleading as reporting
+        # "failed" for a stale terminal failure was.
+        source = make_source()
+        media = make_media(source, skip=True, manual_skip=True)
+        make_download_task(
+            media, start_at=None,
+            scheduled_at=timezone.now() + timezone.timedelta(seconds=60),
+        )
+        body = mapping.serialize_media(media)
+        self.assertEqual(body['normalizedState'], 'skipped')
+
+    def test_pending_task_does_not_mask_ineligible_state(self):
+        source = make_source(download_media=False)
+        media = make_media(source)
+        make_download_task(
+            media, start_at=None,
+            scheduled_at=timezone.now() + timezone.timedelta(seconds=60),
+        )
+        body = mapping.serialize_media(media)
+        self.assertEqual(body['normalizedState'], 'ineligible')
+
+    def test_override_pending_task_survives_skip_suppression(self):
+        # download_media_file(media_id, override=True) forwards straight
+        # into download_checklist(skip_checks=True), bypassing the
+        # media.skip rejection entirely -- exactly what
+        # MediaRedownloadView relies on. Such a task genuinely will still
+        # download despite skip, so it must not be suppressed the way a
+        # plain pending task is.
+        source = make_source()
+        media = make_media(source, skip=True, manual_skip=True)
+        make_download_task(
+            media, start_at=None,
+            scheduled_at=timezone.now() + timezone.timedelta(seconds=60),
+            task_params=[[str(media.pk)], repr({'override': True})],
+        )
+        body = mapping.serialize_media(media)
+        self.assertEqual(body['normalizedState'], 'queued')
 
     def test_running_task_state_is_not_affected_by_skip(self):
         # Guards the "mutually exclusive" reasoning in serialize_media():
