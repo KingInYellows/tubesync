@@ -34,12 +34,15 @@ Two claims, verified separately, per the T4 hardening brief:
 ## Procedure (reproducible)
 
 ```bash
-# 1. A disposable worktree at the upstream-base commit this fork tracks
-#    (3b9d72f28dda9c931776f76e7428a72a24a57f82 -- confirmed identical to
-#    origin/main and upstream/main at fork creation time, per the T1
-#    upstream audit).
+# 1. A disposable worktree at the upstream-base commit this fork tracks --
+#    read from medianest_bridge/docs/UPSTREAM_SHA (the single canonical
+#    source, per upstream-sync.md's Step 3), not hardcoded here, so
+#    re-running this procedure after a re-pin checks out the *current*
+#    base, not the one recorded when this doc was first written. (The
+#    original pin was confirmed identical to origin/main and
+#    upstream/main at fork creation time, per the T1 upstream audit.)
 git worktree add --detach /tmp/upstream-base-checkout \
-  3b9d72f28dda9c931776f76e7428a72a24a57f82
+  "$(cat tubesync/medianest_bridge/docs/UPSTREAM_SHA)"
 
 mkdir -p /tmp/shared-upgrade-db
 

