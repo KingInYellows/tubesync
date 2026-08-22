@@ -5,6 +5,8 @@
     functions directly, independent of how T2's URL-exemption question is
     resolved.
 '''
+from unittest.mock import patch
+
 from django.test import TestCase
 from django.utils import timezone
 
@@ -91,6 +93,17 @@ class SerializeSourceTestCase(TestCase):
         source = make_source()
         body = mapping.serialize_source(source)
         self.assertIsNone(body['lastCrawlAt'])
+
+    def test_index_task_snapshot_is_consistent_between_raw_and_normalized(self):
+        source = make_source(last_crawl=timezone.now())
+        with patch('medianest_bridge.mapping.get_source_index_task', return_value=True):
+            body = mapping.serialize_source(source)
+        self.assertTrue(body['rawState']['indexTaskRunning'])
+        self.assertEqual(body['normalizedState'], 'syncing')
+        with patch('medianest_bridge.mapping.get_source_index_task', return_value=False):
+            body = mapping.serialize_source(source)
+        self.assertFalse(body['rawState']['indexTaskRunning'])
+        self.assertEqual(body['normalizedState'], 'active')
 
 
 class MediaStateMappingTestCase(TestCase):

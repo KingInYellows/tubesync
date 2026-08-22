@@ -248,6 +248,21 @@ class SourceMediaEndpointTestCase(BridgeTestCase):
         self.assertEqual(body['data'][0]['id'], str(newer.pk))
         self.assertEqual(body['data'][1]['id'], str(older.pk))
 
+    def test_null_published_sorts_after_dated_media(self):
+        source = make_source()
+        dated = make_media(
+            source, key='dated', title='Dated',
+            published=timezone.now() - timezone.timedelta(days=1),
+        )
+        undated = make_media(source, key='undated', title='Undated', published=None)
+        self.enable_bridge()
+        response = self.client.get(
+            f'{SOURCES_URL}/{source.pk}/media', **self.auth_header(),
+        )
+        body = json.loads(response.content)
+        self.assertEqual(body['data'][0]['id'], str(dated.pk))
+        self.assertEqual(body['data'][1]['id'], str(undated.pk))
+
 
 class CapabilitiesReflectsT2TestCase(BridgeTestCase):
 

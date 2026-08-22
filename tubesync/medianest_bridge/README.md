@@ -39,15 +39,15 @@ Four upstream files are touched, three of them minimal:
 1. `tubesync/tubesync/settings.py` -- `INSTALLED_APPS += 'medianest_bridge'`.
 2. `tubesync/tubesync/urls.py` -- one `include('medianest_bridge.urls')` at
    `api/medianest/v1/`.
-3. `tubesync/tubesync/settings.py` -- `BASICAUTH_ALWAYS_ALLOW_URIS` gains a
-   single prefix entry, `'/api/medianest/v1/'`, exempting the whole bridge
-   namespace from `BasicAuthMiddleware` (see "Auth model" below).
+3. `tubesync/tubesync/settings.py` -- `BASICAUTH_PREFIX_ALLOW_URIS` gains
+   `'/api/medianest/v1/'`, exempting the whole bridge namespace from
+   `BasicAuthMiddleware` (see "Auth model" below).
 4. `common/middleware.py` -- **a deliberate T2 fork deviation**, approved
    explicitly for this change: `BasicAuthMiddleware.process_request` now
-   treats an entry ending in `/` as a path-prefix match (`startswith`)
-   instead of requiring exact string equality. Every other entry (e.g.
-   `/healthcheck`) keeps the original exact-match behaviour, byte-identical
-   to before this change. This is generically useful beyond the bridge
+   checks a separate `BASICAUTH_PREFIX_ALLOW_URIS` tuple for path-prefix
+   matches (`startswith`), leaving `BASICAUTH_ALWAYS_ALLOW_URIS` as
+   exact-match only (byte-identical to before for every existing entry
+   like `/healthcheck`). This is generically useful beyond the bridge
    (any future exemption need with dynamic sub-paths), so it's flagged here
    as a candidate to propose upstream to `meeb/tubesync`, not just kept as
    a fork-only patch.
@@ -59,15 +59,16 @@ edited.
 ## Auth model
 
 `common/middleware.py`'s `BasicAuthMiddleware` wraps every request in the
-app unless it's exempted via `BASICAUTH_ALWAYS_ALLOW_URIS`. T1 originally
-listed each of its four routes as an individual exact-match entry, but
-that broke down once T2 added path-parameterized routes (`/sources/{sourceUuid}`,
-`/sources/{sourceUuid}/media`) -- a static tuple of exact strings can never
-enumerate "every valid source UUID." T2 replaced the four exact entries
-with one prefix entry, `'/api/medianest/v1/'`, matched via `startswith`
-(see "Fork delta" above) -- the entire bridge namespace is exempted as a
-unit, since every route under it enforces its own complete, independent
-auth in `BridgeView.dispatch()` regardless of Basic Auth.
+app unless it's exempted via `BASICAUTH_ALWAYS_ALLOW_URIS` (exact match)
+or `BASICAUTH_PREFIX_ALLOW_URIS` (prefix match). T1 originally listed
+each of its four routes as an individual exact-match entry, but that broke
+down once T2 added path-parameterized routes (`/sources/{sourceUuid}`,
+`/sources/{sourceUuid}/media`) -- a static tuple of exact strings can
+never enumerate "every valid source UUID." T2 added one prefix entry,
+`'/api/medianest/v1/'`, in `BASICAUTH_PREFIX_ALLOW_URIS` (see "Fork
+delta" above) -- the entire bridge namespace is exempted as a unit, since
+every route under it enforces its own complete, independent auth in
+`BridgeView.dispatch()` regardless of Basic Auth.
 
 Since the bridge's `Authorization` header carries a `Bearer <token>` value
 that Basic Auth's own parser cannot understand, this exemption is required

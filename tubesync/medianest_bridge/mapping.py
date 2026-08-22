@@ -12,6 +12,8 @@
 from sync.choices import MediaState, Val, YouTube_SourceType
 from sync.tasks import get_error_message, get_media_download_task, get_source_index_task
 
+_MISSING = object()
+
 
 def _iso(value):
     return value.isoformat() if value else None
@@ -30,7 +32,7 @@ def map_source_type(raw_source_type):
     return 'channel'
 
 
-def map_source_state(source):
+def map_source_state(source, *, index_task=None):
     '''
         Precedence, most-actionable-first (documented, not contract-defined
         -- see this module's docstring):
@@ -51,10 +53,17 @@ def map_source_state(source):
         "unknown" is never emitted by this function -- the above is
         exhaustive over is_active/has_failed/last_crawl/task-running, all
         of which are always determinable for an existing Source row.
+
+        index_task, when supplied, is a snapshot from a single
+        get_source_index_task() call shared with rawState.indexTaskRunning
+        so both fields cannot disagree if the task starts or finishes
+        between lookups.
     '''
     if source.has_failed:
         return 'failed'
-    if get_source_index_task(str(source.pk)):
+    if index_task is None:
+        index_task = get_source_index_task(str(source.pk))
+    if index_task:
         return 'syncing'
     if not source.is_active:
         return 'disabled'
@@ -64,6 +73,7 @@ def map_source_state(source):
 
 
 def serialize_source(source):
+    index_task = get_source_index_task(str(source.pk))
     return {
         'uuid': str(source.pk),
         'sourceType': map_source_type(source.source_type),
@@ -75,11 +85,33 @@ def serialize_source(source):
             'hasFailed': source.has_failed,
             'isActive': source.is_active,
             'lastCrawl': _iso(source.last_crawl),
-            'indexTaskRunning': bool(get_source_index_task(str(source.pk))),
+            'indexTaskRunning': bool(index_task),
         },
-        'normalizedState': map_source_state(source),
+        'normalizedState': map_source_state(source, index_task=index_task),
         'lastCrawlAt': _iso(source.last_crawl),
     }
+
+
+def batch_media_download_tasks(media_ids):
+    '''
+        Return {media_id_str: task_or_False} for a page of media rows.
+        Uses the same running-task predicate as get_media_download_task()
+        (contract: bridge-openapi.v1.yaml listSourceMedia description).
+    '''
+    id_set = {str(media_id) for media_id in media_ids}
+    if not id_set:
+        return {}
+    from sync.tasks import get_running_tasks
+    result = {media_id: False for media_id in id_set}
+    tqs = get_running_tasks().filter(name__endswith='download_media_file')
+    for task in tqs:
+        params = task.task_params
+        if not params or not params[0]:
+            continue
+        media_id = str(params[0][0])
+        if media_id in id_set:
+            result[media_id] = task
+    return result
 
 
 # TubeSync's real MediaState -> the contract's normalizedState enum.
@@ -108,8 +140,11 @@ def map_media_state(raw_state):
     return _STATE_MAP.get(raw_state, 'unknown')
 
 
-def serialize_media(media):
-    task = get_media_download_task(str(media.pk))
+def serialize_media(media, *, download_task=_MISSING):
+    if download_task is _MISSING:
+        task = get_media_download_task(str(media.pk))
+    else:
+        task = download_task or False
     raw_state = media.get_download_state(task or None)
     has_error = bool(task) and task.has_error()
 

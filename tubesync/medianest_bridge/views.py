@@ -35,7 +35,7 @@ class BridgeView(View):
         dispatch() rather than Django middleware. This is deliberate: adding
         an entry to settings.MIDDLEWARE would be a fourth upstream touch
         point, beyond the three the fork delta is scoped to (INSTALLED_APPS,
-        the URL include, and the BASICAUTH_ALWAYS_ALLOW_URIS exemption).
+        the URL include, and the BASICAUTH_PREFIX_ALLOW_URIS exemption).
 
         Gate order (checked in this sequence, each short-circuiting on
         failure): disabled -> CIDR -> bearer -> read-only -> body-size ->
