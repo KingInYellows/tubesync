@@ -51,6 +51,19 @@ jobs:
           repository_name: ejs
 
   docker-image:
+    # Deliberate fork divergence: exclude bridge-v* releases from this
+    # generic (upstream) publisher. `get-tag` resolves this workflow's tag
+    # from GITHUB_REF, which for a `release: published` event is exactly
+    # `refs/tags/<tag_name>` -- so a GitHub Release attached to a bridge-v*
+    # tag would otherwise make this job push
+    # ghcr.io/<owner>/tubesync:bridge-v*, the same ref
+    # medianest-bridge-release.yaml enforces as an immutable, upstream-SHA-
+    # stamped tag with no guard here. See
+    # medianest_bridge/docs/upstream-sync.md's "What a sync does not need
+    # to touch" section for the full rationale and the note to preserve
+    # this line across an upstream merge (chatgpt-codex-connector review,
+    # PR #5).
+    if: ${{ !startsWith(github.event.release.tag_name, 'bridge-v') }}
     concurrency:
       group: ${{ github.repository }}-${{ github.workflow }}
       cancel-in-progress: false
