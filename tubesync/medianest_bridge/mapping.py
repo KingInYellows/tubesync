@@ -9,6 +9,9 @@
     TubeSync-state-to-normalized-state precedence, so these are this app's
     own considered choices, not something guessed silently.
 '''
+from functools import reduce
+from operator import or_ as _or_
+
 from django.db.models import Q
 
 from common.models import TaskHistory
@@ -136,10 +139,22 @@ def batch_media_download_tasks(media_ids):
 
     remaining = {media_id for media_id in id_set if not result[media_id]}
     if remaining:
+        # Constrain the fallback query to the requested media_ids at the
+        # database level (the same task_params__istartswith prefix match
+        # sync.tasks.get_model_tasks() uses for a single ID, OR'd across
+        # this batch) -- without this, a page containing even one media
+        # with no pending/failed task would iterate every such row across
+        # the whole deployment's retained task history, since Python-side
+        # filtering alone can never empty `remaining` in that case.
+        id_filter = reduce(
+            _or_,
+            (Q(task_params__istartswith=f'[["{media_id}"') for media_id in remaining),
+        )
         pending_or_failed_qs = (
             TaskHistory.objects
             .filter(name__endswith='download_media_file')
             .filter(Q(failed_at__isnull=False) | Q(start_at__isnull=True))
+            .filter(id_filter)
             .order_by('-scheduled_at')
         )
         for task in pending_or_failed_qs:

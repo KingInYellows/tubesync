@@ -319,3 +319,27 @@ class BatchMediaDownloadTasksTestCase(TestCase):
         self.assertEqual(result[str(running_media.pk)].pk, running_task.pk)
         self.assertEqual(result[str(pending_media.pk)].pk, pending_task.pk)
         self.assertFalse(result[str(idle_media.pk)])
+
+    def test_fallback_query_is_scoped_to_the_requested_ids(self):
+        '''
+            T2 review P2 finding: a page containing even one media with no
+            pending/failed task must not fall back to scanning every
+            pending/failed download_media_file row across the whole
+            deployment -- the query itself must be constrained to the
+            requested media_ids, not just filtered in Python. An
+            unrelated source's failed task (outside this batch's id_set)
+            proves the fallback tier is DB-scoped: if it leaked in, this
+            test's idle_media would incorrectly resolve to that
+            unrelated task instead of staying False.
+        '''
+        source = make_source()
+        other_source = make_source(key='UC_other', name='Other', directory='other')
+        idle_media = make_media(source, key='idle')
+        unrelated_media = make_media(other_source, key='unrelated')
+        make_download_task(
+            unrelated_media,
+            failed_at=timezone.now(),
+            last_error='RuntimeError: unrelated failure',
+        )
+        result = mapping.batch_media_download_tasks([idle_media.pk])
+        self.assertFalse(result[str(idle_media.pk)])
