@@ -1,0 +1,7 @@
+{
+  "name": "TubeSync YouTube processing",
+  "install": "bash .cursor/install.sh",
+  "repositoryDependencies": [
+    "github.com/KingInYellows/medianest"
+  ]
+}
