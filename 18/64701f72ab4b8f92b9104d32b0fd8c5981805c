@@ -1,0 +1,21 @@
+tubesync/medianest_bridge/views.py
+  s_6f44432272f3fb::t_77c7396bc8c6fb 11-12
+  s_6f44432272f3fb::t_de9a12416ac577 38
+  s_6f44432272f3fb::t_d80af0c407f6ab 62-69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "1864701f72ab4b8f92b9104d32b0fd8c5981805c",
+  "prompts": {},
+  "sessions": {
+    "s_6f44432272f3fb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0cc3c93c-09c0-4006-8c37-39f39900f896",
+        "model": "claude-fable-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
