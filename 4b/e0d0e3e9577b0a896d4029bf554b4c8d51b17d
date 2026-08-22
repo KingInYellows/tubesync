@@ -1,0 +1,60 @@
+tubesync/medianest_bridge/source_forms.py
+  s_36f755e68122c7::t_af205e5bdf1898 1-2,9-24,38-61,72,74-80,115-116,118-119,125-128,131-139,142-164
+  s_36f755e68122c7::t_85cf8e6aeca960 3-8,25-37,62-71,73,81-114,117,120-124,129-130,140-141
+tubesync/medianest_bridge/views.py
+  s_36f755e68122c7::t_354b7cecc457f1 179-187
+  s_36f755e68122c7::t_e9c1da5d105343 33-76
+  s_36f755e68122c7::t_f3a7265e7f2934 166-170
+  s_36f755e68122c7::t_722cf5c7642264 245-249,251-254,258
+  s_36f755e68122c7::t_eec45a13b3ade6 9
+  s_36f755e68122c7::t_712bdb2c5ef038 100-112,115
+  s_36f755e68122c7::t_e7a1affda4a8c8 116
+tubesync/medianest_bridge/sync_dedup.py
+  s_36f755e68122c7::t_1fac0cd08a1b2b 1-52
+tubesync/medianest_bridge/errors.py
+  s_36f755e68122c7::t_4dad97a21b25d1 35,51-57
+tubesync/medianest_bridge/tests/test_sources.py
+  s_36f755e68122c7::t_d42910fb41c111 254,262-265
+tubesync/medianest_bridge/views_write.py
+  s_36f755e68122c7::t_88f98663abd6c6 1-13,15-29,31-33,35-84,91,94-117,123-135,137,143-223,225-230,232-262,264-280
+  s_36f755e68122c7::t_fd483ed289e158 30
+  s_36f755e68122c7::t_de026d5d5f1240 34
+  s_36f755e68122c7::t_18236d87db7a5d 85-90,92-93
+  s_36f755e68122c7::t_181b16dafd5886 118-122
+  s_36f755e68122c7::t_c345835f5af63e 224,231
+  s_36f755e68122c7::t_f858e55b0a0d8a 281-282
+  s_36f755e68122c7::t_126c904fa83679 136,138-142
+  s_36f755e68122c7::t_82233809990852 14
+  s_36f755e68122c7::t_8071b0c95510c0 263
+tubesync/medianest_bridge/README.md
+  s_36f755e68122c7::t_fb0ae92b01ae2b 390,394-406
+  s_36f755e68122c7::t_b959cc237bc473 9-22
+  s_36f755e68122c7::t_b7ec31359a760e 110-119,121-150
+  s_36f755e68122c7::t_41fafcda3bc1f7 271-324
+tubesync/medianest_bridge/request_schemas.py
+  s_36f755e68122c7::t_4c8a3882286cc6 1-112
+tubesync/medianest_bridge/urls.py
+  s_36f755e68122c7::t_ae1fe96f685eee 4-5,27-34,36,52-54
+  s_36f755e68122c7::t_41472b9d80504b 55
+tubesync/medianest_bridge/tests/test_write_sources.py
+  s_36f755e68122c7::t_54755908ae7774 1-376
+  s_36f755e68122c7::t_d27b69b0eb1e96 377-433
+tubesync/medianest_bridge/contract/contract_fixtures.json
+  s_36f755e68122c7::t_dbe365ea371254 515-555
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "4be0d0e3e9577b0a896d4029bf554b4c8d51b17d",
+  "prompts": {},
+  "sessions": {
+    "s_36f755e68122c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2218c4e0-ce8c-47d2-a7f4-2c9f3474c829",
+        "model": "claude-fable-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
