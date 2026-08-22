@@ -441,10 +441,35 @@ def _probe_youtube():
         `str(exc)`, which for `requests` exceptions commonly embeds the
         full request URL) plus latency -- nothing else about the request
         or failure is ever included in the returned detail.
+
+        allow_redirects=False, deliberately: `requests` defaults to
+        following redirects, which would silently resolve any 3xx to its
+        final destination before this function ever saw the 3xx status --
+        the `200 <= status_code < 400` check below would then only ever
+        observe the chain's last response, not the bare 3xx a redirecting
+        generate_204 would actually return. generate_204 isn't expected
+        to redirect at all, but a bare 3xx already proves reachability
+        (all this probe measures) without paying for a redirect chain's
+        extra requests and latency on top of it -- caught in review
+        before this shipped, not after.
+
+        timeout=_YOUTUBE_PROBE_TIMEOUT_SECONDS applies to the connect and
+        read phases SEPARATELY (requests/urllib3's own documented
+        semantics, not a bug here) -- worst-case wall time for one call
+        is closer to ~4s than a strict 2s ceiling. Still fully bounded
+        (this function is called at most once per
+        _YOUTUBE_CACHE_TTL_SECONDS, cached, never on every request) --
+        see this module's docstring for why that's an acceptable, not
+        merely tolerated, tradeoff versus _call_with_timeout's true
+        total-wall-time bound.
     '''
     start = time.monotonic()
     try:
-        response = requests.get(_YOUTUBE_PROBE_URL, timeout=_YOUTUBE_PROBE_TIMEOUT_SECONDS)
+        response = requests.get(
+            _YOUTUBE_PROBE_URL,
+            timeout=_YOUTUBE_PROBE_TIMEOUT_SECONDS,
+            allow_redirects=False,
+        )
     except requests.exceptions.RequestException as exc:
         latency_ms = round((time.monotonic() - start) * 1000, 1)
         return _status(

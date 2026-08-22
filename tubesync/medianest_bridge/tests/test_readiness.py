@@ -373,9 +373,23 @@ class YoutubeProbeTestCase(ReadinessCacheResetMixin, SimpleTestCase):
         args, kwargs = mock_get.call_args
         self.assertEqual(args[0], 'https://www.youtube.com/generate_204')
         self.assertEqual(kwargs.get('timeout'), readiness._YOUTUBE_PROBE_TIMEOUT_SECONDS)
+        self.assertIs(kwargs.get('allow_redirects'), False)
         self.assertNotIn('headers', kwargs)
         self.assertNotIn('cookies', kwargs)
         self.assertNotIn('auth', kwargs)
+
+    def test_bare_3xx_is_treated_as_healthy_without_following_it(self):
+        '''
+            requests defaults to following redirects, which would hide a
+            bare 3xx behind whatever the chain's final response was --
+            allow_redirects=False (asserted above) is what makes this
+            302-as-healthy interpretation actually reachable/meaningful,
+            not dead code that only ever sees a chain's last response.
+        '''
+        with patch.object(readiness.requests, 'get', return_value=self._response(302)) as mock_get:
+            result = readiness.check_youtube()
+        self.assertIs(mock_get.call_args.kwargs.get('allow_redirects'), False)
+        self.assertEqual(result['status'], 'healthy')
 
     def test_repeated_calls_within_ttl_do_not_reprobe(self):
         with patch.object(readiness.requests, 'get', return_value=self._response(204)) as mock_get:
