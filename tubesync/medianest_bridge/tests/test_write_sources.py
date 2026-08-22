@@ -4,9 +4,11 @@
 '''
 import json
 import uuid
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.db import IntegrityError
+from django.utils import timezone
 
 from common.models import TaskHistory
 from sync.models import Media, Source
@@ -99,6 +101,16 @@ class ValidateSourceEndpointTestCase(BridgeTestCase):
             'sourceType': 'channel',
             'canonicalKey': 'PLabcdefghij',
             'canonicalUrl': 'https://www.youtube.com/playlist?list=PLabcdefghij',
+        }, **self.auth_header())
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(json.loads(response.content)['code'], 'SOURCE_INVALID')
+
+    def test_url_key_mismatch_with_canonical_key_returns_400(self):
+        self.enable_bridge()
+        response = post_json(self.client, VALIDATE_URL, {
+            'sourceType': 'channel',
+            'canonicalKey': 'UCAAAAAAAAAAAAAAAAAAAA',
+            'canonicalUrl': 'https://www.youtube.com/channel/UCBBBBBBBBBBBBBBBBBB',
         }, **self.auth_header())
         self.assertEqual(response.status_code, 400)
         self.assertEqual(json.loads(response.content)['code'], 'SOURCE_INVALID')
@@ -198,6 +210,31 @@ class CreateSourceEndpointTestCase(BridgeTestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(Source.objects.get().source_type, 'p')
 
+    def test_invalid_canonical_url_returns_400(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        response = post_json(
+            self.client, SOURCES_URL,
+            self._valid_channel_body(canonicalUrl='x'),
+            **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(json.loads(response.content)['code'], 'SOURCE_INVALID')
+        self.assertEqual(Source.objects.count(), 0)
+
+    def test_url_key_mismatch_returns_400(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        response = post_json(
+            self.client, SOURCES_URL,
+            self._valid_channel_body(
+                canonicalKey='UCAAAAAAAAAAAAAAAAAAAA',
+                canonicalUrl='https://www.youtube.com/channel/UCBBBBBBBBBBBBBBBBBB',
+            ),
+            **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(json.loads(response.content)['code'], 'SOURCE_INVALID')
+        self.assertEqual(Source.objects.count(), 0)
+
     def test_create_schedules_index_source_task(self):
         '''
             Side effect, deliberate per ADR-0006: creating via the ORM
@@ -235,7 +272,9 @@ class CreateSourceEndpointTestCase(BridgeTestCase):
         response = post_json(
             self.client, SOURCES_URL,
             self._valid_channel_body(
-                canonicalKey='UCdifferentkeyabc12345', directory='another_dir',
+                canonicalKey='UCdifferentkeyabc12345',
+                canonicalUrl='https://www.youtube.com/channel/UCdifferentkeyabc12345',
+                directory='another_dir',
             ),  # same name, different key/directory
             **self.auth_header(),
         )
@@ -250,7 +289,9 @@ class CreateSourceEndpointTestCase(BridgeTestCase):
         response = post_json(
             self.client, SOURCES_URL,
             self._valid_channel_body(
-                canonicalKey='UCdifferentkeyabc12345', name='A Totally Different Name',
+                canonicalKey='UCdifferentkeyabc12345',
+                canonicalUrl='https://www.youtube.com/channel/UCdifferentkeyabc12345',
+                name='A Totally Different Name',
             ),  # same directory, different key/name
             **self.auth_header(),
         )
@@ -512,10 +553,8 @@ class SyncSourceEndpointTestCase(BridgeTestCase):
             (source_post_save signal); POST /sources/{uuid}/sync uses a
             30-second delay. Calling sync-now immediately after create
             must converge to ONE index_source TaskHistory row, not two --
-            the freshly-created 10-minute-delayed row is itself
-            scheduled-not-started (start_at IS NULL), so the same dedup
-            predicate that covers repeated sync-now calls must also cover
-            this create-then-sync sequence.
+            and must advance the slower create-time schedule to sync-now's
+            shorter delay rather than leaving the 10-minute wait intact.
         '''
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
         create_response = post_json(self.client, SOURCES_URL, {
@@ -530,6 +569,12 @@ class SyncSourceEndpointTestCase(BridgeTestCase):
             TaskHistory.objects.filter(name='sync.tasks.index_source').count(), 1,
             'create alone should schedule exactly one index_source task',
         )
+        before_sync = TaskHistory.objects.get(name='sync.tasks.index_source')
+        self.assertGreater(
+            before_sync.scheduled_at,
+            timezone.now() + timedelta(seconds=120),
+            'create-time index_source should use the long post-save delay',
+        )
         source_uuid = json.loads(create_response.content)['uuid']
 
         sync_response = self.client.post(
@@ -541,6 +586,40 @@ class SyncSourceEndpointTestCase(BridgeTestCase):
             'sync-now immediately after create must converge to one '
             'index_source task, not schedule a second (double-indexing) '
             'one alongside the 10-minute-delayed create-time task',
+        )
+        after_sync = TaskHistory.objects.get(name='sync.tasks.index_source')
+        self.assertLess(
+            after_sync.scheduled_at,
+            timezone.now() + timedelta(seconds=90),
+            'sync-now must advance the pending create-time task to its '
+            'shorter delay, not leave the 10-minute schedule intact',
+        )
+
+    def test_revoked_pending_task_does_not_block_sync(self):
+        '''
+            A terminal revoked scheduled-but-never-started row (marked
+            [revoked] by RevokeTaskView / huey reschedule) must not be
+            treated as a live pending index_source task.
+        '''
+        source = self._make_source()
+        TaskHistory.objects.all().delete()
+        stale = TaskHistory.objects.create(
+            name='sync.tasks.index_source',
+            task_id=str(uuid.uuid4()),
+            task_params=[['{}'.format(source.pk)], ''],
+            verbose_name='[revoked] Index media from source "x" once',
+            scheduled_at=timezone.now() + timedelta(seconds=600),
+            end_at=timezone.now(),
+        )
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        response = self.client.post(self._sync_url(source), **self.auth_header())
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(
+            TaskHistory.objects.filter(
+                name='sync.tasks.index_source',
+            ).exclude(pk=stale.pk).count(),
+            1,
+            'sync-now must schedule a fresh task when only a revoked row exists',
         )
 
     def test_nonexistent_source_returns_404(self):

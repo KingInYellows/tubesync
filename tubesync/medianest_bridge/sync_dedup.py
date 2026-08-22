@@ -24,6 +24,16 @@
     ever firing a terminal signal cannot permanently block sync-now for
     a source.
 
+    Rows explicitly marked [revoked] (RevokeTaskView / huey reschedule)
+    are excluded -- a revoked scheduled-but-never-started task still has
+    start_at IS NULL but is terminal, not queued.
+
+    schedule_sync_now_index() advances a slower scheduled-but-not-started
+    task (e.g. create's 10-minute-delay row) to sync-now's shorter delay
+    by revoking the old huey task, deleting the stale TaskHistory row, and
+    scheduling a fresh index_source -- converging to one runnable row without
+    leaving a duplicate alongside the create-time schedule.
+
     TRACEABILITY obligation #1 status (the contract's own caveat: "This
     predicate is a T3 implementation detail pending dynamic
     verification... this operation MUST NOT be assumed to be a no-op-safe
@@ -50,19 +60,69 @@
 from django.conf import settings
 from django.db.models import F, Q
 from django.utils import timezone
+from django.utils.translation import gettext_lazy as _
 
 from common.models import TaskHistory
-from sync.tasks import get_model_tasks
+from sync.tasks import get_model_tasks, index_source
 
 INDEX_SOURCE_TASK_NAME = 'sync.tasks.index_source'
+_REVOKED_VERBOSE_PREFIX = '[revoked] '
 
 
 def find_pending_or_running_index_task(source_uuid_str):
     max_run_time = getattr(settings, 'MAX_RUN_TIME', 3600)
     cutoff = timezone.now() - timezone.timedelta(seconds=max_run_time)
-    base = TaskHistory.objects.filter(
+    base = TaskHistory.objects.exclude(
+        verbose_name__startswith=_REVOKED_VERBOSE_PREFIX,
+    ).filter(
         Q(start_at__isnull=True) | Q(start_at=F('end_at')),
         end_at__gt=cutoff,
     )
     tqs = get_model_tasks(source_uuid_str, name=INDEX_SOURCE_TASK_NAME, qs=base)
     return tqs.first()
+
+
+def _is_actively_running(task):
+    return task.start_at is not None and task.start_at == task.end_at
+
+
+def _revoke_pending_index_task(pending_task):
+    from django_huey import DJANGO_HUEY, get_queue
+
+    huey_queues = {
+        q.name: q for q in map(get_queue, DJANGO_HUEY.get('queues', {}))
+    }
+    queue = huey_queues.get(pending_task.queue)
+    if queue is not None:
+        queue.revoke_by_id(id=pending_task.task_id, revoke_once=True)
+    pending_task.delete()
+
+
+def schedule_sync_now_index(source):
+    '''
+        Schedules index_source for sync-now, deduplicating against
+        pending/running rows and advancing a slower scheduled-but-not-
+        started row to sync-now's delay when create already scheduled a
+        longer-delayed index.
+    '''
+    source_uuid_str = str(source.pk)
+    sync_delay = index_source.settings.get('delay') or 30
+    now = timezone.now()
+    sync_eta = now + timezone.timedelta(seconds=sync_delay)
+
+    pending = find_pending_or_running_index_task(source_uuid_str)
+    if pending is not None:
+        if _is_actively_running(pending):
+            return
+        if pending.start_at is None and pending.scheduled_at > sync_eta:
+            _revoke_pending_index_task(pending)
+        else:
+            return
+
+    TaskHistory.schedule(
+        index_source,
+        source_uuid_str,
+        delay=sync_delay,
+        vn_fmt=_('Index media from source "{}" once'),
+        vn_args=(source.name,),
+    )

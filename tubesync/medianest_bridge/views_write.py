@@ -9,16 +9,10 @@
 '''
 import json
 
-from django.core.exceptions import ValidationError
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.http import JsonResponse
-from django.utils.translation import gettext_lazy as _
 
-from common.models import TaskHistory
-from sync.choices import youtube_validation_urls
 from sync.models import Source
-from sync.tasks import index_source
-from sync.utils import validate_url
 
 from . import mapping
 from .errors import error_response
@@ -27,9 +21,10 @@ from .source_forms import (
     build_source_form,
     contract_source_type_to_tubesync,
     run_edit_source_checks,
+    validate_canonical_url,
     validate_source_type_and_key,
 )
-from .sync_dedup import find_pending_or_running_index_task
+from .sync_dedup import schedule_sync_now_index
 from .views import BridgeView
 from .views_sources import SourceLookupView, _get_source_or_error
 
@@ -106,14 +101,11 @@ class ValidateSourceView(BridgeView):
         canonical_url = body['canonicalUrl']
         tubesync_source_type = contract_source_type_to_tubesync(contract_source_type)
 
-        validator = youtube_validation_urls.get(tubesync_source_type)
-        try:
-            validate_url(canonical_url, validator)
-        except ValidationError as exc:
-            return _invalid(
-                request_id,
-                [f'canonicalUrl does not match sourceType {contract_source_type!r}: {exc}'],
-            )
+        url_errors = validate_canonical_url(
+            contract_source_type, canonical_key, canonical_url,
+        )
+        if url_errors:
+            return _invalid(request_id, url_errors)
 
         field_errors = validate_source_type_and_key(
             source_type=tubesync_source_type, key=canonical_key,
@@ -174,9 +166,16 @@ class CreateSourceView(SourceLookupView):
 
         contract_source_type = body['sourceType']
         canonical_key = body['canonicalKey']
+        canonical_url = body['canonicalUrl']
         name = body['name']
         directory = body['directory']
         tubesync_source_type = contract_source_type_to_tubesync(contract_source_type)
+
+        url_errors = validate_canonical_url(
+            contract_source_type, canonical_key, canonical_url,
+        )
+        if url_errors:
+            return _invalid(request_id, url_errors)
 
         existing = Source.objects.filter(key=canonical_key).first()
         if existing:
@@ -270,16 +269,12 @@ class SyncSourceView(BridgeView):
         if error:
             return error
 
-        if not find_pending_or_running_index_task(str(source.pk)):
-            TaskHistory.schedule(
-                index_source,
-                str(source.pk),
-                delay=index_source.settings.get('delay'),
-                vn_fmt=_('Index media from source "{}" once'),
-                vn_args=(source.name,),
-            )
+        with transaction.atomic():
+            locked_source = Source.objects.select_for_update().get(pk=source.pk)
+            schedule_sync_now_index(locked_source)
         # else: a non-completed index_source task already exists for
-        # this source -- accepted (202) without scheduling a duplicate.
+        # this source -- accepted (202) without scheduling a duplicate,
+        # or a slower scheduled row was advanced to sync-now's delay.
 
         return _json_response(mapping.serialize_source(source), status=202)
 
