@@ -1,0 +1,1049 @@
+# Vendored copy -- NOT the canonical source. Do not edit directly.
+#
+# Canonical source: KingInYellows/medianest,
+#   docs/planning/tubesync-integration/bridge-openapi.v1.yaml
+#   @ ce17a28773a6f3866c9c9235ae4eae04f4bafff4 (2026-08-21)
+#
+# Vendored into this fork so the bridge app's conformance tests
+# (medianest_bridge/tests/test_contract_conformance.py) can validate
+# responses against the exact contract version they implement without a
+# cross-repository dependency at test time. If the canonical contract
+# changes, re-vendor this file (and regenerate
+# medianest_bridge/contract/contract_fixtures.json, see that file's own
+# header) rather than editing the schemas here independently.
+openapi: 3.1.0
+info:
+  title: MediaNest TubeSync Bridge API
+  version: "1.0.0"
+  summary: >-
+    Slice-1 minimal server-to-server bridge exposed by the medianest_bridge
+    Django app inside the KingInYellows/tubesync fork. Consumed only by the
+    MediaNest backend, never by a browser.
+  description: >-
+    This contract covers exactly the endpoints required for the first
+    vertical slice (an authenticated MediaNest user submits a playlist,
+    MediaNest creates/adopts a TubeSync source, TubeSync indexes and
+    downloads it, and the result reconciles into Plex). Endpoints not
+    required for that slice (PATCH/DELETE sources, media retry/skip/enable,
+    task listing) are intentionally out of scope for v1.0.0 and are recorded
+    as deferred in docs/planning/tubesync-integration/PR-ROADMAP.md and
+    ADR-0006. This is a normative contract: request/response shapes here are
+    load-bearing for T1-T3 (tubesync fork) and M3-M4 (MediaNest) implementers.
+externalDocs:
+  description: ADR-0006 and the reconciled technical specification
+  url: ../../../docs/adr/ADR-0006-tubesync-as-youtube-acquisition-provider.md
+
+servers:
+  - url: "{bridgeBaseUrl}/api/medianest/v1"
+    description: >-
+      Production: an administrator-configured LAN address or internal DNS
+      name on DOCKERDOWNLOAD (e.g. http://192.168.1.67:4848/api/medianest/v1).
+      Docker Compose service-name resolution (http://tubesync:4848/...) is
+      valid ONLY inside the single-host local integration harness, never in
+      production (ADR-0006 §2).
+    variables:
+      bridgeBaseUrl:
+        default: http://192.168.1.67:4848
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: diagnostics
+    description: Liveness, readiness, version, and capability reporting.
+  - name: sources
+    description: Source validation, creation/adoption, lookup, and sync.
+  - name: media
+    description: Per-source media listing (the Plex-reconciliation interface).
+
+paths:
+  /health/live:
+    get:
+      tags: [diagnostics]
+      operationId: getHealthLive
+      summary: Liveness probe
+      description: >-
+        Process can answer. Does not imply the application, database, or
+        any acquisition dependency is usable. Used for MediaNest's
+        provider-outage detection (PRD §10.3).
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: Process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthLive"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReadOnly"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "503":
+          $ref: "#/components/responses/ProviderUnavailable"
+
+  /health/ready:
+    get:
+      tags: [diagnostics]
+      operationId: getHealthReady
+      summary: Readiness probe with per-component breakdown
+      description: >-
+        Distinguishes liveness from the ability to actually perform
+        acquisition. Components a caller cannot verify MUST report
+        "unknown", never a fabricated "healthy". Secrets, cookie contents,
+        credentials, and raw command lines MUST NOT be returned.
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: >-
+            Readiness computed (status may itself be "degraded" or
+            "unavailable" — 200 means the readiness check itself succeeded).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthReady"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReadOnly"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "503":
+          $ref: "#/components/responses/ProviderUnavailable"
+
+  /meta:
+    get:
+      tags: [diagnostics]
+      operationId: getMeta
+      summary: Bridge, TubeSync, and upstream version metadata
+      description: >-
+        Populated from build-time labels/environment injected at image
+        build time, independent of whether the image was ever pushed to a
+        registry (the fork's CI cannot publish images until T5 adds a
+        fork-owned publish workflow; see RISKS.md). Must report truthfully
+        during T1-T4 local/CI builds where no push happens at all.
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: Version metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Meta"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReadOnly"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "503":
+          $ref: "#/components/responses/ProviderUnavailable"
+
+  /capabilities:
+    get:
+      tags: [diagnostics]
+      operationId: getCapabilities
+      summary: Capability negotiation
+      description: >-
+        MediaNest MUST derive available actions from this response, never
+        from the provider name or version alone.
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: Reported capabilities for this bridge instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Capabilities"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReadOnly"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "503":
+          $ref: "#/components/responses/ProviderUnavailable"
+
+  /sources/validate:
+    post:
+      tags: [sources]
+      operationId: validateSource
+      summary: Validate a candidate source before creation
+      description: >-
+        Validates using TubeSync application logic (SourceForm plus the
+        EditSourceMixin.form_valid checks — directory-traversal guard via
+        safe_join, and the media-format-example check). Does not persist
+        anything.
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ValidateSourceRequest"
+      responses:
+        "200":
+          description: Source is valid; metadata returned for display.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidatedSource"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /sources:
+    get:
+      tags: [sources]
+      operationId: listSourcesByKey
+      summary: Natural-key lookup (timeout/re-resolution recovery)
+      description: >-
+        Added beyond SUCCESS-SPEC's endpoint list. TubeSync's Source.uuid is
+        NOT stable across a native TubeSync deletion (DeleteSourceView
+        renames the original row and creates a new row with a new uuid that
+        inherits the canonical key/name/directory). This is the only
+        recovery path after a MediaNest timeout following an unconfirmed
+        POST /sources, and for re-resolving a stale
+        ProviderLink.externalSourceId. Exactly one of `key` MUST be
+        supplied; canonical key uniqueness bounds the result to zero or one
+        source.
+      parameters:
+        - name: key
+          in: query
+          required: true
+          description: Canonical external key (e.g. a YouTube channel or playlist ID).
+          schema:
+            type: string
+            minLength: 1
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: Zero or one matching source.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    maxItems: 1
+                    items:
+                      $ref: "#/components/schemas/Source"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    post:
+      tags: [sources]
+      operationId: createSource
+      summary: Create-or-adopt a source
+      description: >-
+        Attempts SourceForm(data).save() plus the EditSourceMixin extra
+        checks. On a `key` collision, returns 409 SOURCE_CONFLICT with the
+        existing source's uuid in the response body (adopt semantics) —
+        MediaNest adopts that uuid rather than treating it as a hard
+        failure. On a `name`/`directory` collision WITHOUT a matching `key`
+        collision, returns 400 SOURCE_NAMESPACE_CONFLICT (a genuinely
+        different canonical source; MUST NOT be merged by adopting its
+        uuid). Creation alone schedules TubeSync's own index_source with a
+        10-minute delay (source_post_save signal); callers SHOULD follow up
+        with POST /sources/{uuid}/sync for an acceptable first-run
+        experience (see ADR-0006 §4 and the dynamic-verification obligation
+        on double-indexing in TRACEABILITY.md).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSourceRequest"
+      responses:
+        "201":
+          description: Source created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Source"
+        "400":
+          description: >-
+            SOURCE_INVALID (validation failure not tied to a namespace
+            collision) or SOURCE_NAMESPACE_CONFLICT (name/directory
+            collision without a matching key collision — see description
+            above).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReadOnly"
+        "409":
+          description: >-
+            SOURCE_CONFLICT — a source with this canonical `key` already
+            exists. The response body's `existingSourceUuid` MUST be
+            adopted by the caller rather than treated as a failure.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Error"
+                  - type: object
+                    properties:
+                      existingSourceUuid:
+                        type: string
+                        format: uuid
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /sources/{sourceUuid}:
+    get:
+      tags: [sources]
+      operationId: getSource
+      summary: Source detail with derived status
+      parameters:
+        - $ref: "#/components/parameters/SourceUuid"
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: Source detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Source"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /sources/{sourceUuid}/sync:
+    post:
+      tags: [sources]
+      operationId: syncSource
+      summary: Request an immediate (sync-now) index
+      description: >-
+        Wraps TubeSync's SourceSyncNowView mechanism (approximately a
+        30-second delay vs. create's 10-minute delay). Bridge-side dedup
+        MUST check for any non-completed index_source TaskHistory row for
+        this source (running OR scheduled-but-not-started), not only
+        actively-running ones — get_source_index_task alone is
+        insufficient (it only detects start_at==end_at "actively executing"
+        rows). This predicate is a T3 implementation detail pending dynamic
+        verification (TRACEABILITY.md obligation #1); this operation MUST
+        NOT be assumed to be a no-op-safe idempotent call until that
+        verification lands.
+      parameters:
+        - $ref: "#/components/parameters/SourceUuid"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "202":
+          description: Sync accepted (task scheduled or already pending).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Source"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReadOnly"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /sources/{sourceUuid}/media:
+    get:
+      tags: [media]
+      operationId: listSourceMedia
+      summary: Paginated media for a source — the Plex-reconciliation interface
+      description: >-
+        This response's field set is settled by ADR-0006 §4 as the
+        interface M6's Plex reconciliation consumes; it MUST NOT change
+        without an ADR amendment. State is computed per-row via
+        Media.get_download_state(task) with the active task looked up per
+        item (sync/tasks.py get_media_download_task) — this is not a flat
+        model serialization, so page size is a real performance bound
+        (TRACEABILITY.md obligation #5, needs a load check before T2 ships).
+      parameters:
+        - $ref: "#/components/parameters/SourceUuid"
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: Page of media items.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaPage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >-
+        Authorization: Bearer <service-token>, compared server-side with
+        hmac.compare_digest (constant-time). An unset token disables the
+        bridge entirely (fail-closed). In production, combined with an
+        admin-configured MEDIANEST_BRIDGE_ALLOWED_CIDRS allowlist
+        (ADR-0006 §2/§3) — the bearer token alone is not sufficient access
+        control across the two-host LAN topology.
+
+  parameters:
+    SourceUuid:
+      name: sourceUuid
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CorrelationId:
+      name: X-Correlation-ID
+      in: header
+      required: false
+      description: >-
+        Client-supplied (MediaNest-generated) correlation identifier for one
+        logical operation that may span multiple bridge calls. Echoed back
+        by the bridge in its structured logs and in the `requestId` lineage
+        of the error envelope (SUCCESS-SPEC §9.1) so a single MediaNest
+        operation can be traced across both sides of the boundary. Not a
+        substitute for the response's own `requestId` — that identifies
+        this specific bridge request/response pair.
+      schema:
+        type: string
+        format: uuid
+    RequestId:
+      name: X-Request-ID
+      in: header
+      required: false
+      description: >-
+        Client-supplied (MediaNest-generated) identifier for this specific
+        bridge request. Echoed back by the bridge in its structured logs
+        and SHOULD match the `requestId` field the bridge returns in its
+        response body (both success and RFC 7807 error responses) when the
+        caller supplies one; the bridge generates its own if the header is
+        absent.
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >-
+        Accepted for forward compatibility with SUCCESS-SPEC §9.1/§10.3. The
+        bridge does NOT persist a key-to-result map in slice 1 (ADR-0006
+        §4) — natural-key conflict handling (409 SOURCE_CONFLICT) and
+        task-lookup dedup on sync-now cover slice-1's duplicate scenarios.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+    PageParam:
+      name: page
+      in: query
+      required: false
+      description: 1-indexed page number. Page/limit pagination is a recorded
+        deviation from SUCCESS-SPEC §9.6's cursor suggestion (ADR-0006 §4).
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    LimitParam:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+
+  responses:
+    BadRequest:
+      description: Request failed validation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing or invalid bearer token, or source CIDR not allowlisted.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: SOURCE_NOT_FOUND or MEDIA_NOT_FOUND.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RateLimited:
+      description: RATE_LIMITED.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ReadOnly:
+      description: >-
+        PROVIDER_READ_ONLY — the bridge is running with
+        `MEDIANEST_BRIDGE_READ_ONLY=true` (ADR-0006's fork configuration
+        section). This is the T1 default; mutation endpoints reject with
+        this response until an administrator explicitly enables writes.
+        Not retryable by flipping retry policy alone — the caller must wait
+        for the read-only flag to be cleared server-side.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ProviderUnavailable:
+      description: >-
+        PROVIDER_UNAVAILABLE — the bridge is disabled (typically because
+        MEDIANEST_BRIDGE_TOKEN_FILE is unset, unreadable, or empty). The
+        bridge fails closed: an unconfigured bridge is not reachable at all.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RequestTooLarge:
+      description: >-
+        REQUEST_TOO_LARGE — the request body exceeds
+        MEDIANEST_BRIDGE_MAX_BODY_BYTES, or uses chunked transfer encoding
+        without a Content-Length header (which cannot be size-checked before
+        read).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      description: >-
+        RFC 7807-style problem envelope, adopted verbatim from SUCCESS-SPEC
+        §9.7. Raw stack traces MUST NOT be returned.
+      type: object
+      required: [type, title, status, code, detail, requestId, retryable]
+      properties:
+        type:
+          type: string
+          format: uri
+          examples:
+            - "https://medianest.local/problems/source-conflict"
+        title:
+          type: string
+        status:
+          type: integer
+        code:
+          type: string
+          description: Stable machine-readable error code (slice-1 set below).
+          enum:
+            - PROVIDER_UNAVAILABLE
+            - PROVIDER_AUTHENTICATION_FAILED
+            - PROVIDER_READ_ONLY
+            - SOURCE_INVALID
+            - SOURCE_CONFLICT
+            - SOURCE_NAMESPACE_CONFLICT
+            - SOURCE_NOT_FOUND
+            - MEDIA_NOT_FOUND
+            - RATE_LIMITED
+            - INTERNAL_PROVIDER_ERROR
+            - REQUEST_TOO_LARGE
+        detail:
+          type: string
+        requestId:
+          type: string
+          format: uuid
+        retryable:
+          type: boolean
+
+    HealthLive:
+      type: object
+      required: [status, checkedAt]
+      properties:
+        status:
+          type: string
+          enum: [alive]
+        checkedAt:
+          type: string
+          format: date-time
+
+    ComponentStatus:
+      type: object
+      required: [status]
+      description: >-
+        A component the caller cannot verify MUST report "unknown", never a
+        fabricated "healthy". "not_configured" applies to optional
+        dependencies (e.g. cookies) that are legitimately absent.
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unavailable, unknown, not_configured]
+        version:
+          type: [string, "null"]
+        detail:
+          type: [string, "null"]
+          description: Sanitized diagnostic detail only. No secrets, cookie
+            contents, credentials, or raw command lines.
+
+    HealthReady:
+      type: object
+      required: [status, checkedAt, components]
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unavailable]
+        checkedAt:
+          type: string
+          format: date-time
+        components:
+          type: object
+          description: >-
+            Independently reported components. The upstream /healthcheck
+            endpoint (common/views.py HealthCheckView) is DB-liveness ONLY
+            and does not answer this question on its own — this readiness
+            check requires its own broader component breakdown.
+          required:
+            - application
+            - database
+            - queues
+            - workers
+            - ytDlp
+            - ffmpeg
+            - storage
+            - youtube
+            - cookies
+            - plex
+          properties:
+            application:
+              $ref: "#/components/schemas/ComponentStatus"
+            database:
+              $ref: "#/components/schemas/ComponentStatus"
+            queues:
+              $ref: "#/components/schemas/ComponentStatus"
+            workers:
+              $ref: "#/components/schemas/ComponentStatus"
+            ytDlp:
+              $ref: "#/components/schemas/ComponentStatus"
+            ffmpeg:
+              $ref: "#/components/schemas/ComponentStatus"
+            storage:
+              $ref: "#/components/schemas/ComponentStatus"
+            youtube:
+              $ref: "#/components/schemas/ComponentStatus"
+            cookies:
+              $ref: "#/components/schemas/ComponentStatus"
+            plex:
+              $ref: "#/components/schemas/ComponentStatus"
+
+    Meta:
+      type: object
+      required: [bridgeVersion, tubesyncVersion, upstreamCommit]
+      properties:
+        bridgeVersion:
+          type: string
+        tubesyncVersion:
+          type: string
+          description: >-
+            The upstream VERSION string is known stale in some builds; pin
+            by upstreamCommit, not this value alone.
+        upstreamCommit:
+          type: string
+          description: Full git SHA of the upstream commit the fork tracks.
+
+    Capabilities:
+      type: object
+      description: >-
+        Slice-1 subset of the full capability surface defined in
+        SUCCESS-SPEC §5.2. Only capabilities exercised by this contract are
+        listed; the remainder default to false until later phases implement
+        them.
+      required:
+        - health
+        - readSources
+        - validateChannelSource
+        - validatePlaylistSource
+        - createChannelSource
+        - createPlaylistSource
+        - syncSource
+        - readMedia
+      properties:
+        health:
+          type: boolean
+        readSources:
+          type: boolean
+        validateChannelSource:
+          type: boolean
+        validatePlaylistSource:
+          type: boolean
+        createChannelSource:
+          type: boolean
+        createPlaylistSource:
+          type: boolean
+        updateSource:
+          type: boolean
+          default: false
+        disableSource:
+          type: boolean
+          default: false
+        deleteSource:
+          type: boolean
+          default: false
+        syncSource:
+          type: boolean
+        readMedia:
+          type: boolean
+        retryMedia:
+          type: boolean
+          default: false
+        skipMedia:
+          type: boolean
+          default: false
+        enableMedia:
+          type: boolean
+          default: false
+        readTasks:
+          type: boolean
+          default: false
+        cancelTask:
+          type: boolean
+          default: false
+        retryTask:
+          type: boolean
+          default: false
+        oneOffVideoDownload:
+          type: boolean
+          default: false
+        pushEvents:
+          type: boolean
+          default: false
+        plexScan:
+          type: boolean
+          default: false
+        plexCollectionCreation:
+          type: boolean
+          default: false
+
+    SourceProfile:
+      type: object
+      description: Maps to an administrator-defined acquisition profile.
+      properties:
+        resolution:
+          type: string
+          examples: ["1080p"]
+        videoCodec:
+          type: string
+        audioCodec:
+          type: string
+        downloadCap:
+          type: string
+        subtitles:
+          type: array
+          items:
+            type: string
+        autoSubtitles:
+          type: boolean
+        sponsorBlock:
+          type: boolean
+        deleteOldMedia:
+          type: boolean
+        deleteRemovedMedia:
+          type: boolean
+        deleteFilesOnDisk:
+          type: boolean
+
+    ValidateSourceRequest:
+      type: object
+      description: >-
+        Field lengths are bounded to match TubeSync's actual `Source` model
+        constraints (`tubesync/sync/models/source.py`) where a stored field
+        exists, and to a sane generic bound otherwise. The bridge also
+        enforces `MEDIANEST_BRIDGE_MAX_BODY_BYTES` (default 65536,
+        ADR-0006's fork configuration section) as an overall request-body
+        size limit ahead of field-level validation.
+      required: [sourceType, canonicalKey, canonicalUrl]
+      properties:
+        sourceType:
+          type: string
+          enum: [channel, playlist]
+        canonicalKey:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: >-
+            Bounded to 100 to match `Source.key`'s `max_length=100` in
+            TubeSync (read-only-verified against `sync/models/source.py`).
+        canonicalUrl:
+          type: string
+          format: uri
+          minLength: 1
+          maxLength: 2048
+          description: >-
+            TubeSync does not persist a URL field (it derives `url` from
+            `source_type`/`key` as a computed property), so no
+            stricter-than-2048 TubeSync-side bound applies; 2048 is a sane
+            generic URL length bound.
+        profile:
+          $ref: "#/components/schemas/SourceProfile"
+
+    ValidatedSource:
+      type: object
+      required: [sourceType, canonicalKey, canonicalUrl, displayName]
+      properties:
+        sourceType:
+          type: string
+          enum: [channel, playlist]
+        canonicalKey:
+          type: string
+        canonicalUrl:
+          type: string
+          format: uri
+        displayName:
+          type: string
+        thumbnailUrl:
+          type: [string, "null"]
+          format: uri
+
+    CreateSourceRequest:
+      type: object
+      description: >-
+        Field lengths are bounded to match TubeSync's actual `Source` model
+        constraints (`tubesync/sync/models/source.py`) where a stored field
+        exists, and to a sane generic bound otherwise. The bridge also
+        enforces `MEDIANEST_BRIDGE_MAX_BODY_BYTES` (default 65536,
+        ADR-0006's fork configuration section) as an overall request-body
+        size limit ahead of field-level validation.
+      required: [sourceType, canonicalKey, canonicalUrl, name, directory]
+      properties:
+        sourceType:
+          type: string
+          enum: [channel, playlist]
+        canonicalKey:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: >-
+            Bounded to 100 to match `Source.key`'s `max_length=100` in
+            TubeSync (read-only-verified against `sync/models/source.py`).
+        canonicalUrl:
+          type: string
+          format: uri
+          minLength: 1
+          maxLength: 2048
+          description: >-
+            TubeSync does not persist a URL field (it derives `url` from
+            `source_type`/`key` as a computed property), so no
+            stricter-than-2048 TubeSync-side bound applies; 2048 is a sane
+            generic URL length bound.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: >-
+            MUST be derived deterministically and injectively from
+            canonicalKey, never from a user-supplied title (ADR-0006 §4;
+            preserves key's global uniqueness across name/directory).
+            Bounded to 100 to match `Source.name`'s `max_length=100` in
+            TubeSync.
+        directory:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: >-
+            Same injective-derivation requirement as `name`. Bounded to 100
+            to match `Source.directory`'s `max_length=100` in TubeSync.
+        profile:
+          $ref: "#/components/schemas/SourceProfile"
+
+    Source:
+      type: object
+      required:
+        - uuid
+        - sourceType
+        - canonicalKey
+        - canonicalUrl
+        - name
+        - directory
+        - rawState
+        - normalizedState
+      properties:
+        uuid:
+          type: string
+          format: uuid
+          description: >-
+            NOT stable across a native TubeSync deletion (rename-and-
+            recreate; ADR-0006 §4). Re-resolve via GET /sources?key= rather
+            than caching this as a permanent identifier across a delete
+            event.
+        sourceType:
+          type: string
+          enum: [channel, playlist]
+        canonicalKey:
+          type: string
+        canonicalUrl:
+          type: string
+          format: uri
+        name:
+          type: string
+        directory:
+          type: string
+        rawState:
+          type: object
+          description: >-
+            Bounded diagnostic metadata only (has_failed, is_active,
+            last_crawl, whether an index task is running). Never load-
+            bearing for MediaNest logic.
+        normalizedState:
+          type: string
+          description: >-
+            Bridge-observable subset of SUCCESS-SPEC §6.1's source-state
+            enum. pending/validating/awaiting_approval/degraded are
+            MediaNest-side-only concepts with no TubeSync analog and are
+            never emitted here. deleting/deleted have no clean TubeSync
+            mapping (native delete is rename-and-replace, not a state
+            transition) and are also never emitted by the bridge in slice 1
+            — a MediaNest-side timeout/lookup miss is the deleted signal.
+          enum:
+            - provisioning
+            - active
+            - syncing
+            - disabled
+            - failed
+            - unknown
+        lastCrawlAt:
+          type: [string, "null"]
+          format: date-time
+
+    MediaItem:
+      type: object
+      description: >-
+        Field set settled verbatim by ADR-0006 §4 / SUCCESS-SPEC §9.4 as
+        the Plex-reconciliation interface. Do not add or remove fields
+        without an ADR amendment.
+      required:
+        - id
+        - sourceId
+        - youtubeKey
+        - title
+        - publishedAt
+        - rawState
+        - normalizedState
+        - eligible
+        - relativePath
+        - filename
+        - sizeBytes
+        - downloadedAt
+        - retryAt
+        - error
+      properties:
+        id:
+          type: string
+          format: uuid
+        sourceId:
+          type: string
+          format: uuid
+        youtubeKey:
+          type: string
+        title:
+          type: string
+        publishedAt:
+          type: [string, "null"]
+          format: date-time
+        rawState:
+          type: string
+          description: Provider-specific diagnostic value only.
+        normalizedState:
+          type: string
+          description: >-
+            Media.get_download_state(task) computed with the active task
+            looked up per row. `processing` (yt-dlp postprocessing) has no
+            separate TubeSync-observable signal and is collapsed into
+            `downloading` for slice 1. `removed_upstream` is RESERVED and
+            UNMAPPED for slice 1 — no confirmed TubeSync analog was found
+            by source inspection; the bridge MUST NOT emit it until a
+            follow-up inspection of delete_removed_media behavior on
+            re-index is completed and this contract is amended.
+          enum:
+            - discovered
+            - ineligible
+            - queued
+            - downloading
+            - downloaded
+            - skipped
+            - failed
+            - removed_upstream
+            - unknown
+        eligible:
+          type: boolean
+          description: Derived from can_download (see normalizedState mapping notes).
+        relativePath:
+          type: [string, "null"]
+          pattern: '^(?![A-Za-z]:)[^/\\].*$'
+          description: >-
+            Relative to the configured download root only. Host absolute
+            paths MUST NOT be returned (SUCCESS-SPEC §9.4/§13.3). The pattern
+            rejects any value starting with `/` or `\` (POSIX/Windows
+            absolute-path roots) and any value starting with a drive letter
+            (`C:...`); it does not apply to a `null` value. This is a
+            schema-level backstop, not a substitute for the bridge enforcing
+            the download-root boundary server-side.
+        filename:
+          type: [string, "null"]
+        sizeBytes:
+          type: [integer, "null"]
+        downloadedAt:
+          type: [string, "null"]
+          format: date-time
+        retryAt:
+          type: [string, "null"]
+          format: date-time
+        error:
+          type: [string, "null"]
+          description: Sanitized error summary only. No raw stack traces.
+
+    MediaPage:
+      type: object
+      required: [data, page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/MediaItem"
+        page:
+          type: object
+          required: [page, limit, total]
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            total:
+              type: integer

@@ -1,0 +1,232 @@
+{
+  "_provenance": {
+    "note": "Generated once from the vendored YAML via PyYAML (a transitive dependency of hat-syslog, not a new Pipfile dependency) and checked in so bridge tests can assert contract shape using only the stdlib json module. test_contract_conformance.py sha256-locks this file against the YAML above and, when PyYAML happens to be importable in the test environment, additionally cross-checks this fixture was derived correctly. Regenerate together with the sha256 whenever the vendored YAML is re-vendored.",
+    "source": "medianest_bridge/contract/bridge-openapi.v1.yaml",
+    "source_sha256": "464d9111649742698b32feb708f3ac0ae2e42947d61e5acdd8ec602b4febcfea"
+  },
+  "health_ready_component_names": [
+    "application",
+    "cookies",
+    "database",
+    "ffmpeg",
+    "plex",
+    "queues",
+    "storage",
+    "workers",
+    "youtube",
+    "ytDlp"
+  ],
+  "schemas": {
+    "HealthLive": {
+      "required": [
+        "status",
+        "checkedAt"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "alive"
+          ]
+        },
+        "checkedAt": {
+          "type": "string"
+        }
+      }
+    },
+    "HealthReady": {
+      "required": [
+        "status",
+        "checkedAt",
+        "components"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "healthy",
+            "degraded",
+            "unavailable"
+          ]
+        },
+        "checkedAt": {
+          "type": "string"
+        },
+        "components": {
+          "type": "object"
+        }
+      }
+    },
+    "ComponentStatus": {
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "healthy",
+            "degraded",
+            "unavailable",
+            "unknown",
+            "not_configured"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "Meta": {
+      "required": [
+        "bridgeVersion",
+        "tubesyncVersion",
+        "upstreamCommit"
+      ],
+      "properties": {
+        "bridgeVersion": {
+          "type": "string"
+        },
+        "tubesyncVersion": {
+          "type": "string"
+        },
+        "upstreamCommit": {
+          "type": "string"
+        }
+      }
+    },
+    "Capabilities": {
+      "required": [
+        "health",
+        "readSources",
+        "validateChannelSource",
+        "validatePlaylistSource",
+        "createChannelSource",
+        "createPlaylistSource",
+        "syncSource",
+        "readMedia"
+      ],
+      "properties": {
+        "health": {
+          "type": "boolean"
+        },
+        "readSources": {
+          "type": "boolean"
+        },
+        "validateChannelSource": {
+          "type": "boolean"
+        },
+        "validatePlaylistSource": {
+          "type": "boolean"
+        },
+        "createChannelSource": {
+          "type": "boolean"
+        },
+        "createPlaylistSource": {
+          "type": "boolean"
+        },
+        "updateSource": {
+          "type": "boolean"
+        },
+        "disableSource": {
+          "type": "boolean"
+        },
+        "deleteSource": {
+          "type": "boolean"
+        },
+        "syncSource": {
+          "type": "boolean"
+        },
+        "readMedia": {
+          "type": "boolean"
+        },
+        "retryMedia": {
+          "type": "boolean"
+        },
+        "skipMedia": {
+          "type": "boolean"
+        },
+        "enableMedia": {
+          "type": "boolean"
+        },
+        "readTasks": {
+          "type": "boolean"
+        },
+        "cancelTask": {
+          "type": "boolean"
+        },
+        "retryTask": {
+          "type": "boolean"
+        },
+        "oneOffVideoDownload": {
+          "type": "boolean"
+        },
+        "pushEvents": {
+          "type": "boolean"
+        },
+        "plexScan": {
+          "type": "boolean"
+        },
+        "plexCollectionCreation": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Error": {
+      "required": [
+        "type",
+        "title",
+        "status",
+        "code",
+        "detail",
+        "requestId",
+        "retryable"
+      ],
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "status": {
+          "type": "integer"
+        },
+        "code": {
+          "type": "string",
+          "enum": [
+            "PROVIDER_UNAVAILABLE",
+            "PROVIDER_AUTHENTICATION_FAILED",
+            "PROVIDER_READ_ONLY",
+            "SOURCE_INVALID",
+            "SOURCE_CONFLICT",
+            "SOURCE_NAMESPACE_CONFLICT",
+            "SOURCE_NOT_FOUND",
+            "MEDIA_NOT_FOUND",
+            "RATE_LIMITED",
+            "INTERNAL_PROVIDER_ERROR",
+            "REQUEST_TOO_LARGE"
+          ]
+        },
+        "detail": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}
