@@ -17,8 +17,26 @@ docker pull ghcr.io/kinginyellows/tubesync:<previous-tag>
 # stop the current container, start the previous tag in its place
 ```
 
+**Gate this on both tags sharing the same upstream base first.** This
+recipe is safe exactly when `medianest_bridge`'s own zero-migration
+guarantee applies (see below) -- but that guarantee says nothing about
+*upstream* TubeSync's own Django migrations. If the release being rolled
+back FROM was built against a newer `UPSTREAM_SHA` than the release being
+rolled back TO (compare each tag's `GET /meta` `upstreamCommit` field, or
+see `medianest_bridge/docs/compatibility-matrix.md`), and upstream shipped
+a migration in that gap that has already run against the live database,
+the older image's bundled upstream code can fail to read -- or corrupt --
+rows that migration touched, even though this bridge app itself never
+migrates anything. Before pulling the previous tag: confirm both tags'
+`upstreamCommit` values are identical. If they differ, treat this as an
+upstream rollback (follow upstream's own migration-rollback procedure for
+the intervening commits) before or instead of swapping images -- "just run
+the old tag" is only a complete answer when the upstream base didn't move
+(chatgpt-codex-connector review).
+
 No image-side state migration, no data transformation, no special
-procedure -- the previous tag is a complete, previously-working image.
+procedure otherwise -- the previous tag is a complete, previously-working
+image whenever that gate holds.
 
 ## Why this is safe: zero migrations, always
 
@@ -36,11 +54,13 @@ Because of this, a rollback from a newer bridge image to an older one is
 **config-only**: there is no forward-only schema state a downgrade could
 strand. The older image's Django app connects to the same database schema
 the newer image left behind, with no reverse migration required, because
-no migration was ever applied in either direction by this app. (This
+no migration was ever applied in either direction by this app. This
 claim covers `medianest_bridge` specifically -- an upstream TubeSync
 schema change, if one ever ships in the same release, is upstream's own
 migration and follows upstream's own rollback semantics, unrelated to
-this app's zero-migration guarantee.)
+this app's zero-migration guarantee. See the upstream-base gate in
+"Image-level rollback" above: it's the reason that recipe isn't
+unconditionally safe just because this app's own guarantee holds.
 
 ## What is not covered by "config-only"
 
