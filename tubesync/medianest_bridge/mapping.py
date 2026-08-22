@@ -12,6 +12,8 @@
 from sync.choices import MediaState, Val, YouTube_SourceType
 from sync.tasks import get_error_message, get_media_download_task, get_source_index_task
 
+from .error_sanitize import sanitize_error_message
+
 
 def _iso(value):
     return value.isoformat() if value else None
@@ -112,6 +114,17 @@ def serialize_media(media):
     task = get_media_download_task(str(media.pk))
     raw_state = media.get_download_state(task or None)
     has_error = bool(task) and task.has_error()
+    # sync.tasks.get_error_message() strips only the exception-type
+    # prefix off the raw TaskHistory.last_error line -- a filesystem
+    # path, cookie-file reference, or anything credential-shaped in the
+    # remainder still reaches here unredacted otherwise. See
+    # error_sanitize.py for exactly what this strips and why it stops
+    # short of blanket-redacting long tokens (a YouTube channel/video ID
+    # in an error message is useful diagnostic detail, not a secret).
+    error_message = (
+        sanitize_error_message(get_error_message(task))
+        if (task and has_error) else None
+    )
 
     relative_path = None
     filename = None
@@ -137,5 +150,5 @@ def serialize_media(media):
         'sizeBytes': media.downloaded_filesize,
         'downloadedAt': _iso(media.download_date),
         'retryAt': _iso(task.scheduled_at) if (task and has_error) else None,
-        'error': get_error_message(task) if (task and has_error) else None,
+        'error': error_message,
     }

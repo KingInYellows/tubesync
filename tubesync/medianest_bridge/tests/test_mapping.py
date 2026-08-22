@@ -162,3 +162,37 @@ class SerializeMediaTestCase(TestCase):
         media = make_media(source, can_download=True)
         body = mapping.serialize_media(media)
         self.assertTrue(body['eligible'])
+
+    def test_error_field_is_sanitized_end_to_end(self):
+        '''
+            T4: confirms error_sanitize.sanitize_error_message() is
+            actually wired into serialize_media(), not just unit-tested
+            in isolation -- constructs a real TaskHistory row matching
+            get_media_download_task()'s exact lookup requirements (name
+            ending in download_media_file, task_params starting with
+            the media pk, start_at == end_at so TaskHistoryQuerySet.
+            running() finds it) with a path-bearing last_error, and
+            asserts the path never reaches serialize_media()'s output.
+        '''
+        from django.conf import settings
+
+        from common.models import TaskHistory
+
+        source = make_source()
+        media = make_media(source)
+        now = timezone.now()
+        TaskHistory.objects.create(
+            name='sync.tasks.download_media_file',
+            task_id='test-task-id-error-sanitize',
+            task_params=[[str(media.pk)], '{}'],
+            start_at=now,
+            end_at=now,
+            scheduled_at=now,
+            failed_at=now,
+            last_error=f"[Errno 2] No such file or directory: '{settings.DOWNLOAD_ROOT}/leaked/path.mp4'",
+        )
+        body = mapping.serialize_media(media)
+        self.assertIsNotNone(body['error'])
+        self.assertNotIn(str(settings.DOWNLOAD_ROOT), body['error'])
+        self.assertNotIn('leaked', body['error'])
+        self.assertIn('<redacted>', body['error'])
