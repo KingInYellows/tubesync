@@ -96,6 +96,27 @@ _REVOKED_VERBOSE_PREFIX = '[revoked] '
 
 
 def find_pending_or_running_index_task(source_uuid_str):
+    '''
+        Returns the single most relevant matching row, deterministically
+        ordered rather than trusting an implicit DB order: TaskHistory has
+        no Meta.ordering, and Django's own docs are explicit that
+        .first()/.last() on an unordered queryset is undefined. That
+        matters here because upstream's own SourceSyncNowView
+        (sync/views/sources.py) does not dedup at all -- a native
+        dashboard sync-now click can leave a pending index_source row for
+        a source that a later bridge sync-now call must also see. Ordered
+        running-first (start_at non-null sorts before the pending
+        branch's NULL, via desc(nulls_last=True)) since an actively
+        executing task can't be preempted anyway, then soonest-
+        scheduled-first among pending rows -- so if multiple pending
+        rows exist (e.g. a native click's already-fast task alongside
+        this bridge's own slower create-time schedule),
+        schedule_sync_now_index() sees the fastest one and correctly
+        leaves it alone (its own scheduled_at <= sync-now's own delay)
+        instead of picking an arbitrary slower row, advancing that one,
+        and leaving the already-fast native task to also fire --
+        converging to two live tasks instead of one.
+    '''
     max_run_time = getattr(settings, 'MAX_RUN_TIME', 3600)
     cutoff = timezone.now() - timezone.timedelta(seconds=max_run_time)
     base = TaskHistory.objects.exclude(
@@ -103,7 +124,7 @@ def find_pending_or_running_index_task(source_uuid_str):
     ).filter(
         Q(start_at__isnull=True, scheduled_at__gt=cutoff) |
         Q(start_at=F('end_at'), end_at__gt=cutoff)
-    )
+    ).order_by(F('start_at').desc(nulls_last=True), 'scheduled_at')
     tqs = get_model_tasks(source_uuid_str, name=INDEX_SOURCE_TASK_NAME, qs=base)
     return tqs.first()
 

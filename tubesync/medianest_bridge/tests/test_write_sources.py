@@ -776,6 +776,55 @@ class SyncSourceEndpointTestCase(BridgeTestCase):
             'blocked forever by the stale terminal row',
         )
 
+    def test_multiple_pending_duplicates_prefers_the_soonest_pending_row(self):
+        '''
+            Upstream's SourceSyncNowView (sync/views/sources.py) does not
+            dedup at all, so a native dashboard sync-now click can leave
+            a pending index_source row alongside this bridge's own
+            create-time schedule. TaskHistory has no default ordering, so
+            an unordered .first() is not guaranteed to pick the fast
+            native task over the slow one -- and if it picked the slow
+            one, schedule_sync_now_index() would advance THAT one while
+            leaving the already-fast native task to also fire, converging
+            to two live tasks instead of one.
+        '''
+        source = self._make_source()
+        TaskHistory.objects.all().delete()
+        slow = TaskHistory.objects.create(
+            name='sync.tasks.index_source',
+            task_id=str(uuid.uuid4()),
+            task_params=[['{}'.format(source.pk)], ''],
+            verbose_name='Index media from source "Test" once (create)',
+            scheduled_at=timezone.now() + timedelta(seconds=600),
+            end_at=timezone.now(),
+        )
+        fast = TaskHistory.objects.create(
+            name='sync.tasks.index_source',
+            task_id=str(uuid.uuid4()),
+            task_params=[['{}'.format(source.pk)], ''],
+            verbose_name='Index media from source "Test" once (native sync-now)',
+            scheduled_at=timezone.now() + timedelta(seconds=30),
+            end_at=timezone.now(),
+        )
+        from medianest_bridge import sync_dedup
+        found = sync_dedup.find_pending_or_running_index_task(str(source.pk))
+        self.assertEqual(
+            found.pk, fast.pk,
+            'must deterministically prefer the soonest pending row',
+        )
+
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        response = self.client.post(self._sync_url(source), **self.auth_header())
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(
+            TaskHistory.objects.filter(name='sync.tasks.index_source').count(),
+            2,
+            'sync-now must not schedule a third task when the soonest '
+            'pending row is already at least as fast as its own delay',
+        )
+        self.assertTrue(TaskHistory.objects.filter(pk=fast.pk).exists())
+        self.assertTrue(TaskHistory.objects.filter(pk=slow.pk).exists())
+
     def test_revoked_pending_task_does_not_block_sync(self):
         '''
             A terminal revoked scheduled-but-never-started row (marked
