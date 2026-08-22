@@ -246,6 +246,23 @@ def serialize_media(media, *, download_task=_MISSING):
         task = get_relevant_media_download_task(str(media.pk))
     else:
         task = download_task or False
+
+    # A terminal failure must not keep reporting "failed" once a later,
+    # explicit signal (skip, or the source having download_media turned
+    # off) makes it irrelevant. get_download_state()'s own skip/
+    # source.download_media checks are unreachable whenever any task is
+    # passed in at all (its `if task:` branch always returns before
+    # reaching them), so a failed-then-skipped media would otherwise
+    # report "failed" until the TaskHistory row ages out via task-
+    # history cleanup (normally up to 30 days). Safe to drop the task
+    # here without risking masking an active download: has_error() and
+    # "currently running" are mutually exclusive on the same row (see
+    # get_download_state()'s own if running(task): ... elif
+    # task.has_error(): ...), so a task with has_error() True is by
+    # construction never the running one.
+    if task and task.has_error() and (media.skip or not media.source.download_media):
+        task = False
+
     raw_state = media.get_download_state(task or None)
     has_error = bool(task) and task.has_error()
 
@@ -272,6 +289,15 @@ def serialize_media(media, *, download_task=_MISSING):
         'filename': filename,
         'sizeBytes': media.downloaded_filesize,
         'downloadedAt': _iso(media.download_date),
-        'retryAt': _iso(task.scheduled_at) if (task and has_error) else None,
+        # download_media_file's own @db_task decorator (sync/tasks.py)
+        # sets no retries= -- huey never automatically re-enqueues it on
+        # failure, and nothing else in this codebase reschedules a failed
+        # row either (confirmed: no retry/reschedule logic anywhere
+        # touches a failed_at row for this task name). A failed row's own
+        # scheduled_at is therefore always when THAT attempt ran, never a
+        # future retry time, so retryAt is unconditionally null here --
+        # not something this task type can ever have until upstream
+        # actually adds a retry mechanism for it.
+        'retryAt': None,
         'error': get_error_message(task) if (task and has_error) else None,
     }

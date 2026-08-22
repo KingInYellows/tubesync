@@ -227,7 +227,11 @@ class SerializeMediaTaskStateTestCase(TestCase):
         self.assertIsNone(body['retryAt'])
         self.assertIsNone(body['error'])
 
-    def test_terminally_failed_task_maps_to_failed_with_retry_and_error(self):
+    def test_terminally_failed_task_maps_to_failed_with_error_no_retry(self):
+        # download_media_file has no huey retries= configured and
+        # nothing else reschedules a failed row, so retryAt is always
+        # null -- scheduled_at on a failed row records when THAT attempt
+        # ran, never a future retry (T2 review P2 finding).
         source = make_source()
         media = make_media(source)
         past = timezone.now() - timezone.timedelta(seconds=30)
@@ -242,8 +246,53 @@ class SerializeMediaTaskStateTestCase(TestCase):
         )
         body = mapping.serialize_media(media)
         self.assertEqual(body['normalizedState'], 'failed')
-        self.assertIsNotNone(body['retryAt'])
+        self.assertIsNone(body['retryAt'])
         self.assertEqual(body['error'], 'network unreachable')
+
+    def test_failed_task_does_not_mask_skipped_state(self):
+        # T2 review P2 finding: a stale failed TaskHistory row must not
+        # keep reporting "failed" once media is later marked skipped --
+        # get_download_state()'s own skip check is unreachable whenever
+        # any task is passed in, so without this, "failed" would persist
+        # until task-history cleanup (normally up to 30 days).
+        source = make_source()
+        media = make_media(source, skip=True, manual_skip=True)
+        make_download_task(
+            media,
+            start_at=timezone.now() - timezone.timedelta(seconds=30),
+            end_at=timezone.now(),
+            failed_at=timezone.now(),
+            last_error='RuntimeError: network unreachable',
+        )
+        body = mapping.serialize_media(media)
+        self.assertEqual(body['normalizedState'], 'skipped')
+        self.assertIsNone(body['error'])
+        self.assertIsNone(body['retryAt'])
+
+    def test_failed_task_does_not_mask_ineligible_state(self):
+        source = make_source(download_media=False)
+        media = make_media(source)
+        make_download_task(
+            media,
+            start_at=timezone.now() - timezone.timedelta(seconds=30),
+            end_at=timezone.now(),
+            failed_at=timezone.now(),
+            last_error='RuntimeError: network unreachable',
+        )
+        body = mapping.serialize_media(media)
+        self.assertEqual(body['normalizedState'], 'ineligible')
+        self.assertIsNone(body['error'])
+
+    def test_running_task_state_is_not_affected_by_skip(self):
+        # Guards the "mutually exclusive" reasoning in serialize_media():
+        # has_error() and currently-running are exclusive on one row, so
+        # this suppression must never apply to (and can never mask) an
+        # actively downloading task, even if skip is somehow also set.
+        source = make_source()
+        media = make_media(source, skip=True, manual_skip=True)
+        make_download_task(media)  # defaults are the running() shape
+        body = mapping.serialize_media(media)
+        self.assertEqual(body['normalizedState'], 'downloading')
 
     def test_running_task_maps_to_downloading(self):
         source = make_source()
