@@ -55,6 +55,18 @@ class SanitizeErrorMessageTestCase(SimpleTestCase):
         self.assertIn('<redacted>', result)
         self.assertIn('No space left on device', result)
 
+    def test_single_component_absolute_path_redacted(self):
+        message = "permission denied opening /secret"
+        result = sanitize_error_message(message)
+        self.assertNotIn('/secret', result)
+        self.assertIn('<redacted>', result)
+        self.assertIn('permission denied opening', result)
+
+    def test_https_url_not_redacted(self):
+        message = 'failed fetching https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+        result = sanitize_error_message(message)
+        self.assertIn('https://www.youtube.com/watch?v=dQw4w9WgXcQ', result)
+
     def test_credential_shaped_key_value_redacted(self):
         message = 'request rejected: auth_token=abcd1234567890secretvalue was invalid'
         result = sanitize_error_message(message)

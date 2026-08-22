@@ -13,7 +13,13 @@
     `s6-svstat -o pid /run/service/<name>` (see its get_service_pid()) and
     already manages a per-service `down` file at
     `/run/service/<name>/down` to pause huey-net-limited when yt-dlp is
-    stale. Both signals are genuinely observable from *this* process too:
+    stale. The `queues` check reads the supervisor's live `wantedup`
+    state (same s6-svstat field sync/views/services.py::S6OverlayReporter
+    already uses) because stop-queue.py brings consumers down via
+    `s6-svc -D`, which does not create a persistent `down` marker --
+    inspecting only the down file would miss the real administrative-pause
+    flow. A present `down` file is still counted when it exists. Both
+    signals are genuinely observable from *this* process too:
     every huey consumer runs as an s6 longrun service inside the same
     container as gunicorn (config/root/etc/s6-overlay/s6-rc.d/huey-*), so
     `/run/service/` is on the same filesystem this app already reads.
@@ -72,6 +78,17 @@ _SUBPROCESS_TIMEOUT_SECONDS = 2
 _BLOCKING_CALL_TIMEOUT_SECONDS = 2
 _CACHE_TTL_SECONDS = 5
 
+# Shared, bounded executor for database/storage checks. A per-call executor
+# with shutdown(wait=False) leaked one orphaned thread on every timeout;
+# under sustained readiness polling against a dead mount that unboundedly
+# accumulated blocked threads. Two workers cap the stuck-thread count at
+# the number of blocking checks this module runs (database + storage) while
+# still bounding each caller's wait via Future.result(timeout=...).
+_blocking_call_executor = ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix='medianest_bridge_readiness',
+)
+
 
 def _call_with_timeout(fn, *, timeout=_BLOCKING_CALL_TIMEOUT_SECONDS):
     '''
@@ -80,12 +97,10 @@ def _call_with_timeout(fn, *, timeout=_BLOCKING_CALL_TIMEOUT_SECONDS):
         elsewhere in this module, a plain syscall such as statvfs() on a
         dead network mount can block in the kernel for a very long time,
         uninterruptible by ordinary Python-level mechanisms. Running it
-        in a throwaway thread and bounding *this* call's wait via
-        Future.result(timeout=...) bounds the caller's wait even though
-        the underlying thread may itself remain stuck forever (a leaked
-        thread on that rare pathological path, not a hung response --
-        the tradeoff this module's checks all make, matching "one slow
-        check can't hang /health/ready").
+        on the module-level bounded executor and bounding *this* call's
+        wait via Future.result(timeout=...) bounds the caller's wait even
+        though the underlying thread may itself remain stuck forever (at
+        most two such threads process-wide, not one new leak per poll).
 
         Raises FutureTimeoutError on timeout; callers decide what status
         that maps to (see check_database/check_storage below).
@@ -94,17 +109,14 @@ def _call_with_timeout(fn, *, timeout=_BLOCKING_CALL_TIMEOUT_SECONDS):
         -- that context manager's __exit__ calls shutdown(wait=True),
         which blocks until the submitted thread finishes, defeating the
         entire point of the timeout the moment the wrapped call actually
-        hangs (caught in review before this shipped, not after).
-        shutdown(wait=False) lets this function return promptly on
-        timeout while the orphaned thread is abandoned to finish (or
-        hang) on its own, unobserved.
+        hangs. The shared executor is never shut down from this path.
     '''
-    executor = ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(fn)
+    future = _blocking_call_executor.submit(fn)
     try:
         return future.result(timeout=timeout)
-    finally:
-        executor.shutdown(wait=False)
+    except FutureTimeoutError:
+        future.cancel()
+        raise
 
 # The four huey consumer services this fork ships
 # (config/root/etc/s6-overlay/s6-rc.d/), matching sync/choices.py's
@@ -179,6 +191,27 @@ def _s6_service_pid(service_name):
         return None
 
 
+def _s6_service_wanted_up(service_name):
+    '''
+        Returns True/False for s6's wantedup flag, or None when the
+        service directory is absent or s6-svstat fails. Mirrors
+        sync/views/services.py::S6OverlayReporter's is_wanted_up field
+        without importing that view-layer module into readiness.
+    '''
+    path = os.path.join('/run/service', service_name)
+    if not os.path.isdir(path):
+        return None
+    try:
+        output = subprocess.check_output(
+            ['/command/s6-svstat', '-o', 'wantedup', path],
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+            stderr=subprocess.DEVNULL,
+        )
+        return output.strip() == b'true'
+    except Exception:
+        return None
+
+
 def _s6_root_present():
     return os.path.isdir('/run/service')
 
@@ -215,15 +248,19 @@ def check_queues():
             detail='not running under s6-overlay (/run/service absent) -- '
                    'expected outside the container image',
         )
-    paused = [
-        name for name in HUEY_SERVICE_NAMES
-        if os.path.exists(os.path.join('/run/service', name, 'down'))
-    ]
+    paused = []
+    for name in HUEY_SERVICE_NAMES:
+        wanted_up = _s6_service_wanted_up(name)
+        if wanted_up is False:
+            paused.append(name)
+            continue
+        if os.path.exists(os.path.join('/run/service', name, 'down')):
+            paused.append(name)
     if not paused:
         return _status('healthy', detail='no queue is administratively paused')
     return _status(
         'degraded',
-        detail=f'administratively paused (down file present): {", ".join(paused)}',
+        detail=f'administratively paused: {", ".join(paused)}',
     )
 
 

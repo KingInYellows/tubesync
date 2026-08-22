@@ -72,11 +72,11 @@ import re
 
 _REDACTED = '<redacted>'
 
-# Matches a run of non-whitespace, non-quote characters starting with '/'
-# and containing at least one more '/' -- a generic Unix absolute-path
-# shape. Deliberately requires a second slash so a lone leading '/' in
-# prose (rare, but possible) doesn't get redacted as if it were a path.
-_GENERIC_PATH_PATTERN = re.compile(r'/[^\s\'"]*/[^\s\'"]*')
+# Matches a Unix absolute path with at least one path component after the
+# leading slash. The lookbehind rejects "://" URL schemes (second slash
+# is preceded by "/") and host-relative URL paths such as ".com/watch"
+# (the slash is preceded by a hostname character).
+_GENERIC_PATH_PATTERN = re.compile(r'(?<![:/\w])/[^\s\'"]+')
 
 # Deliberately excludes "key" -- see this module's docstring, point 3.
 # The credential word must be the WHOLE identifier or a WHOLE

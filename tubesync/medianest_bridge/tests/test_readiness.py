@@ -119,16 +119,33 @@ class QueuesCheckTestCase(ReadinessCacheResetMixin, SimpleTestCase):
         with (
             patch.object(readiness.os.path, 'isdir', _isdir_side_effect(present_dirs)),
             patch.object(readiness.os.path, 'exists', _exists_side_effect(set())),
+            patch.object(readiness, '_s6_service_wanted_up', return_value=True),
         ):
             result = readiness.check_queues()
         self.assertEqual(result['status'], 'healthy')
 
-    def test_degraded_when_queue_administratively_paused(self):
+    def test_degraded_when_queue_administratively_paused_via_down_file(self):
         present_dirs = {'/run/service'} | {f'/run/service/{n}' for n in readiness.HUEY_SERVICE_NAMES}
         down_files = {'/run/service/huey-net-limited/down'}
         with (
             patch.object(readiness.os.path, 'isdir', _isdir_side_effect(present_dirs)),
             patch.object(readiness.os.path, 'exists', _exists_side_effect(down_files)),
+            patch.object(readiness, '_s6_service_wanted_up', return_value=True),
+        ):
+            result = readiness.check_queues()
+        self.assertEqual(result['status'], 'degraded')
+        self.assertIn('huey-net-limited', result['detail'])
+
+    def test_degraded_when_queue_administratively_paused_via_wantedup(self):
+        present_dirs = {'/run/service'} | {f'/run/service/{n}' for n in readiness.HUEY_SERVICE_NAMES}
+
+        def wanted_up(name):
+            return name == 'huey-net-limited' and False or True
+
+        with (
+            patch.object(readiness.os.path, 'isdir', _isdir_side_effect(present_dirs)),
+            patch.object(readiness.os.path, 'exists', _exists_side_effect(set())),
+            patch.object(readiness, '_s6_service_wanted_up', side_effect=wanted_up),
         ):
             result = readiness.check_queues()
         self.assertEqual(result['status'], 'degraded')
