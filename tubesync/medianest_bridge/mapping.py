@@ -9,8 +9,11 @@
     TubeSync-state-to-normalized-state precedence, so these are this app's
     own considered choices, not something guessed silently.
 '''
+from django.db.models import Q
+
+from common.models import TaskHistory
 from sync.choices import MediaState, Val, YouTube_SourceType
-from sync.tasks import get_error_message, get_media_download_task, get_source_index_task
+from sync.tasks import get_error_message, get_running_tasks, get_source_index_task
 
 _MISSING = object()
 
@@ -94,24 +97,67 @@ def serialize_source(source):
 
 def batch_media_download_tasks(media_ids):
     '''
-        Return {media_id_str: task_or_False} for a page of media rows.
-        Uses the same running-task predicate as get_media_download_task()
-        (contract: bridge-openapi.v1.yaml listSourceMedia description).
+        Return {media_id_str: task_or_False} for a page of media rows: the
+        download_media_file TaskHistory row that best represents each
+        media's current state, in two tiers matching
+        get_download_state()'s own DOWNLOADING > ERROR > SCHEDULED
+        precedence:
+
+          1. A currently-running task (get_running_tasks(), the same
+             upstream-consistent predicate get_media_download_task() uses).
+          2. For any media not caught by (1): the most recently scheduled
+             task that has NOT completed successfully -- either a failure
+             (failed_at set) or one that has not started yet (start_at is
+             still null, i.e. delayed/queued). Media with only a plain
+             successful task row, or no task row at all, correctly stay
+             False here -- Media.downloaded already short-circuits
+             get_download_state() before any task is consulted in that
+             case, so a successful row is never relevant to this lookup.
+
+        Before this, callers relying solely on the running-task predicate
+        (upstream's get_media_download_task()) had a delayed-but-not-yet-
+        started task and a terminal failure both silently disappear, and
+        get_download_state() would then fall through to "discovered"
+        instead of the correct "queued"/"failed" (T2 review P1 finding).
     '''
     id_set = {str(media_id) for media_id in media_ids}
     if not id_set:
         return {}
-    from sync.tasks import get_running_tasks
     result = {media_id: False for media_id in id_set}
-    tqs = get_running_tasks().filter(name__endswith='download_media_file')
-    for task in tqs:
+
+    running_qs = get_running_tasks().filter(name__endswith='download_media_file')
+    for task in running_qs:
         params = task.task_params
         if not params or not params[0]:
             continue
         media_id = str(params[0][0])
         if media_id in id_set:
             result[media_id] = task
+
+    remaining = {media_id for media_id in id_set if not result[media_id]}
+    if remaining:
+        pending_or_failed_qs = (
+            TaskHistory.objects
+            .filter(name__endswith='download_media_file')
+            .filter(Q(failed_at__isnull=False) | Q(start_at__isnull=True))
+            .order_by('-scheduled_at')
+        )
+        for task in pending_or_failed_qs:
+            params = task.task_params
+            if not params or not params[0]:
+                continue
+            media_id = str(params[0][0])
+            if media_id in remaining:
+                result[media_id] = task
+                remaining.discard(media_id)
+                if not remaining:
+                    break
     return result
+
+
+def get_relevant_media_download_task(media_id):
+    '''Single-item convenience wrapper around batch_media_download_tasks().'''
+    return batch_media_download_tasks([media_id]).get(str(media_id), False)
 
 
 # TubeSync's real MediaState -> the contract's normalizedState enum.
@@ -142,7 +188,7 @@ def map_media_state(raw_state):
 
 def serialize_media(media, *, download_task=_MISSING):
     if download_task is _MISSING:
-        task = get_media_download_task(str(media.pk))
+        task = get_relevant_media_download_task(str(media.pk))
     else:
         task = download_task or False
     raw_state = media.get_download_state(task or None)
