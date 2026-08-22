@@ -367,3 +367,52 @@ class BatchMediaDownloadTasksTestCase(TestCase):
         self.assertFalse(result[str(media.pk)])
         body = mapping.serialize_media(media)
         self.assertEqual(body['normalizedState'], 'discovered')
+
+    def test_serialize_media_does_not_requery_for_a_batched_running_task(self):
+        '''
+            T2 review P2 finding: Media.get_download_state(task) checks
+            hasattr(task, 'locked_by_pid_running') to decide whether to
+            trust the task object's own answer; a plain TaskHistory row
+            never has that attribute, so without binding it here every
+            call fell back to querying get_media_download_task() again --
+            even after batch_media_download_tasks() had already
+            determined the task was running. With the attribute bound,
+            serializing a page's worth of running/failed/pending media
+            costs no additional queries beyond the two batch lookups.
+        '''
+        source = make_source()
+        running_media = make_media(source, key='running')
+        failed_media = make_media(source, key='failed')
+        pending_media = make_media(source, key='pending')
+        make_download_task(running_media)
+        make_download_task(
+            failed_media,
+            start_at=timezone.now() - timezone.timedelta(seconds=30),
+            end_at=timezone.now(),
+            failed_at=timezone.now(),
+            last_error='RuntimeError: boom',
+        )
+        make_download_task(
+            pending_media,
+            start_at=None,
+            scheduled_at=timezone.now() + timezone.timedelta(seconds=60),
+        )
+        media_rows = [running_media, failed_media, pending_media]
+
+        with self.assertNumQueries(2):
+            # Query 1: running tier. Query 2: pending/failed fallback
+            # tier. Neither media.get_download_state() call below should
+            # add a query if locked_by_pid_running was bound correctly.
+            download_tasks = mapping.batch_media_download_tasks(
+                [m.pk for m in media_rows],
+            )
+            bodies = [
+                mapping.serialize_media(
+                    m, download_task=download_tasks.get(str(m.pk), False),
+                )
+                for m in media_rows
+            ]
+        states = {body['id']: body['normalizedState'] for body in bodies}
+        self.assertEqual(states[str(running_media.pk)], 'downloading')
+        self.assertEqual(states[str(failed_media.pk)], 'failed')
+        self.assertEqual(states[str(pending_media.pk)], 'queued')

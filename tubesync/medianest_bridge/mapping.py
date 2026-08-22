@@ -134,6 +134,15 @@ def batch_media_download_tasks(media_ids):
         started task and a terminal failure both silently disappear, and
         get_download_state() would then fall through to "discovered"
         instead of the correct "queued"/"failed" (T2 review P1 finding).
+
+        Each returned task also has locked_by_pid_running bound (see
+        _bind_known_running_state below) so serialize_media()'s call into
+        Media.get_download_state(task) takes that fast, already-known
+        branch instead of re-querying per row (T2 review P2 finding: a
+        plain TaskHistory instance has no locked_by_pid_running of its
+        own, so get_download_state()'s internal "is this still running"
+        recheck otherwise falls back to calling get_media_download_task()
+        again for every non-idle row on the page, even after batching).
     '''
     id_set = {str(media_id) for media_id in media_ids}
     if not id_set:
@@ -147,6 +156,7 @@ def batch_media_download_tasks(media_ids):
             continue
         media_id = str(params[0][0])
         if media_id in id_set:
+            _bind_known_running_state(task, is_running=True)
             result[media_id] = task
 
     remaining = {media_id for media_id in id_set if not result[media_id]}
@@ -176,11 +186,28 @@ def batch_media_download_tasks(media_ids):
                 continue
             media_id = str(params[0][0])
             if media_id in remaining:
+                _bind_known_running_state(task, is_running=False)
                 result[media_id] = task
                 remaining.discard(media_id)
                 if not remaining:
                     break
     return result
+
+
+def _bind_known_running_state(task, *, is_running):
+    '''
+        Media.get_download_state(task) checks
+        hasattr(task, 'locked_by_pid_running') to decide whether it can
+        trust the task object's own answer or must fall back to querying
+        get_media_download_task() again -- a plain TaskHistory row never
+        has that attribute (it belongs to huey's runtime Task/lock
+        object, not the Django model), so every call previously took the
+        query-again fallback. Since batch_media_download_tasks() already
+        knows which tier (running vs. pending/failed) produced this task,
+        binding a trivial callable here lets get_download_state() take
+        its fast, already-known branch instead.
+    '''
+    task.locked_by_pid_running = lambda: is_running
 
 
 def get_relevant_media_download_task(media_id):
