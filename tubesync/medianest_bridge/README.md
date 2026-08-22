@@ -77,12 +77,10 @@ in this order, each check short-circuiting on failure:
    implemented now so T2/T3's write endpoints ship read-only-by-default from
    day one, structurally, not by omission.
 5. **Body-size gate** (`MEDIANEST_BRIDGE_MAX_BODY_BYTES`, default `65536`).
-   Checked via `Content-Length` when present. Oversized requests get `413`
-   with code `REQUEST_TOO_LARGE` -- **this is a proposed addition, not
-   (yet) in the vendored contract's `Error.code` enum**; none of the
-   existing codes describe an oversized-body rejection honestly, so this
-   was flagged as a contract gap rather than silently reusing an
-   ill-fitting code (see `medianest_bridge/errors.py`'s module docstring).
+   Checked via `Content-Length` when present; chunked transfer encoding
+   without `Content-Length` is rejected with `413 REQUEST_TOO_LARGE`
+   because the body cannot be size-checked before read. Oversized requests
+   get `413` with code `REQUEST_TOO_LARGE`.
 
 None of this is implemented as Django middleware (`settings.MIDDLEWARE`) --
 that would be a fourth upstream touch point beyond the three enumerated
@@ -173,8 +171,8 @@ All under `/api/medianest/v1/`, all `GET`, all requiring the bearer token:
   source/media/task endpoints exist yet.
 
 Every response (success and error) echoes `X-Request-ID`. A caller-supplied
-`X-Request-ID` header is echoed verbatim; otherwise the bridge generates a
-UUID4. `X-Correlation-ID`, if supplied, is logged (paired with the request
+`X-Request-ID` header is echoed verbatim when it is a valid UUID; otherwise
+the bridge generates a new UUID4. `X-Correlation-ID`, if supplied, is logged (paired with the request
 ID) but is not itself part of any response schema.
 
 Errors use the vendored contract's RFC 7807-style envelope

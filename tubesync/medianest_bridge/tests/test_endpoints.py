@@ -5,6 +5,7 @@
     kept honest against the vendored YAML).
 '''
 import json
+import re
 from pathlib import Path
 
 from .base import BridgeTestCase
@@ -28,11 +29,30 @@ def assert_matches_schema(test, body, schema_name):
     for field, spec in schema['properties'].items():
         if field not in body:
             continue
+        value = body[field]
+        expected_type = spec.get('type')
+        if expected_type == 'string':
+            test.assertIsInstance(value, str, f'{schema_name}.{field} must be a string')
+        elif expected_type == 'boolean':
+            test.assertIsInstance(value, bool, f'{schema_name}.{field} must be a boolean')
+        elif expected_type == 'integer':
+            test.assertIsInstance(value, int, f'{schema_name}.{field} must be an integer')
+        elif expected_type == 'object':
+            test.assertIsInstance(value, dict, f'{schema_name}.{field} must be an object')
+        elif isinstance(expected_type, list):
+            if 'string' in expected_type and value is not None:
+                test.assertIsInstance(value, str, f'{schema_name}.{field} must be a string or null')
         enum = spec.get('enum')
         if enum:
             test.assertIn(
-                body[field], enum,
-                f'{schema_name}.{field}={body[field]!r} not in {enum!r}',
+                value, enum,
+                f'{schema_name}.{field}={value!r} not in {enum!r}',
+            )
+        if field.endswith('At') and isinstance(value, str):
+            test.assertRegex(
+                value,
+                re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$'),
+                f'{schema_name}.{field}={value!r} is not ISO-8601 date-time',
             )
 
 

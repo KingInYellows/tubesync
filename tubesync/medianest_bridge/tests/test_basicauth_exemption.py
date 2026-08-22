@@ -23,6 +23,8 @@ from django.conf import settings
 from django.test import override_settings
 from django.urls import reverse
 
+from medianest_bridge import urls as bridge_urls
+
 from .base import BridgeTestCase
 
 BASIC_AUTH_OVERRIDES = dict(
@@ -58,9 +60,9 @@ class BasicAuthExemptionTestCase(BridgeTestCase):
         self.assertNotEqual(response.status_code, 401)
 
     def test_exemption_tuple_matches_bridge_routes_exactly(self):
-        bridge_route_names = ('health-live', 'health-ready', 'meta', 'capabilities')
         expected_paths = {
-            reverse(f'medianest_bridge:{name}') for name in bridge_route_names
+            reverse(f'medianest_bridge:{pattern.name}')
+            for pattern in bridge_urls.urlpatterns
         }
         exempted = set(settings.BASICAUTH_ALWAYS_ALLOW_URIS)
         bridge_exempted = {p for p in exempted if p.startswith('/api/medianest/v1/')}

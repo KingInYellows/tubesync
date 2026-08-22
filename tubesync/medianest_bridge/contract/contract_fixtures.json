@@ -2,7 +2,7 @@
   "_provenance": {
     "note": "Generated once from the vendored YAML via PyYAML (a transitive dependency of hat-syslog, not a new Pipfile dependency) and checked in so bridge tests can assert contract shape using only the stdlib json module. test_contract_conformance.py sha256-locks this file against the YAML above and, when PyYAML happens to be importable in the test environment, additionally cross-checks this fixture was derived correctly. Regenerate together with the sha256 whenever the vendored YAML is re-vendored.",
     "source": "medianest_bridge/contract/bridge-openapi.v1.yaml",
-    "source_sha256": "5913ed73969e711354932e1459e39434acd2dfed4f6d9df38d8477d361cd7cd5"
+    "source_sha256": "464d9111649742698b32feb708f3ac0ae2e42947d61e5acdd8ec602b4febcfea"
   },
   "health_ready_component_names": [
     "application",
@@ -17,93 +17,94 @@
     "ytDlp"
   ],
   "schemas": {
-    "Capabilities": {
+    "HealthLive": {
+      "required": [
+        "status",
+        "checkedAt"
+      ],
       "properties": {
-        "cancelTask": {
-          "enum": null,
-          "type": "boolean"
+        "status": {
+          "type": "string",
+          "enum": [
+            "alive"
+          ]
         },
-        "createChannelSource": {
-          "enum": null,
-          "type": "boolean"
-        },
-        "createPlaylistSource": {
-          "enum": null,
-          "type": "boolean"
-        },
-        "deleteSource": {
-          "enum": null,
-          "type": "boolean"
-        },
-        "disableSource": {
-          "enum": null,
-          "type": "boolean"
-        },
-        "enableMedia": {
-          "enum": null,
-          "type": "boolean"
-        },
-        "health": {
-          "enum": null,
-          "type": "boolean"
-        },
-        "oneOffVideoDownload": {
-          "enum": null,
-          "type": "boolean"
-        },
-        "plexCollectionCreation": {
-          "enum": null,
-          "type": "boolean"
-        },
-        "plexScan": {
-          "enum": null,
-          "type": "boolean"
-        },
-        "pushEvents": {
-          "enum": null,
-          "type": "boolean"
-        },
-        "readMedia": {
-          "enum": null,
-          "type": "boolean"
-        },
-        "readSources": {
-          "enum": null,
-          "type": "boolean"
-        },
-        "readTasks": {
-          "enum": null,
-          "type": "boolean"
-        },
-        "retryMedia": {
-          "enum": null,
-          "type": "boolean"
-        },
-        "retryTask": {
-          "enum": null,
-          "type": "boolean"
-        },
-        "skipMedia": {
-          "enum": null,
-          "type": "boolean"
-        },
-        "syncSource": {
-          "enum": null,
-          "type": "boolean"
-        },
-        "updateSource": {
-          "enum": null,
-          "type": "boolean"
-        },
-        "validateChannelSource": {
-          "enum": null,
-          "type": "boolean"
-        },
-        "validatePlaylistSource": {
-          "enum": null,
-          "type": "boolean"
+        "checkedAt": {
+          "type": "string"
         }
-      },
+      }
+    },
+    "HealthReady": {
+      "required": [
+        "status",
+        "checkedAt",
+        "components"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "healthy",
+            "degraded",
+            "unavailable"
+          ]
+        },
+        "checkedAt": {
+          "type": "string"
+        },
+        "components": {
+          "type": "object"
+        }
+      }
+    },
+    "ComponentStatus": {
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "healthy",
+            "degraded",
+            "unavailable",
+            "unknown",
+            "not_configured"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "Meta": {
+      "required": [
+        "bridgeVersion",
+        "tubesyncVersion",
+        "upstreamCommit"
+      ],
+      "properties": {
+        "bridgeVersion": {
+          "type": "string"
+        },
+        "tubesyncVersion": {
+          "type": "string"
+        },
+        "upstreamCommit": {
+          "type": "string"
+        }
+      }
+    },
+    "Capabilities": {
       "required": [
         "health",
         "readSources",
@@ -113,42 +114,95 @@
         "createPlaylistSource",
         "syncSource",
         "readMedia"
-      ]
-    },
-    "ComponentStatus": {
+      ],
       "properties": {
-        "detail": {
-          "enum": null,
-          "type": [
-            "string",
-            "null"
-          ]
+        "health": {
+          "type": "boolean"
         },
-        "status": {
-          "enum": [
-            "healthy",
-            "degraded",
-            "unavailable",
-            "unknown",
-            "not_configured"
-          ],
-          "type": "string"
+        "readSources": {
+          "type": "boolean"
         },
-        "version": {
-          "enum": null,
-          "type": [
-            "string",
-            "null"
-          ]
+        "validateChannelSource": {
+          "type": "boolean"
+        },
+        "validatePlaylistSource": {
+          "type": "boolean"
+        },
+        "createChannelSource": {
+          "type": "boolean"
+        },
+        "createPlaylistSource": {
+          "type": "boolean"
+        },
+        "updateSource": {
+          "type": "boolean"
+        },
+        "disableSource": {
+          "type": "boolean"
+        },
+        "deleteSource": {
+          "type": "boolean"
+        },
+        "syncSource": {
+          "type": "boolean"
+        },
+        "readMedia": {
+          "type": "boolean"
+        },
+        "retryMedia": {
+          "type": "boolean"
+        },
+        "skipMedia": {
+          "type": "boolean"
+        },
+        "enableMedia": {
+          "type": "boolean"
+        },
+        "readTasks": {
+          "type": "boolean"
+        },
+        "cancelTask": {
+          "type": "boolean"
+        },
+        "retryTask": {
+          "type": "boolean"
+        },
+        "oneOffVideoDownload": {
+          "type": "boolean"
+        },
+        "pushEvents": {
+          "type": "boolean"
+        },
+        "plexScan": {
+          "type": "boolean"
+        },
+        "plexCollectionCreation": {
+          "type": "boolean"
         }
-      },
-      "required": [
-        "status"
-      ]
+      }
     },
     "Error": {
+      "required": [
+        "type",
+        "title",
+        "status",
+        "code",
+        "detail",
+        "requestId",
+        "retryable"
+      ],
       "properties": {
+        "type": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "status": {
+          "type": "integer"
+        },
         "code": {
+          "type": "string",
           "enum": [
             "PROVIDER_UNAVAILABLE",
             "PROVIDER_AUTHENTICATION_FAILED",
@@ -159,108 +213,20 @@
             "SOURCE_NOT_FOUND",
             "MEDIA_NOT_FOUND",
             "RATE_LIMITED",
-            "INTERNAL_PROVIDER_ERROR"
-          ],
-          "type": "string"
+            "INTERNAL_PROVIDER_ERROR",
+            "REQUEST_TOO_LARGE"
+          ]
         },
         "detail": {
-          "enum": null,
           "type": "string"
         },
         "requestId": {
-          "enum": null,
           "type": "string"
         },
         "retryable": {
-          "enum": null,
           "type": "boolean"
-        },
-        "status": {
-          "enum": null,
-          "type": "integer"
-        },
-        "title": {
-          "enum": null,
-          "type": "string"
-        },
-        "type": {
-          "enum": null,
-          "type": "string"
         }
-      },
-      "required": [
-        "type",
-        "title",
-        "status",
-        "code",
-        "detail",
-        "requestId",
-        "retryable"
-      ]
-    },
-    "HealthLive": {
-      "properties": {
-        "checkedAt": {
-          "enum": null,
-          "type": "string"
-        },
-        "status": {
-          "enum": [
-            "alive"
-          ],
-          "type": "string"
-        }
-      },
-      "required": [
-        "status",
-        "checkedAt"
-      ]
-    },
-    "HealthReady": {
-      "properties": {
-        "checkedAt": {
-          "enum": null,
-          "type": "string"
-        },
-        "components": {
-          "enum": null,
-          "type": "object"
-        },
-        "status": {
-          "enum": [
-            "healthy",
-            "degraded",
-            "unavailable"
-          ],
-          "type": "string"
-        }
-      },
-      "required": [
-        "status",
-        "checkedAt",
-        "components"
-      ]
-    },
-    "Meta": {
-      "properties": {
-        "bridgeVersion": {
-          "enum": null,
-          "type": "string"
-        },
-        "tubesyncVersion": {
-          "enum": null,
-          "type": "string"
-        },
-        "upstreamCommit": {
-          "enum": null,
-          "type": "string"
-        }
-      },
-      "required": [
-        "bridgeVersion",
-        "tubesyncVersion",
-        "upstreamCommit"
-      ]
+      }
     }
   }
 }
