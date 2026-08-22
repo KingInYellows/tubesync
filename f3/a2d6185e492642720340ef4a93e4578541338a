@@ -1,0 +1,22 @@
+tubesync/medianest_bridge/tests/test_write_sources.py
+  s_6f44432272f3fb::t_d651450b8dfc75 612-664
+tubesync/medianest_bridge/sync_dedup.py
+  s_6f44432272f3fb::t_433e66c44522de 21-35
+  s_6f44432272f3fb::t_5b6b3c2a2b2075 88-89
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "f3a2d6185e492642720340ef4a93e4578541338a",
+  "prompts": {},
+  "sessions": {
+    "s_6f44432272f3fb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0cc3c93c-09c0-4006-8c37-39f39900f896",
+        "model": "claude-fable-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
