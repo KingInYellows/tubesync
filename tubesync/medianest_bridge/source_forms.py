@@ -188,9 +188,11 @@ def run_edit_source_checks(form):
         target_check = form.cleaned_data['directory'] + '/.virt'
         safe_join(settings.DOWNLOAD_ROOT, target_check)
     except SuspiciousFileOperation:
-        form.add_error(
-            'directory',
-            ValidationError(
-                _ERRORS['dir_outside_dlroot'] + f' ({settings.DOWNLOAD_ROOT})',
-            ),
-        )
+        # T4 verifier MEDIUM: this message previously embedded
+        # settings.DOWNLOAD_ROOT verbatim (f' ({settings.DOWNLOAD_ROOT})')
+        # -- reproduced live by the verifier as a real leak of the
+        # server's own filesystem layout. "Must be within the configured
+        # download root" is honest and actionable without naming the
+        # actual path; the caller doesn't need the literal value to
+        # correct their request.
+        form.add_error('directory', ValidationError(_ERRORS['dir_outside_dlroot']))

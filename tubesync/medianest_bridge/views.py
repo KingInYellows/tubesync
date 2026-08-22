@@ -1,9 +1,11 @@
 '''
     T1 diagnostics + auth-skeleton views: GET /health/live, GET /health/ready,
     GET /meta, GET /capabilities. T2's source/media read endpoints live in
-    views_sources.py, built on the same BridgeView here. No write endpoints
-    yet -- those are T3.
+    views_sources.py; T3's write endpoints live in views_write.py -- all
+    built on the same BridgeView here.
 '''
+import json
+import time
 import uuid
 from datetime import datetime, timezone
 from io import BytesIO
@@ -81,6 +83,76 @@ def _read_body_is_oversized(request, limit):
     return len(chunk) > limit
 
 
+def _response_json_field(response, field_name):
+    '''
+        Best-effort read of one field from a JSON response body, for
+        logging only -- never raises, never used for control flow.
+    '''
+    try:
+        return json.loads(response.content).get(field_name)
+    except Exception:
+        return None
+
+
+def _log_outcome(request, response, request_id, duration_ms):
+    '''
+        T4: one structured line per request, for every route, success or
+        error alike -- not a metrics stack (this fork has none, and
+        upstream has no Prometheus hook to build on; researched, not
+        assumed -- see the T4 PR body), just consistent, greppable
+        request/outcome logging matching this app's existing
+        common.logger.log usage. Exactly five fields, always the same
+        five: route, method, status, duration, request_id. Never the
+        bearer token (nothing here ever touches it), never a filesystem
+        path (route is the URL path, not a disk path).
+    '''
+    log.info(
+        'medianest_bridge: request_complete route=%s method=%s status=%s duration_ms=%s request_id=%s',
+        request.path, request.method, response.status_code, duration_ms, request_id,
+    )
+
+
+def _log_mutation_audit(request, response, request_id, kwargs):
+    '''
+        One audit-shaped line for every mutation *attempt* on a bridge
+        route -- both accepted and rejected, including a read-only
+        rejection, since "was a mutation attempted and what happened"
+        is the audit-relevant fact regardless of outcome. Only called
+        for non-safe methods (dispatch() checks this before calling).
+
+        source_uuid is read from the URL kwargs when the route names one
+        (POST /sources/{uuid}/sync) or, for a successful POST /sources
+        (201, no uuid in the URL -- the uuid is newly assigned), from the
+        response body's own uuid field. Never the bearer token, never a
+        filesystem path.
+    '''
+    if 200 <= response.status_code < 300:
+        outcome = 'accepted'
+    else:
+        code = _response_json_field(response, 'code') or str(response.status_code)
+        outcome = f'rejected_{code}'
+    source_uuid = kwargs.get('source_uuid') or _response_json_field(response, 'uuid')
+    log.info(
+        'medianest_bridge: mutation_audit route=%s outcome=%s source_uuid=%s request_id=%s',
+        request.path, outcome, source_uuid or '-', request_id,
+    )
+
+
+def _swallow_logging_failure(request_id, path):
+    '''
+        Last-resort handler when outcome/audit logging itself fails.
+        Must never raise: a broken logging handler must not discard an
+        already-computed HTTP response.
+    '''
+    try:
+        log.exception(
+            'medianest_bridge: outcome/audit logging failed request_id=%s path=%s',
+            request_id, path,
+        )
+    except Exception:
+        pass
+
+
 @method_decorator(csrf_exempt, name='dispatch')
 class BridgeView(View):
     '''
@@ -130,6 +202,29 @@ class BridgeView(View):
     read_only_exempt = False
 
     def dispatch(self, request, *args, **kwargs):
+        '''
+            Thin wrapper around _run_gates(): computes request_id/
+            correlation_id once, then -- regardless of which internal
+            gate (or the concrete view itself) produced the response --
+            logs exactly one structured outcome line and, for a mutation
+            attempt, exactly one audit line. This is why the gate logic
+            below lives in a separate method rather than dispatch()
+            itself: _run_gates() has several early `return
+            error_response(...)` points (disabled, CIDR, auth, read-only,
+            body-size), and duplicating the outcome/audit logging at each
+            of those return points would be easy to miss one on a future
+            edit. One wrapper, one place, applies to all of them
+            uniformly.
+
+            The two logging calls below are each wrapped in their own
+            try/except (T4 review fix-up): _run_gates()'s own try/except
+            only covers the gate checks and the concrete view's handler,
+            not these two calls, which run after it returns. Separate
+            guards ensure a failure in outcome logging does not suppress
+            mutation audit logging, and _swallow_logging_failure() itself
+            never raises so a broken logging handler cannot discard an
+            already-computed response.
+        '''
         request_id = _resolve_request_id(request)
         # Stashed so a concrete view's own error responses (e.g. 404
         # SOURCE_NOT_FOUND, 400 SOURCE_INVALID in views_sources.py) can
@@ -142,6 +237,21 @@ class BridgeView(View):
             'medianest_bridge: request path=%s method=%s request_id=%s correlation_id=%s',
             request.path, request.method, request_id, correlation_id or '-',
         )
+        start = time.monotonic()
+        response = self._run_gates(request, request_id, *args, **kwargs)
+        duration_ms = round((time.monotonic() - start) * 1000, 2)
+        try:
+            _log_outcome(request, response, request_id, duration_ms)
+        except Exception:
+            _swallow_logging_failure(request_id, request.path)
+        if request.method not in SAFE_METHODS:
+            try:
+                _log_mutation_audit(request, response, request_id, kwargs)
+            except Exception:
+                _swallow_logging_failure(request_id, request.path)
+        return response
+
+    def _run_gates(self, request, request_id, *args, **kwargs):
         try:
             if not config.bridge_enabled():
                 return error_response(

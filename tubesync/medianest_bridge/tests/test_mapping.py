@@ -206,6 +206,39 @@ class SerializeMediaTestCase(TestCase):
         body = mapping.serialize_media(media)
         self.assertTrue(body['eligible'])
 
+    def test_error_field_is_sanitized_end_to_end(self):
+        '''
+            T4: confirms error_sanitize.sanitize_error_message() is
+            actually wired into serialize_media(), not just unit-tested
+            in isolation -- constructs a real TaskHistory row matching
+            get_relevant_media_download_task()'s fallback-tier lookup
+            (name ending in download_media_file, task_params starting with
+            the media pk, failed_at == end_at so _task_failure_is_current()
+            treats the failure as current) with a path-bearing last_error,
+            and asserts the path never reaches serialize_media()'s output.
+        '''
+        from django.conf import settings
+
+        source = make_source()
+        media = make_media(source)
+        failure_signal_at = timezone.now()
+        make_download_task(
+            media,
+            start_at=timezone.now() - timezone.timedelta(seconds=30),
+            end_at=failure_signal_at,
+            scheduled_at=failure_signal_at,
+            failed_at=failure_signal_at,
+            last_error=(
+                f"[Errno 2] No such file or directory: "
+                f"'{settings.DOWNLOAD_ROOT}/leaked/path.mp4'"
+            ),
+        )
+        body = mapping.serialize_media(media)
+        self.assertIsNotNone(body['error'])
+        self.assertNotIn(str(settings.DOWNLOAD_ROOT), body['error'])
+        self.assertNotIn('leaked', body['error'])
+        self.assertIn('<redacted>', body['error'])
+
 
 class SerializeMediaTaskStateTestCase(TestCase):
     '''
@@ -565,3 +598,5 @@ class BatchMediaDownloadTasksTestCase(TestCase):
         self.assertEqual(states[str(running_media.pk)], 'downloading')
         self.assertEqual(states[str(failed_media.pk)], 'failed')
         self.assertEqual(states[str(pending_media.pk)], 'queued')
+
+

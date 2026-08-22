@@ -115,9 +115,14 @@ class HealthReadyEndpointTestCase(BridgeTestCase):
 
     def test_never_fabricates_healthy_for_unverifiable_components(self):
         '''
-            queues, workers, youtube are not cheaply verifiable from the web
-            process in T1 (see readiness.py's module docstring) and must
-            report "unknown", never "healthy".
+            youtube is permanently "unknown" by design (see readiness.py's
+            module docstring on why a bridge-initiated reachability probe
+            isn't a confirmed proxy for yt-dlp's own egress path). queues
+            and workers became real checks in T4 (readiness.py::check_workers/
+            check_queues, via s6-svstat against /run/service) but this test
+            environment doesn't run under s6-overlay, so they correctly
+            fall back to "unknown" here too -- see test_readiness.py for
+            the healthy/degraded/unavailable cases with /run/service mocked.
         '''
         self.enable_bridge()
         response = self.client.get(READY_URL, **self.auth_header())

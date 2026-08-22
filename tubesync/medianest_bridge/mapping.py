@@ -29,6 +29,8 @@ _MISSING = object()
 # fallback tier below and be reported as "queued" forever.
 _REVOKED_VERBOSE_PREFIX = '[revoked] '
 
+from .error_sanitize import sanitize_error_message
+
 
 def _iso(value):
     # Matches views.py's _now_iso() formatting (millisecond precision,
@@ -337,6 +339,17 @@ def serialize_media(media, *, download_task=_MISSING):
 
     raw_state = media.get_download_state(task or None)
     has_error = _task_failure_is_current(task)
+    # sync.tasks.get_error_message() strips only the exception-type
+    # prefix off the raw TaskHistory.last_error line -- a filesystem
+    # path, cookie-file reference, or anything credential-shaped in the
+    # remainder still reaches here unredacted otherwise. See
+    # error_sanitize.py for exactly what this strips and why it stops
+    # short of blanket-redacting long tokens (a YouTube channel/video ID
+    # in an error message is useful diagnostic detail, not a secret).
+    error_message = (
+        sanitize_error_message(get_error_message(task))
+        if (task and has_error) else None
+    )
 
     relative_path = None
     filename = None
@@ -380,5 +393,5 @@ def serialize_media(media, *, download_task=_MISSING):
             if (task and has_error and task.scheduled_at > timezone.now())
             else None
         ),
-        'error': get_error_message(task) if (task and has_error) else None,
+        'error': error_message,
     }

@@ -9,8 +9,20 @@
     for the T2 re-vendor (bridge-openapi.v1.yaml @
     713f9b4ac9efc24e0f285f9af58a50276f29ebb9) -- it is no longer a proposed
     addition, just a normal contract code, kept in this dict like the rest.
+
+    T4 verifier MEDIUM fix: `detail` is run through
+    error_sanitize.sanitize_error_message() unconditionally, here at the
+    envelope construction point -- not left as something every individual
+    call site has to remember to do. This is the wiring point the T4
+    redaction work was originally supposed to land at; mapping.py-only
+    wiring left every OTHER error emitter (every `error_response()` call
+    across views.py/views_write.py/views_sources.py) unsanitized, which
+    is exactly how POST /sources' directory-traversal error leaked
+    DOWNLOAD_ROOT verbatim.
 '''
 from django.http import JsonResponse
+
+from .error_sanitize import sanitize_error_message
 
 
 # type URIs are illustrative identifiers, not fetchable documents, matching
@@ -44,7 +56,7 @@ def error_response(*, status, code, title, detail, request_id, retryable, extra=
         'title': title,
         'status': status,
         'code': code,
-        'detail': detail,
+        'detail': sanitize_error_message(detail),
         'requestId': request_id,
         'retryable': retryable,
     }
