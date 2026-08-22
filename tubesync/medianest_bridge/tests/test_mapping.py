@@ -343,3 +343,27 @@ class BatchMediaDownloadTasksTestCase(TestCase):
         )
         result = mapping.batch_media_download_tasks([idle_media.pk])
         self.assertFalse(result[str(idle_media.pk)])
+
+    def test_revoked_pending_task_is_excluded_not_reported_as_queued(self):
+        '''
+            T2 review P1 finding: a download cancelled through
+            sync/views/tasks.py's RevokeTaskView is marked [revoked] in
+            verbose_name but still has start_at IS NULL -- exactly the
+            shape of a genuinely pending task. Without excluding the
+            [revoked] prefix, this row would be picked up by the
+            fallback tier and the media would incorrectly report
+            "queued" forever, even though the cancelled task will never
+            run.
+        '''
+        source = make_source()
+        media = make_media(source)
+        make_download_task(
+            media,
+            start_at=None,
+            scheduled_at=timezone.now() + timezone.timedelta(seconds=60),
+            verbose_name='[revoked] Download media "video1"',
+        )
+        result = mapping.batch_media_download_tasks([media.pk])
+        self.assertFalse(result[str(media.pk)])
+        body = mapping.serialize_media(media)
+        self.assertEqual(body['normalizedState'], 'discovered')

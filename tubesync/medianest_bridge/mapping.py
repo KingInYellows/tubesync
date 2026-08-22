@@ -20,6 +20,13 @@ from sync.tasks import get_error_message, get_running_tasks, get_source_index_ta
 
 _MISSING = object()
 
+# Set by sync/views/tasks.py's RevokeTaskView (and mirrored by
+# medianest_bridge/sync_dedup.py's own revoke path) on a cancelled
+# scheduled-but-never-started task: start_at stays NULL, so without this
+# exclusion a revoked row would otherwise still match the pending/failed
+# fallback tier below and be reported as "queued" forever.
+_REVOKED_VERBOSE_PREFIX = '[revoked] '
+
 
 def _iso(value):
     return value.isoformat() if value else None
@@ -109,13 +116,18 @@ def batch_media_download_tasks(media_ids):
           1. A currently-running task (get_running_tasks(), the same
              upstream-consistent predicate get_media_download_task() uses).
           2. For any media not caught by (1): the most recently scheduled
-             task that has NOT completed successfully -- either a failure
-             (failed_at set) or one that has not started yet (start_at is
-             still null, i.e. delayed/queued). Media with only a plain
-             successful task row, or no task row at all, correctly stay
-             False here -- Media.downloaded already short-circuits
-             get_download_state() before any task is consulted in that
-             case, so a successful row is never relevant to this lookup.
+             task that has NOT completed successfully and is not marked
+             [revoked] -- either a failure (failed_at set) or one that
+             has not started yet (start_at is still null, i.e.
+             delayed/queued). A row cancelled through
+             sync/views/tasks.py's RevokeTaskView also has start_at still
+             NULL, but is excluded by its [revoked] verbose_name prefix
+             so it is never reported as "queued" (it will never run).
+             Media with only a plain successful task row, or no task row
+             at all, correctly stay False here -- Media.downloaded
+             already short-circuits get_download_state() before any task
+             is consulted in that case, so a successful row is never
+             relevant to this lookup.
 
         Before this, callers relying solely on the running-task predicate
         (upstream's get_media_download_task()) had a delayed-but-not-yet-
@@ -152,6 +164,7 @@ def batch_media_download_tasks(media_ids):
         )
         pending_or_failed_qs = (
             TaskHistory.objects
+            .exclude(verbose_name__startswith=_REVOKED_VERBOSE_PREFIX)
             .filter(name__endswith='download_media_file')
             .filter(Q(failed_at__isnull=False) | Q(start_at__isnull=True))
             .filter(id_filter)
