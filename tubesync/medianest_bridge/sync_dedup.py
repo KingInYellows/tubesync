@@ -18,11 +18,21 @@
       - start_at set, != end_at     -> a later signal (COMPLETE/ERROR)
                                         moved end_at forward -> terminal
 
-    "non-completed" is the union of the first two states. Bounded to
-    MAX_RUN_TIME (matching sync.tasks.get_running_tasks()'s own
-    staleness window) so a worker that crashed mid-execution without
-    ever firing a terminal signal cannot permanently block sync-now for
-    a source.
+    "non-completed" is the union of the first two states. Only the
+    actively-executing branch is bounded to MAX_RUN_TIME (matching
+    sync.tasks.get_running_tasks()'s own staleness window), so a worker
+    that crashed mid-execution without ever firing a terminal signal
+    cannot permanently block sync-now for a source. The scheduled-but-
+    not-started branch is deliberately NOT bounded by that same cutoff:
+    end_at on a pending row records when it was last enqueued/rescheduled
+    (SIGNAL_ENQUEUED/SIGNAL_SCHEDULED both set it to "now" at signal time,
+    not to the far-future run time), so a legitimately still-scheduled
+    task -- e.g. sync/signals.py's source_pre_save scheduling index_source
+    at task_run_at_dt, potentially days out for a long index_schedule --
+    would otherwise fall outside an unconditional MAX_RUN_TIME (12h
+    default) cutoff well before its actual scheduled_at ever arrives,
+    making this predicate blind to it and letting sync-now schedule a
+    duplicate without revoking the original.
 
     Rows explicitly marked [revoked] (RevokeTaskView / huey reschedule)
     are excluded -- a revoked scheduled-but-never-started task still has
@@ -75,8 +85,8 @@ def find_pending_or_running_index_task(source_uuid_str):
     base = TaskHistory.objects.exclude(
         verbose_name__startswith=_REVOKED_VERBOSE_PREFIX,
     ).filter(
-        Q(start_at__isnull=True) | Q(start_at=F('end_at')),
-        end_at__gt=cutoff,
+        Q(start_at__isnull=True) |
+        Q(start_at=F('end_at'), end_at__gt=cutoff)
     )
     tqs = get_model_tasks(source_uuid_str, name=INDEX_SOURCE_TASK_NAME, qs=base)
     return tqs.first()

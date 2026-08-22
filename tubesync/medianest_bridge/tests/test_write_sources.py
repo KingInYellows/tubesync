@@ -609,6 +609,59 @@ class SyncSourceEndpointTestCase(BridgeTestCase):
             'shorter delay, not leave the 10-minute schedule intact',
         )
 
+    def test_far_future_scheduled_task_older_than_max_run_time_is_still_found(self):
+        '''
+            A genuinely still-scheduled index_source task (e.g. a native
+            source update rescheduling far out via
+            sync/signals.py::source_pre_save) must not be invisible to
+            dedup just because it was last enqueued more than
+            MAX_RUN_TIME ago -- end_at on a pending row records the last
+            enqueue/reschedule time, not the far-future scheduled_at, so
+            an unconditional cutoff would otherwise let sync-now schedule
+            a second index_source without revoking the original.
+        '''
+        source = self._make_source()
+        TaskHistory.objects.all().delete()
+        max_run_time = 12 * 60 * 60  # settings.MAX_RUN_TIME default
+        stale_end_at = timezone.now() - timedelta(seconds=max_run_time + 3600)
+        far_future = timezone.now() + timedelta(days=3)
+        pending = TaskHistory.objects.create(
+            name='sync.tasks.index_source',
+            task_id=str(uuid.uuid4()),
+            task_params=[['{}'.format(source.pk)], ''],
+            verbose_name='Index media from source "Test" once',
+            scheduled_at=far_future,
+            end_at=stale_end_at,
+        )
+        from medianest_bridge import sync_dedup
+        found = sync_dedup.find_pending_or_running_index_task(str(source.pk))
+        self.assertIsNotNone(
+            found,
+            'a pending task must remain visible to dedup regardless of '
+            'how long ago it was enqueued, as long as it is still '
+            'scheduled for the future and not revoked',
+        )
+        self.assertEqual(found.pk, pending.pk)
+
+        # sync-now must advance it (not schedule a duplicate alongside it).
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        response = self.client.post(self._sync_url(source), **self.auth_header())
+        self.assertEqual(response.status_code, 202)
+        live = TaskHistory.objects.filter(
+            name='sync.tasks.index_source',
+        ).exclude(verbose_name__startswith='[revoked] ')
+        self.assertEqual(
+            live.count(), 1,
+            'sync-now must converge to one live task, not leave the '
+            'far-future task in place while scheduling a second one',
+        )
+        self.assertLess(
+            live.get().scheduled_at,
+            timezone.now() + timedelta(seconds=90),
+            'sync-now must advance the far-future task to its own '
+            'shorter delay',
+        )
+
     def test_revoked_pending_task_does_not_block_sync(self):
         '''
             A terminal revoked scheduled-but-never-started row (marked
