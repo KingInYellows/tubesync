@@ -1,0 +1,24 @@
+tubesync/medianest_bridge/contract/bridge-openapi.v1.yaml
+  s_36f755e68122c7::t_a4fd121d14be61 5-12
+  s_36f755e68122c7::t_34695705fe731f 165-172,803-807
+tubesync/medianest_bridge/README.md
+  s_36f755e68122c7::t_3a5c8e1e481dec 342-351
+tubesync/medianest_bridge/contract/contract_fixtures.json
+  s_36f755e68122c7::t_7dc79307c210d0 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "57e4433448639f63a9651a027ceb5f6a3407a631",
+  "prompts": {},
+  "sessions": {
+    "s_36f755e68122c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2218c4e0-ce8c-47d2-a7f4-2c9f3474c829",
+        "model": "claude-fable-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
