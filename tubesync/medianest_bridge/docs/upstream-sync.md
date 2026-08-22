@@ -119,3 +119,16 @@ against. If a future upstream commit happens to add a same-named workflow
 file, that is the one collision this design does not protect against --
 extremely unlikely given the name is namespaced with `medianest-bridge-`,
 but worth knowing rather than assuming impossible.
+
+One deliberate exception: `.github/workflows/release.yaml` (otherwise an
+unmodified upstream file) carries a single fork-added line -- the
+`docker-image` job's `if: ${{ !startsWith(github.event.release.tag_name,
+'bridge-v') }}`. Upstream's generic release publisher triggers on
+`release: published` and resolves its own image tag from `GITHUB_REF`
+(`refs/tags/<tag>`), so without this guard a GitHub Release attached to a
+`bridge-v*` tag would make *upstream's* publisher push the exact same
+`ghcr.io/<owner>/tubesync:bridge-v*` ref `medianest-bridge-release.yaml`
+enforces as immutable and upstream-SHA-stamped -- racing or silently
+overwriting it (chatgpt-codex-connector review, PR #5). Preserve this one
+`if:` line across a `git merge upstream/main` on this file; it is the one
+place a sync deliberately touches an otherwise upstream-owned file.
