@@ -177,9 +177,14 @@ jobs:
           attempt=1
           max_attempts=3
           while :; do
-            output="$(docker buildx imagetools inspect "${image}" 2>&1)"
-            status=$?
-            if [ "${status}" -eq 0 ]; then
+            # GitHub Actions runs `shell: bash` as `bash -eo pipefail`, so a
+            # bare `output="$(cmd)"` assignment would abort the whole step
+            # via errexit the instant the command fails -- which is every
+            # single time this tag hasn't been published yet, defeating the
+            # "not found is fine" case entirely. Making the assignment the
+            # condition of `if` is the standard way to capture both output
+            # and status without tripping -e (chatgpt-codex-connector review).
+            if output="$(docker buildx imagetools inspect "${image}" 2>&1)"; then
               echo "::error::tag '${{ needs.info.outputs.tag }}' already exists at ${image} -- release tags are immutable, publish under a new tag"
               exit 1
             fi
