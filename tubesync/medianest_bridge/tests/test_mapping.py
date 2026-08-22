@@ -235,12 +235,18 @@ class SerializeMediaTaskStateTestCase(TestCase):
         source = make_source()
         media = make_media(source)
         past = timezone.now() - timezone.timedelta(seconds=30)
+        # historical_task() sets failed_at and end_at from the same
+        # signal_dt in a single SIGNAL_ERROR call -- share one timestamp
+        # here too, so this fixture matches production shape rather than
+        # incidentally passing _task_failure_is_current()'s equality
+        # check via two nearly-equal but distinct timezone.now() calls.
+        failure_signal_at = timezone.now()
         make_download_task(
             media,
             start_at=past,
-            end_at=timezone.now(),
+            end_at=failure_signal_at,
             scheduled_at=past,
-            failed_at=timezone.now(),
+            failed_at=failure_signal_at,
             last_error='RuntimeError: network unreachable',
         )
         body = mapping.serialize_media(media)
@@ -259,18 +265,47 @@ class SerializeMediaTaskStateTestCase(TestCase):
         media = make_media(source)
         past = timezone.now() - timezone.timedelta(seconds=30)
         retry_at = timezone.now() + timezone.timedelta(seconds=300)
+        failure_signal_at = timezone.now()
         make_download_task(
             media,
             start_at=past,
-            end_at=timezone.now(),
+            end_at=failure_signal_at,
             scheduled_at=retry_at,
-            failed_at=timezone.now(),
+            failed_at=failure_signal_at,
             last_error='RuntimeError: network unreachable',
         )
         body = mapping.serialize_media(media)
         self.assertEqual(body['normalizedState'], 'failed')
         self.assertIsNotNone(body['retryAt'])
         self.assertEqual(body['error'], 'network unreachable')
+
+    def test_stale_error_cleared_after_a_same_row_retry_succeeds(self):
+        # P2 review finding: huey's retries= mechanism reuses the same
+        # task_id/row across attempts (see the retryAt docstring above).
+        # historical_task() sets failed_at/last_error only on a
+        # SIGNAL_ERROR and never clears them -- so a row that failed
+        # once and then succeeded on a later retry (same row, a
+        # subsequent SIGNAL_COMPLETE) still has last_error populated
+        # from the earlier attempt. end_at, unlike failed_at, is touched
+        # by every signal including that final success, so end_at is
+        # now well after failed_at -- serialize_media() must not surface
+        # the stale error once media.downloaded is true.
+        source = make_source()
+        media = make_media(source, downloaded=True)
+        first_attempt_failed_at = timezone.now() - timezone.timedelta(seconds=120)
+        later_success_at = timezone.now()
+        make_download_task(
+            media,
+            start_at=timezone.now() - timezone.timedelta(seconds=130),
+            end_at=later_success_at,
+            scheduled_at=timezone.now() - timezone.timedelta(seconds=130),
+            failed_at=first_attempt_failed_at,
+            last_error='RuntimeError: network unreachable',
+        )
+        body = mapping.serialize_media(media)
+        self.assertEqual(body['normalizedState'], 'downloaded')
+        self.assertIsNone(body['error'])
+        self.assertIsNone(body['retryAt'])
 
     def test_failed_task_does_not_mask_skipped_state(self):
         # T2 review P2 finding: a stale failed TaskHistory row must not

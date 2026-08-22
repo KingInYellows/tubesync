@@ -9,6 +9,7 @@
     TubeSync-state-to-normalized-state precedence, so these are this app's
     own considered choices, not something guessed silently.
 '''
+from datetime import timezone as dt_timezone
 from functools import reduce
 from operator import or_ as _or_
 
@@ -30,7 +31,15 @@ _REVOKED_VERBOSE_PREFIX = '[revoked] '
 
 
 def _iso(value):
-    return value.isoformat() if value else None
+    # Matches views.py's _now_iso() formatting (millisecond precision,
+    # literal Z) -- plain .isoformat() emits microseconds and a +00:00
+    # offset instead, which fails the contract's own '*At' field pattern
+    # now that test_endpoints.py's assert_matches_schema() enforces it
+    # for every field ending in "At" (merged in from the foundation
+    # branch's T1 work).
+    if not value:
+        return None
+    return value.astimezone(dt_timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
 
 
 def map_source_type(raw_source_type):
@@ -264,6 +273,29 @@ def _task_has_override(task):
     return "'override': True" in (task.task_params[1] or '')
 
 
+def _task_failure_is_current(task):
+    '''
+        historical_task() (common/huey.py) sets failed_at and last_error
+        only inside its `elif exception_obj is not None` branch, and
+        never clears either one afterward -- including on a later
+        success. end_at, by contrast, is touched unconditionally by
+        every signal the row receives (`th.end_at = signal_dt`,
+        unconditional at the end of that function), and both failed_at
+        and end_at are set from the SAME signal_dt within a single
+        SIGNAL_ERROR call. So failed_at == end_at means the failure was
+        this row's most recent signal; failed_at < end_at means at least
+        one later signal happened since -- a subsequent SIGNAL_COMPLETE
+        (huey's retries= mechanism reuses the same task_id/row on retry,
+        per the retryAt docstring below, so a since-succeeded retry
+        keeps the old failed_at forever without this check) or a fresh
+        SIGNAL_EXECUTING for another retry attempt. Either way, the
+        failure is no longer this row's current state (P2 review
+        finding: a media item that failed once and later succeeded on
+        retry kept reporting a stale error indefinitely).
+    '''
+    return bool(task) and task.failed_at is not None and task.failed_at == task.end_at
+
+
 def _is_stale_given_current_media_state(media, task, *, is_running):
     '''
         True when `task` no longer represents media's actual current
@@ -304,7 +336,7 @@ def serialize_media(media, *, download_task=_MISSING):
         task = False
 
     raw_state = media.get_download_state(task or None)
-    has_error = bool(task) and task.has_error()
+    has_error = _task_failure_is_current(task)
 
     relative_path = None
     filename = None
