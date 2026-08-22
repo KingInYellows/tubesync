@@ -47,20 +47,19 @@
     never the full exception message, which for `requests` can embed the
     request URL) and latency -- nothing else is logged or returned.
 
-    Bounded by `requests`' own native `timeout=` parameter rather than
-    `_call_with_timeout()`'s `ThreadPoolExecutor` wrapper: unlike
-    `SELECT 1` or `statvfs()`, `requests.get()` already has a reliable
-    timeout with no "blocks in the kernel forever" failure mode to work
-    around, so wrapping it in that pattern too would be redundant rather
-    than defensive. Stated precisely, not glossed over: `timeout=2`
-    applies to the connect phase and the read phase *separately* (this is
-    `requests`/`urllib3`'s own documented semantics, not a bug here), so
-    the worst-case wall time for one probe call is closer to ~4s than a
-    strict 2s ceiling -- looser than `_call_with_timeout`'s true
-    total-wall-time bound, but still fully bounded (fires at most once
-    per `_YOUTUBE_CACHE_TTL_SECONDS`, cached, can never hang
-    indefinitely), which is what actually matters for `/health/ready`
-    never blocking on this check.
+    Bounded by `_call_with_timeout()`'s total wall-clock deadline
+    (`_YOUTUBE_PROBE_WALL_TIMEOUT_SECONDS`, 2s) around the whole
+    `requests.get()` call, with `requests`' own native `timeout=`
+    (`_YOUTUBE_PROBE_TIMEOUT_SECONDS`, also 2s) as a second layer on
+    connect/read socket inactivity. The outer wrapper is what actually
+    matters for `/health/ready` never blocking: unlike socket I/O,
+    `requests` does not bound a stalled `getaddrinfo()` DNS lookup, so
+    relying on `timeout=` alone would still let a dead resolver hold a
+    synchronous gunicorn worker until gunicorn's own worker timeout.
+    The inner `timeout=` still applies to connect and read phases
+    *separately* (`requests`/`urllib3` semantics), but the outer bound
+    caps total wall time regardless. Fires at most once per
+    `_YOUTUBE_CACHE_TTL_SECONDS`, cached, can never hang indefinitely.
 
     Cached under its own `_YOUTUBE_CACHE_TTL_SECONDS` (120s), separate
     from `collect_components()`'s shared 5s TTL: an external network
@@ -134,6 +133,7 @@ _CACHE_TTL_SECONDS = 5
 # youtube probe: see this module's docstring for the full rationale.
 _YOUTUBE_PROBE_URL = 'https://www.youtube.com/generate_204'
 _YOUTUBE_PROBE_TIMEOUT_SECONDS = 2
+_YOUTUBE_PROBE_WALL_TIMEOUT_SECONDS = 2
 _YOUTUBE_CACHE_TTL_SECONDS = 120
 
 
@@ -392,6 +392,14 @@ def _youtube_probe_enabled():
     return 'false' != getenv('MEDIANEST_BRIDGE_YOUTUBE_PROBE_ENABLED', 'true').strip().lower()
 
 
+def _fetch_youtube_probe_response():
+    return requests.get(
+        _YOUTUBE_PROBE_URL,
+        timeout=_YOUTUBE_PROBE_TIMEOUT_SECONDS,
+        allow_redirects=False,
+    )
+
+
 def _probe_youtube():
     '''
         The actual network call, isolated from check_youtube()'s caching
@@ -412,23 +420,20 @@ def _probe_youtube():
         extra requests and latency on top of it -- caught in review
         before this shipped, not after.
 
-        timeout=_YOUTUBE_PROBE_TIMEOUT_SECONDS applies to the connect and
-        read phases SEPARATELY (requests/urllib3's own documented
-        semantics, not a bug here) -- worst-case wall time for one call
-        is closer to ~4s than a strict 2s ceiling. Still fully bounded
-        (this function is called at most once per
-        _YOUTUBE_CACHE_TTL_SECONDS, cached, never on every request) --
-        see this module's docstring for why that's an acceptable, not
-        merely tolerated, tradeoff versus _call_with_timeout's true
-        total-wall-time bound.
+        The whole fetch runs inside _call_with_timeout() so a stalled DNS
+        resolver cannot hold /health/ready past
+        _YOUTUBE_PROBE_WALL_TIMEOUT_SECONDS regardless of requests'
+        per-phase timeout= semantics. See this module's docstring.
     '''
     start = time.monotonic()
     try:
-        response = requests.get(
-            _YOUTUBE_PROBE_URL,
-            timeout=_YOUTUBE_PROBE_TIMEOUT_SECONDS,
-            allow_redirects=False,
+        response = _call_with_timeout(
+            _fetch_youtube_probe_response,
+            timeout=_YOUTUBE_PROBE_WALL_TIMEOUT_SECONDS,
         )
+    except FutureTimeoutError:
+        latency_ms = round((time.monotonic() - start) * 1000, 1)
+        return _status('unavailable', detail=f'probe timed out after {latency_ms}ms')
     except requests.exceptions.RequestException as exc:
         latency_ms = round((time.monotonic() - start) * 1000, 1)
         return _status(

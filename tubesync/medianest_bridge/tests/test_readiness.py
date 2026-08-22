@@ -13,6 +13,7 @@
     suite, matching this program's "no live YouTube in CI" rule.
 '''
 import subprocess
+import time
 from unittest.mock import Mock, patch
 
 import requests
@@ -266,6 +267,18 @@ class YoutubeProbeTestCase(ReadinessCacheResetMixin, SimpleTestCase):
             result = readiness.check_youtube()
         self.assertEqual(result['status'], 'unavailable')
         self.assertIn('Timeout', result['detail'])
+
+    def test_unavailable_when_probe_exceeds_wall_clock_timeout(self):
+        def hang_forever(*args, **kwargs):
+            time.sleep(10)
+
+        with patch.object(readiness.requests, 'get', side_effect=hang_forever):
+            start = time.monotonic()
+            result = readiness.check_youtube()
+            elapsed = time.monotonic() - start
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertIn('probe timed out', result['detail'])
+        self.assertLess(elapsed, 5)
 
     def test_unavailable_on_connection_refused(self):
         with patch.object(
