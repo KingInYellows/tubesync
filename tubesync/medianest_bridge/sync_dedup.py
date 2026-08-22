@@ -18,24 +18,40 @@
       - start_at set, != end_at     -> a later signal (COMPLETE/ERROR)
                                         moved end_at forward -> terminal
 
-    "non-completed" is the union of the first two states. Only the
-    actively-executing branch is bounded to MAX_RUN_TIME (matching
-    sync.tasks.get_running_tasks()'s own staleness window), so a worker
-    that crashed mid-execution without ever firing a terminal signal
-    cannot permanently block sync-now for a source. The scheduled-but-
-    not-started branch is deliberately NOT bounded by that same cutoff:
-    end_at on a pending row records when it was last enqueued/rescheduled
-    (SIGNAL_ENQUEUED/SIGNAL_SCHEDULED both set it to "now" at signal time,
-    not to the far-future run time), so a legitimately still-scheduled
-    task -- e.g. sync/signals.py's source_pre_save scheduling index_source
-    at task_run_at_dt, potentially days out for a long index_schedule --
-    would otherwise fall outside an unconditional MAX_RUN_TIME (12h
-    default) cutoff well before its actual scheduled_at ever arrives,
-    making this predicate blind to it and letting sync-now schedule a
-    duplicate without revoking the original.
+    "non-completed" is the union of the first two states. Both branches
+    are bounded by MAX_RUN_TIME (matching sync.tasks.get_running_tasks()'s
+    own staleness window), but against different columns, deliberately:
 
-    Rows explicitly marked [revoked] (RevokeTaskView / huey reschedule)
-    are excluded -- a revoked scheduled-but-never-started task still has
+      - actively-executing (start_at == end_at): bounded by end_at, so a
+        worker that crashed mid-execution without ever firing a terminal
+        signal cannot permanently block sync-now for a source.
+      - scheduled-but-not-started (start_at IS NULL): bounded by
+        scheduled_at, not end_at. end_at on a pending row records when it
+        was last enqueued/rescheduled (SIGNAL_ENQUEUED/SIGNAL_SCHEDULED
+        both set it to "now" at signal time, not the run time), so
+        cutting off on end_at would make a legitimately still-scheduled
+        task -- e.g. sync/signals.py's source_pre_save scheduling
+        index_source at task_run_at_dt, potentially days out for a long
+        index_schedule -- fall outside the window well before its actual
+        scheduled_at ever arrives. scheduled_at doesn't have that problem:
+        a task that is really still queued always has scheduled_at at or
+        after its own run time, however long ago it was last touched, so
+        it stays visible regardless of end_at. A task whose scheduled_at
+        has already passed by more than MAX_RUN_TIME, conversely, should
+        have executed by now and didn't -- that's the same "worker went
+        away" signal the running branch guards against, just for a task
+        that never got as far as EXECUTING. This also closes a revoke
+        path RevokeTaskView/_revoke_pending_index_task below don't cover:
+        common/huey.py's on_executing_remove_duplicates() can revoke a
+        duplicate task when a higher-priority one starts executing, and
+        that SIGNAL_REVOKED handling (historical_task) neither sets
+        start_at nor the [revoked] prefix (only SIGNAL_ENQUEUED's branch
+        ever sets verbose_name) -- without a scheduled_at bound, that
+        terminal-but-unmarked row would otherwise sit in "pending" forever.
+
+    Rows explicitly marked [revoked] (RevokeTaskView / this module's own
+    _revoke_pending_index_task) are excluded outright, regardless of
+    scheduled_at -- a revoked scheduled-but-never-started task still has
     start_at IS NULL but is terminal, not queued.
 
     schedule_sync_now_index() advances a slower scheduled-but-not-started
@@ -85,7 +101,7 @@ def find_pending_or_running_index_task(source_uuid_str):
     base = TaskHistory.objects.exclude(
         verbose_name__startswith=_REVOKED_VERBOSE_PREFIX,
     ).filter(
-        Q(start_at__isnull=True) |
+        Q(start_at__isnull=True, scheduled_at__gt=cutoff) |
         Q(start_at=F('end_at'), end_at__gt=cutoff)
     )
     tqs = get_model_tasks(source_uuid_str, name=INDEX_SOURCE_TASK_NAME, qs=base)

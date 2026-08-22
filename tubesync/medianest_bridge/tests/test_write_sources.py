@@ -186,6 +186,16 @@ class CreateSourceEndpointTestCase(BridgeTestCase):
         self.assertEqual(json.loads(response.content)['code'], 'PROVIDER_READ_ONLY')
         self.assertEqual(Source.objects.count(), 0)
 
+    def test_post_without_csrf_token_reaches_bridge_gates_not_csrf_middleware(self):
+        # CsrfViewMiddleware would return an HTML 403 before dispatch()
+        # unless BridgeView is CSRF-exempt. A JSON PROVIDER_READ_ONLY
+        # proves the request reached the bridge's own gates instead.
+        self.enable_bridge()
+        client = self.client_class(enforce_csrf_checks=True)
+        response = post_json(client, SOURCES_URL, self._valid_channel_body(), **self.auth_header())
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(json.loads(response.content)['code'], 'PROVIDER_READ_ONLY')
+
     def test_valid_channel_create(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
         response = post_json(self.client, SOURCES_URL, self._valid_channel_body(), **self.auth_header())
@@ -660,6 +670,50 @@ class SyncSourceEndpointTestCase(BridgeTestCase):
             timezone.now() + timedelta(seconds=90),
             'sync-now must advance the far-future task to its own '
             'shorter delay',
+        )
+
+    def test_terminal_unmarked_row_older_than_max_run_time_does_not_block_sync(self):
+        '''
+            common/huey.py::on_executing_remove_duplicates() can revoke a
+            duplicate task when a higher-priority one starts executing --
+            a different revoke path than RevokeTaskView or this module's
+            own _revoke_pending_index_task. Its SIGNAL_REVOKED handling
+            (historical_task) neither sets start_at nor the [revoked]
+            prefix, so the row is indistinguishable from a genuinely
+            pending one except that its own scheduled_at (the time it was
+            due to run) is now in the past. Once that's more than
+            MAX_RUN_TIME ago, dedup must treat it as dead, not as a live
+            block on sync-now.
+        '''
+        source = self._make_source()
+        TaskHistory.objects.all().delete()
+        max_run_time = 12 * 60 * 60  # settings.MAX_RUN_TIME default
+        long_past = timezone.now() - timedelta(seconds=max_run_time + 3600)
+        terminal = TaskHistory.objects.create(
+            name='sync.tasks.index_source',
+            task_id=str(uuid.uuid4()),
+            task_params=[['{}'.format(source.pk)], ''],
+            verbose_name='Index media from source "Test" once',
+            scheduled_at=long_past,
+            end_at=long_past,
+        )
+        from medianest_bridge import sync_dedup
+        self.assertIsNone(
+            sync_dedup.find_pending_or_running_index_task(str(source.pk)),
+            'a row whose own scheduled_at is long past must not be '
+            'treated as still pending, regardless of how it got that way',
+        )
+
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        response = self.client.post(self._sync_url(source), **self.auth_header())
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(
+            TaskHistory.objects.filter(
+                name='sync.tasks.index_source',
+            ).exclude(pk=terminal.pk).count(),
+            1,
+            'sync-now must schedule a fresh task rather than being '
+            'blocked forever by the stale terminal row',
         )
 
     def test_revoked_pending_task_does_not_block_sync(self):
