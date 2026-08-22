@@ -87,6 +87,26 @@ def _is_actively_running(task):
 
 
 def _revoke_pending_index_task(pending_task):
+    '''
+        Marks pending_task [revoked] rather than deleting it.
+
+        common/huey.py's historical_task listens for every signal on
+        every queue (register_huey_signals()'s bare signal(queue=qn)
+        registration), SIGNAL_REVOKED included, and reacts to
+        queue.revoke_by_id() below by calling
+        TaskHistory.objects.get_or_create(task_id=pending_task.task_id,
+        ...) whenever that signal eventually fires (asynchronously, once
+        a live huey consumer processes it -- not necessarily before this
+        function returns). Deleting the row here would only be a race:
+        get_or_create would then recreate an unmarked row with the same
+        task_id, start_at still NULL (SIGNAL_REVOKED does not set it) and
+        no [revoked] prefix (only SIGNAL_ENQUEUED's branch ever sets
+        verbose_name, and only when the row does not already have one) --
+        resurrecting exactly the ghost "pending" row this function exists
+        to get rid of, still matched by find_pending_or_running_index_task()'s
+        own predicate above. Marking the still-existing row instead means
+        that get_or_create finds it by task_id and preserves the prefix.
+    '''
     from django_huey import DJANGO_HUEY, get_queue
 
     huey_queues = {
@@ -95,7 +115,11 @@ def _revoke_pending_index_task(pending_task):
     queue = huey_queues.get(pending_task.queue)
     if queue is not None:
         queue.revoke_by_id(id=pending_task.task_id, revoke_once=True)
-    pending_task.delete()
+    if not (pending_task.verbose_name or '').startswith(_REVOKED_VERBOSE_PREFIX):
+        pending_task.verbose_name = (
+            _REVOKED_VERBOSE_PREFIX + (pending_task.verbose_name or pending_task.name)
+        )
+        pending_task.save(update_fields=['verbose_name'])
 
 
 def schedule_sync_now_index(source):

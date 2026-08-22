@@ -569,6 +569,9 @@ class SyncSourceEndpointTestCase(BridgeTestCase):
             TaskHistory.objects.filter(name='sync.tasks.index_source').count(), 1,
             'create alone should schedule exactly one index_source task',
         )
+        live_index_tasks = TaskHistory.objects.filter(
+            name='sync.tasks.index_source',
+        ).exclude(verbose_name__startswith='[revoked] ')
         before_sync = TaskHistory.objects.get(name='sync.tasks.index_source')
         self.assertGreater(
             before_sync.scheduled_at,
@@ -581,13 +584,24 @@ class SyncSourceEndpointTestCase(BridgeTestCase):
             f'{SOURCES_URL}/{source_uuid}/sync', **self.auth_header(),
         )
         self.assertEqual(sync_response.status_code, 202)
+        # Exactly one LIVE task, not one row: the superseded create-time
+        # task is now marked [revoked] rather than deleted (see
+        # _revoke_pending_index_task's docstring -- deleting it would race
+        # huey's own asynchronous SIGNAL_REVOKED handler, which would
+        # otherwise resurrect an unmarked, still-"pending" ghost row for
+        # the same task_id), so it stays in the table but excluded from
+        # both this count and future dedup lookups.
         self.assertEqual(
-            TaskHistory.objects.filter(name='sync.tasks.index_source').count(), 1,
-            'sync-now immediately after create must converge to one '
+            live_index_tasks.count(), 1,
+            'sync-now immediately after create must converge to one LIVE '
             'index_source task, not schedule a second (double-indexing) '
             'one alongside the 10-minute-delayed create-time task',
         )
-        after_sync = TaskHistory.objects.get(name='sync.tasks.index_source')
+        superseded = TaskHistory.objects.exclude(pk__in=live_index_tasks.values('pk')).get(
+            name='sync.tasks.index_source',
+        )
+        self.assertTrue(superseded.verbose_name.startswith('[revoked] '))
+        after_sync = live_index_tasks.get()
         self.assertLess(
             after_sync.scheduled_at,
             timezone.now() + timedelta(seconds=90),
@@ -620,6 +634,56 @@ class SyncSourceEndpointTestCase(BridgeTestCase):
             ).exclude(pk=stale.pk).count(),
             1,
             'sync-now must schedule a fresh task when only a revoked row exists',
+        )
+
+    def test_revoke_survives_a_later_async_get_or_create_for_the_same_task_id(self):
+        '''
+            common/huey.py's historical_task listens for every signal on
+            every queue and reacts to SIGNAL_REVOKED (fired by
+            queue.revoke_by_id(), which _revoke_pending_index_task calls)
+            by calling TaskHistory.objects.get_or_create(task_id=...) --
+            asynchronously, whenever a live huey consumer actually
+            processes the revoke, which is not guaranteed to happen
+            before _revoke_pending_index_task returns. This simulates
+            that later call directly (this test environment has no live
+            consumer to fire the real signal) and proves the row it finds
+            still carries the [revoked] marker -- if the pending row had
+            been deleted instead of marked, this get_or_create would
+            silently CREATE a fresh, unmarked row with start_at still
+            NULL, resurrecting exactly the ghost "pending" task this
+            dedup logic exists to get rid of.
+        '''
+        from medianest_bridge import sync_dedup
+
+        source = self._make_source()
+        TaskHistory.objects.all().delete()
+        pending = TaskHistory.objects.create(
+            name='sync.tasks.index_source',
+            task_id=str(uuid.uuid4()),
+            task_params=[['{}'.format(source.pk)], ''],
+            verbose_name='Index media from source "Test" once',
+            scheduled_at=timezone.now() + timedelta(seconds=600),
+            end_at=timezone.now(),
+        )
+        sync_dedup._revoke_pending_index_task(pending)
+
+        # historical_task's SIGNAL_REVOKED branch: get_or_create by
+        # task_id, touch end_at, do NOT set start_at or verbose_name.
+        resurrected, created = TaskHistory.objects.get_or_create(
+            task_id=pending.task_id,
+            defaults=dict(name='sync.tasks.index_source', end_at=timezone.now()),
+        )
+        self.assertFalse(
+            created,
+            'the marked row must already exist by task_id -- if this is '
+            'True, _revoke_pending_index_task deleted rather than marked '
+            'it, and get_or_create just resurrected an unmarked ghost row',
+        )
+        self.assertTrue(resurrected.verbose_name.startswith('[revoked] '))
+        self.assertIsNone(
+            sync_dedup.find_pending_or_running_index_task(str(source.pk)),
+            'the marked-and-resurrected-by-task_id row must still be '
+            'excluded from dedup lookups',
         )
 
     def test_nonexistent_source_returns_404(self):
