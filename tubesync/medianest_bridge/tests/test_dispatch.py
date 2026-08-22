@@ -106,6 +106,17 @@ class ReadOnlyGateTestCase(BridgeTestCase):
         response = self.client.post(LIVE_URL, **self.auth_header())
         self.assertEqual(response.status_code, 405)
 
+    def test_post_without_csrf_token_reaches_bridge_gates_not_csrf_middleware(self):
+        # CsrfViewMiddleware would return an HTML 403 before dispatch()
+        # unless BridgeView is CSRF-exempt. A JSON PROVIDER_READ_ONLY (or
+        # 405 when read-only is off) proves the request reached the bridge.
+        self.enable_bridge()
+        client = self.client_class(enforce_csrf_checks=True)
+        response = client.post(LIVE_URL, **self.auth_header())
+        self.assertEqual(response.status_code, 403)
+        body = json.loads(response.content)
+        self.assertEqual(body['code'], 'PROVIDER_READ_ONLY')
+
 
 class BodySizeGateTestCase(BridgeTestCase):
 

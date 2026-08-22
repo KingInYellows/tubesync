@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 
 from django.conf import settings
 from django.http import JsonResponse
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import View
 
 from common.logger import log
@@ -33,6 +35,7 @@ def _resolve_request_id(request):
     return str(uuid.uuid4())
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class BridgeView(View):
     '''
         Shared gating for every bridge route, implemented as an overridden
@@ -40,6 +43,12 @@ class BridgeView(View):
         an entry to settings.MIDDLEWARE would be a fourth upstream touch
         point, beyond the three the fork delta is scoped to (INSTALLED_APPS,
         the URL include, and the BASICAUTH_ALWAYS_ALLOW_URIS exemption).
+
+        CSRF is exempted here (not via settings) for the same reason: the
+        bridge is a bearer-token server-to-server API; MediaNest callers
+        never carry Django's CSRF cookie/token. Without this exemption,
+        CsrfViewMiddleware would reject mutating requests with an HTML 403
+        before dispatch() runs.
 
         Gate order (checked in this sequence, each short-circuiting on
         failure): disabled -> CIDR -> bearer -> read-only -> body-size ->
