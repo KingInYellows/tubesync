@@ -1,0 +1,23 @@
+.github/workflows/medianest-bridge-release.yaml
+  s_6f44432272f3fb::t_2db5f019aa5544 198-205,207,219,230
+  s_6f44432272f3fb::t_b1a3ec3768e764 71-82,84-85,99-108
+  s_6f44432272f3fb::t_9b2e263d59faf2 109
+tubesync/medianest_bridge/docs/migration-upgrade-proof.md
+  s_6f44432272f3fb::t_61f2b72e0f89ea 37-43,45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "09e9670dec9ad420ff14296f3296a66e9f25dee2",
+  "prompts": {},
+  "sessions": {
+    "s_6f44432272f3fb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0cc3c93c-09c0-4006-8c37-39f39900f896",
+        "model": "claude-fable-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
