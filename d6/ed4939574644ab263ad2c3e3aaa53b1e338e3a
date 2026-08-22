@@ -1,0 +1,28 @@
+tubesync/medianest_bridge/tests/test_mapping.py
+  s_6f44432272f3fb::t_a9ffd2936e2ae1 322-345
+tubesync/medianest_bridge/tests/test_dispatch.py
+  s_6f44432272f3fb::t_3809f499aebd4e 108-118
+tubesync/medianest_bridge/mapping.py
+  s_6f44432272f3fb::t_9074512d215540 142-152,157
+  s_6f44432272f3fb::t_12d79d8ad58582 12-14
+tubesync/medianest_bridge/views.py
+  s_6f44432272f3fb::t_f4ede769b54bc9 12-13
+  s_6f44432272f3fb::t_91177424adb295 34,43-47
+  s_6f44432272f3fb::t_126950836b29d5 48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "d6ed4939574644ab263ad2c3e3aaa53b1e338e3a",
+  "prompts": {},
+  "sessions": {
+    "s_6f44432272f3fb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0cc3c93c-09c0-4006-8c37-39f39900f896",
+        "model": "claude-fable-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
