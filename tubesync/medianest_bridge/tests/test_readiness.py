@@ -6,10 +6,16 @@
     anything not matching the exact paths/commands under test) rather
     than patching them unconditionally, so this doesn't destabilize
     unrelated filesystem/subprocess calls made elsewhere during a test.
+
+    T-side follow-up (post-M6b egress determination): YoutubeProbeTestCase
+    below adds the real youtube reachability probe. Every test mocks
+    readiness.requests.get -- no live network call is ever made from this
+    suite, matching this program's "no live YouTube in CI" rule.
 '''
 import subprocess
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+import requests
 from django.test import SimpleTestCase
 
 from .. import readiness
@@ -222,3 +228,158 @@ class CachingTestCase(ReadinessCacheResetMixin, SimpleTestCase):
             readiness._cache['expires_at'] = 0.0
             readiness.collect_components()
         self.assertEqual(call_count['n'], 2)
+
+
+class YoutubeProbeTestCase(ReadinessCacheResetMixin, SimpleTestCase):
+    '''
+        Every test here mocks readiness.requests.get directly -- no live
+        network call is ever made. See this module's docstring.
+    '''
+
+    def _response(self, status_code):
+        response = Mock()
+        response.status_code = status_code
+        return response
+
+    def test_healthy_on_204(self):
+        with patch.object(readiness.requests, 'get', return_value=self._response(204)):
+            result = readiness.check_youtube()
+        self.assertEqual(result['status'], 'healthy')
+        self.assertIn('HTTP 204', result['detail'])
+
+    def test_healthy_on_other_2xx_3xx(self):
+        with patch.object(readiness.requests, 'get', return_value=self._response(302)):
+            result = readiness.check_youtube()
+        self.assertEqual(result['status'], 'healthy')
+
+    def test_unavailable_on_non_2xx_3xx_status(self):
+        with patch.object(readiness.requests, 'get', return_value=self._response(503)):
+            result = readiness.check_youtube()
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertIn('HTTP 503', result['detail'])
+
+    def test_unavailable_on_timeout(self):
+        with patch.object(
+            readiness.requests, 'get',
+            side_effect=requests.exceptions.Timeout('connect timed out'),
+        ):
+            result = readiness.check_youtube()
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertIn('Timeout', result['detail'])
+
+    def test_unavailable_on_connection_refused(self):
+        with patch.object(
+            readiness.requests, 'get',
+            side_effect=requests.exceptions.ConnectionError('refused'),
+        ):
+            result = readiness.check_youtube()
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertIn('ConnectionError', result['detail'])
+
+    def test_detail_never_contains_the_probe_url_or_raw_exception_text(self):
+        '''
+            requests' own exception __str__ commonly embeds the full
+            request URL and low-level connection text -- the probe must
+            record only the exception's class name, never str(exc).
+        '''
+        message_with_url = (
+            "HTTPSConnectionPool(host='www.youtube.com', port=443): "
+            "Max retries exceeded with url: /generate_204 "
+            "(Caused by NewConnectionError('secret-internal-detail'))"
+        )
+        with patch.object(
+            readiness.requests, 'get',
+            side_effect=requests.exceptions.ConnectionError(message_with_url),
+        ):
+            result = readiness.check_youtube()
+        self.assertNotIn(readiness._YOUTUBE_PROBE_URL, result['detail'])
+        self.assertNotIn('secret-internal-detail', result['detail'])
+        self.assertNotIn('youtube.com', result['detail'])
+
+    def test_disabled_reports_not_configured_and_makes_no_network_call(self):
+        from .base import env_override
+        with (
+            env_override(MEDIANEST_BRIDGE_YOUTUBE_PROBE_ENABLED='false'),
+            patch.object(readiness.requests, 'get') as mock_get,
+        ):
+            result = readiness.check_youtube()
+        self.assertEqual(result['status'], 'not_configured')
+        mock_get.assert_not_called()
+
+    def test_enabled_by_default(self):
+        with patch.object(readiness.requests, 'get', return_value=self._response(204)) as mock_get:
+            result = readiness.check_youtube()
+        self.assertEqual(result['status'], 'healthy')
+        mock_get.assert_called_once()
+
+    def test_probes_the_expected_url_with_a_bounded_timeout_no_auth_no_cookies(self):
+        with patch.object(readiness.requests, 'get', return_value=self._response(204)) as mock_get:
+            readiness.check_youtube()
+        args, kwargs = mock_get.call_args
+        self.assertEqual(args[0], 'https://www.youtube.com/generate_204')
+        self.assertEqual(kwargs.get('timeout'), readiness._YOUTUBE_PROBE_TIMEOUT_SECONDS)
+        self.assertNotIn('headers', kwargs)
+        self.assertNotIn('cookies', kwargs)
+        self.assertNotIn('auth', kwargs)
+
+    def test_repeated_calls_within_ttl_do_not_reprobe(self):
+        with patch.object(readiness.requests, 'get', return_value=self._response(204)) as mock_get:
+            readiness.check_youtube()
+            readiness.check_youtube()
+            readiness.check_youtube()
+        self.assertEqual(mock_get.call_count, 1)
+
+    def test_cache_expires_after_its_own_ttl(self):
+        with patch.object(readiness.requests, 'get', return_value=self._response(204)) as mock_get:
+            readiness.check_youtube()
+            # Simulate the youtube-specific TTL elapsing without a real sleep --
+            # this cache is independent of the shared _cache dict's TTL.
+            readiness._youtube_cache['expires_at'] = 0.0
+            readiness.check_youtube()
+        self.assertEqual(mock_get.call_count, 2)
+
+    def test_youtube_cache_is_independent_of_shared_components_cache(self):
+        '''
+            check_youtube()'s own cache must outlive collect_components()'s
+            shared 5s TTL -- calling collect_components() repeatedly (which
+            invalidates and recomputes the shared cache each time it's
+            forced to) must not re-probe youtube on every call.
+        '''
+        with patch.object(readiness.requests, 'get', return_value=self._response(204)) as mock_get:
+            readiness.collect_components()
+            readiness._cache['expires_at'] = 0.0  # force the shared cache to miss
+            readiness.collect_components()
+        self.assertEqual(mock_get.call_count, 1)
+
+    def test_disabled_component_never_worsens_overall_status(self):
+        '''
+            Tests aggregate_status() directly against a synthetic,
+            otherwise-all-healthy components dict -- not the real
+            collect_components() output, which pulls in this actual test
+            environment's other real signals (e.g. check_ffmpeg() reports
+            "unavailable" here because ts-bridge-test:latest has no
+            ffmpeg binary at all, unrelated to youtube and already
+            enough to degrade the real aggregate on its own). This test
+            is specifically about the aggregation RULE's interaction
+            with youtube's "not_configured" status, isolated from every
+            other component's real-environment state.
+        '''
+        from .base import env_override
+        with env_override(MEDIANEST_BRIDGE_YOUTUBE_PROBE_ENABLED='false'):
+            youtube_component = readiness.check_youtube()
+        self.assertEqual(youtube_component['status'], 'not_configured')
+        components = {name: readiness._status('healthy') for name in readiness.CHECKS}
+        components['youtube'] = youtube_component
+        self.assertEqual(readiness.aggregate_status(components), 'healthy')
+
+    def test_unavailable_youtube_degrades_not_unavailable_overall(self):
+        '''Same isolation rationale as the test above.'''
+        with patch.object(
+            readiness.requests, 'get',
+            side_effect=requests.exceptions.ConnectionError('refused'),
+        ):
+            youtube_component = readiness.check_youtube()
+        self.assertEqual(youtube_component['status'], 'unavailable')
+        components = {name: readiness._status('healthy') for name in readiness.CHECKS}
+        components['youtube'] = youtube_component
+        self.assertEqual(readiness.aggregate_status(components), 'degraded')
