@@ -512,6 +512,47 @@
         "rawState",
         "normalizedState"
       ]
+    },
+    "ValidatedSource": {
+      "properties": {
+        "canonicalKey": {
+          "enum": null,
+          "pattern": null,
+          "type": "string"
+        },
+        "canonicalUrl": {
+          "enum": null,
+          "pattern": null,
+          "type": "string"
+        },
+        "displayName": {
+          "enum": null,
+          "pattern": null,
+          "type": "string"
+        },
+        "sourceType": {
+          "enum": [
+            "channel",
+            "playlist"
+          ],
+          "pattern": null,
+          "type": "string"
+        },
+        "thumbnailUrl": {
+          "enum": null,
+          "pattern": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "sourceType",
+        "canonicalKey",
+        "canonicalUrl",
+        "displayName"
+      ]
     }
   }
 }

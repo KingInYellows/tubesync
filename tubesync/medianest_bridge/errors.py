@@ -32,7 +32,7 @@ _SLUGS = {
 }
 
 
-def error_response(*, status, code, title, detail, request_id, retryable):
+def error_response(*, status, code, title, detail, request_id, retryable, extra=None):
     if code not in _SLUGS:
         # Defensive: every call site in this app must use a known code.
         # Coding this as a hard failure (not a silent fallback) makes a
@@ -48,6 +48,13 @@ def error_response(*, status, code, title, detail, request_id, retryable):
         'requestId': request_id,
         'retryable': retryable,
     }
+    if extra:
+        # Contract extension point: SOURCE_CONFLICT's 409 response is
+        # `allOf: [Error, {existingSourceUuid: ...}]` -- a plain envelope
+        # field plus one extra key, not a different shape. `extra` lets a
+        # caller add that single key without hand-building a second
+        # JsonResponse around a round-tripped copy of this one.
+        body.update(extra)
     response = JsonResponse(body, status=status)
     response['X-Request-ID'] = request_id
     return response

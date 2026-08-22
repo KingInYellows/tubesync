@@ -251,7 +251,7 @@ class SourceMediaEndpointTestCase(BridgeTestCase):
 
 class CapabilitiesReflectsT2TestCase(BridgeTestCase):
 
-    def test_read_sources_and_read_media_are_now_true(self):
+    def test_read_sources_and_read_media_are_true(self):
         self.enable_bridge()
         response = self.client.get(
             '/api/medianest/v1/capabilities', **self.auth_header(),
@@ -259,12 +259,10 @@ class CapabilitiesReflectsT2TestCase(BridgeTestCase):
         body = json.loads(response.content)
         self.assertTrue(body['readSources'])
         self.assertTrue(body['readMedia'])
-        # Everything else stays false -- T2 is read-only.
-        write_flags = {
-            k: v for k, v in body.items()
-            if k not in ('health', 'readSources', 'readMedia')
-        }
-        self.assertTrue(all(v is False for v in write_flags.values()), write_flags)
+        # The full "which flags are true" assertion, including T3's
+        # validate/create/sync flags, lives in
+        # tests/test_write_sources.py -- kept there so this file doesn't
+        # need updating every time a later slice flips another capability.
 
 
 class NonGetMethodRejectionTestCase(BridgeTestCase):

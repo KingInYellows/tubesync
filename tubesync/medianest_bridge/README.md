@@ -6,20 +6,20 @@ control plane to talk to. It is consumed only by MediaNest's backend, never
 by a browser.
 
 **T1 (bridge foundation)** shipped diagnostics endpoints and the auth
-skeleton. **T2 (this slice, read API)** adds the contract's read-only source
-and media endpoints on top of that foundation. Write endpoints (create
-source, sync-now) are T3.
+skeleton. **T2 (read API)** added the contract's read-only source and
+media endpoints. **T3 (this slice, write API)** adds the contract's three
+write endpoints -- the first mutation surface in this app.
 
-T2 deliberately implements only the endpoints the vendored contract
-actually defines today: `GET /sources` (key lookup), `GET
-/sources/{sourceUuid}`, and `GET /sources/{sourceUuid}/media`. It does
-**not** implement a general paginated source list, `GET /media/{mediaId}`,
-or any `/tasks` endpoint -- none of those exist in
-`bridge-openapi.v1.yaml`. The M0 contract is scoped to the vertical-slice
-minimum by design; a broader read surface is a documented roadmap item, to
-be added contract-first (proposed, accepted, re-vendored, then
-implemented) rather than built ahead of the contract, the same pattern
-that added `REQUEST_TOO_LARGE` to `Error.code`.
+Every slice deliberately implements only the endpoints the vendored
+contract actually defines: no general paginated source list, no `GET
+/media/{mediaId}`, no `/tasks` endpoint, no deletion of any kind anywhere
+in this app. The M0 contract is scoped to the vertical-slice minimum by
+design; a broader surface is a documented roadmap item, to be added
+contract-first (proposed, accepted, re-vendored, then implemented) rather
+than built ahead of the contract -- the same pattern that added
+`REQUEST_TOO_LARGE` to `Error.code` after T1, and that codified T3's
+`/sources/validate` scope reduction (below) as DECISIONS #27 on the
+canonical contract.
 
 ## Purpose
 
@@ -107,23 +107,47 @@ in this order, each check short-circuiting on failure:
    or echoed in any response, success or error.
 4. **Read-only gate** (`MEDIANEST_BRIDGE_READ_ONLY`, default `true`). Any
    non-GET/HEAD/OPTIONS request is rejected with `403 PROVIDER_READ_ONLY`
-   while enabled -- T1 has no mutating endpoints yet, but the gate is
-   implemented now so T2/T3's write endpoints ship read-only-by-default from
-   day one, structurally, not by omission.
+   while enabled -- implemented from T1 onward so T2/T3's write endpoints
+   shipped read-only-by-default structurally, not by omission. As of T3
+   this gate has teeth: `POST /sources` and `POST /sources/{uuid}/sync`
+   genuinely mutate and are blocked by it (matching the contract's own
+   403 `ReadOnly` response on both operations). `POST /sources/validate`
+   is the one exception -- `BridgeView.read_only_exempt = True` on that
+   view, because it never persists anything and the contract's own
+   operation definition for it lists **no** 403 response at all (unlike
+   the other two writes). Blocking a genuinely non-mutating request
+   because of its HTTP method alone would have been a bug, not caution.
 5. **Body-size gate** (`MEDIANEST_BRIDGE_MAX_BODY_BYTES`, default `65536`).
-   Checked via `Content-Length` when present. Oversized requests get `413`
-   with code `REQUEST_TOO_LARGE` -- flagged as a contract gap during T1
-   (no existing code described an oversized-body rejection honestly) and
-   accepted by the contract owner as a canonical addition to `Error.code`
-   for the T2 re-vendor (`bridge-openapi.v1.yaml` @
-   `713f9b4ac9efc24e0f285f9af58a50276f29ebb9`); it is a normal contract
-   code now, not a proposed one.
-   T2 note (LOW, carried forward from the T1 verifier, not fixed here):
-   this gate only inspects `Content-Length` -- a chunked or
-   omitted-length request body bypasses it. Harmless while no bridge view
-   reads `request.body` (T1's and T2's endpoints are all GET-only); must
-   be hardened to actual-bytes enforcement in the first PR that adds a
-   body-reading (write) endpoint.
+   Oversized requests get `413` with code `REQUEST_TOO_LARGE` -- flagged
+   as a contract gap during T1 (no existing code described an
+   oversized-body rejection honestly) and accepted by the contract owner
+   as a canonical addition to `Error.code` for the T2 re-vendor
+   (`bridge-openapi.v1.yaml` @ `713f9b4ac9efc24e0f285f9af58a50276f29ebb9`);
+   it is a normal contract code now, not a proposed one.
+   **T3 hardening** (a due obligation carried from the T1 verifier,
+   through T2, to T3's first body-reading endpoints): the gate now
+   actually reads the body (bounded to `limit + 1` bytes via
+   `request.read()`) and checks the real byte count, rather than
+   trusting the `Content-Length` header's stated value without
+   verification -- and applies the same check even when that header is
+   absent, instead of skipping the check entirely in that case (T1/T2's
+   behavior). Precise scope of what this improves, researched by reading
+   Django's own WSGI request-body handling directly rather than assumed:
+   `django.core.handlers.wsgi.WSGIRequest` already wraps the WSGI input
+   stream in a `LimitedStream` bounded by the `Content-Length` header's
+   own value (defaulting to 0 bytes if that header is absent or
+   malformed), and `LimitedStream.read()` enforces that bound even for an
+   unbounded `.read()` call. For this fork's synchronous gunicorn worker
+   class (`worker_class = 'sync'` in `gunicorn.py`), that means a request
+   can never actually deliver more bytes to this app than its own
+   declared `Content-Length`, regardless of what this gate does -- there
+   is no "read unlimited bytes into memory" vulnerability at this layer
+   to fix. What the T3 hardening actually adds: the size decision is now
+   based on bytes Django's stream actually handed back, not a
+   client-supplied number taken on faith, and a request with no
+   `Content-Length` header no longer skips size checking outright. See
+   `medianest_bridge/views.py::_read_body_is_oversized`'s docstring for
+   the full reasoning.
 
 None of this is implemented as Django middleware (`settings.MIDDLEWARE`) --
 that would be a fourth upstream touch point beyond the three enumerated
@@ -244,6 +268,60 @@ choices inline -- most notably, TubeSync's `MediaState.UNKNOWN` maps to
 `"discovered"`, not `"unknown"`, since it's a well-determined state
 (indexed, no work item yet), not one the bridge genuinely cannot verify.
 
+**T3 (write API, `medianest_bridge/views_write.py`, backed by
+`source_forms.py` and `sync_dedup.py`) -- the first mutation surface:**
+
+- `POST /sources/validate` -- validates a candidate source **without
+  persisting anything**. Runs `SourceForm`'s field-level checks for
+  `sourceType`/`canonicalKey` plus a pure `validate_url()` shape
+  cross-check that `canonicalUrl` matches the declared `sourceType` (no
+  network call). Does **not** run the directory-traversal/media-format
+  checks POST /sources runs -- `ValidateSourceRequest` has no `directory`
+  field to check them against; this scope was flagged to the contract
+  owner during T3 and codified as DECISIONS #27 on the canonical
+  contract. `displayName` in the response is `canonicalKey` echoed back
+  as an explicit placeholder (no TubeSync-side display name exists
+  without a live metadata fetch, out of scope here) -- also codified in
+  the contract's own schema description. Not blocked by
+  `MEDIANEST_BRIDGE_READ_ONLY` (see the read-only gate section above).
+- `POST /sources` -- create-or-adopt on the canonical key. A `key`
+  collision (an existing source already uses it) returns `409
+  SOURCE_CONFLICT` with `existingSourceUuid`, adopt semantics, and always
+  takes priority over a name/directory collision. A `name`/`directory`
+  collision without a matching `key` collision returns `400
+  SOURCE_NAMESPACE_CONFLICT` (a genuinely different canonical source,
+  never merged). Concurrent creates for the same key converge via the
+  real DB-level unique constraint: `form.save()` is wrapped in
+  `try/except IntegrityError`, and on conflict the code re-queries
+  (get-after-conflict) rather than trusting an earlier pre-check's
+  now-stale result. `sourceType: "channel"` maps to TubeSync's
+  `CHANNEL_ID` source type, never `CHANNEL` -- see `source_forms.py`'s
+  module docstring for the reasoning and its consequence for what
+  MediaNest must supply as `canonicalKey`. Fields the request schema
+  doesn't supply (media format, resolution, codecs, filters, etc.) use
+  TubeSync's own `Source` model defaults, obtained via `model_to_dict()`
+  on a blank instance -- never a bridge-invented default. `profile` is
+  accepted and structurally validated but not currently mapped onto any
+  TubeSync field (no contract-level field-name/enum-value mapping exists
+  yet); created sources use TubeSync's own defaults for everything
+  `profile` might have described. **Side effect, deliberate:** a
+  successful create goes through `Source`'s real `.save()`, firing
+  `sync/signals.py`'s `post_save` receiver exactly as the HTML UI would
+  -- schedules `check_source_directory_exists`, conditionally
+  `download_source_images`, `TaskHistory.schedule(index_source,
+  delay=600)` if the source is active, and
+  `TaskHistory.schedule(save_all_media_for_source, ...)`.
+- `POST /sources/{sourceUuid}/sync` -- wraps TubeSync's own
+  `SourceSyncNowView` mechanism exactly (same `TaskHistory.schedule()`
+  call, same `index_source` task, same `delay` setting). Bridge-side
+  dedup checks for any *non-completed* `index_source` task for this
+  source (running **or** merely scheduled/enqueued), not just actively
+  executing ones -- `sync_dedup.py`'s module docstring documents the
+  exact `TaskHistory.start_at`/`end_at` predicate this uses, derived from
+  reading `common/huey.py`'s signal handler directly. Per the contract's
+  own caveat, this is a static-analysis-derived best-effort dedup, not a
+  dynamically-verified idempotency guarantee.
+
 Every response (success and error) echoes `X-Request-ID`. A caller-supplied
 `X-Request-ID` header is echoed verbatim; otherwise the bridge generates a
 UUID4. `X-Correlation-ID`, if supplied, is logged (paired with the request
@@ -309,12 +387,23 @@ from the YAML rather than hand-edited.
   `source_type` channel/playlist collapse, downloaded-vs-undownloaded
   media field population, and the `MediaState.UNKNOWN` -> `"discovered"`
   choice.
-- `test_sources.py` -- the three T2 endpoints end-to-end: contract shape
+- `test_sources.py` -- the T2 read endpoints end-to-end: contract shape
   (via `test_endpoints.py`'s `assert_matches_schema`), key-lookup
   required-param handling, malformed/nonexistent-ID 404 handling,
   pagination bounds (rejected not clamped, including the exact-200
-  boundary), ordering, and that `/capabilities` now reports `readSources`/
-  `readMedia` true while every write/task flag stays false.
+  boundary), ordering, and non-GET method rejection (12 method x route
+  combinations).
+- `test_write_sources.py` -- the three T3 write endpoints: valid/invalid
+  requests for each, the `channel` -> `CHANNEL_ID` mapping assertion,
+  read-only-mode behavior (blocked for create/sync, exempt for validate),
+  key/name/directory conflict handling (409 vs 400, with
+  `existingSourceUuid` on the former), that create genuinely schedules an
+  `index_source` `TaskHistory` row (a real, directly-assertable side
+  effect, not mocked), that a repeated sync-now does not duplicate a
+  still-pending task, directory-traversal rejection, that validate never
+  persists anything, contract-shape conformance for every success
+  response, and body-size hardening against a real write route with a
+  real JSON payload.
 
 Run with `cd tubesync && python3 manage.py test medianest_bridge` (or omit
 the app label to run the full suite, upstream included).

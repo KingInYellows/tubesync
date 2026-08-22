@@ -6,6 +6,7 @@
 '''
 import uuid
 from datetime import datetime, timezone
+from io import BytesIO
 
 from django.conf import settings
 from django.http import JsonResponse
@@ -27,6 +28,50 @@ def _now_iso():
 def _resolve_request_id(request):
     supplied = request.META.get('HTTP_X_REQUEST_ID', '').strip()
     return supplied or str(uuid.uuid4())
+
+
+def _read_body_is_oversized(request, limit):
+    '''
+        T3 hardening of the T1 body-size gate (T1 verifier LOW, carried
+        forward through T2): actually reads the body, bounded to
+        `limit + 1` bytes, rather than trusting the Content-Length
+        header's stated value without verification -- and applies that
+        same bound uniformly even when Content-Length is absent, instead
+        of skipping the check entirely in that case (T1/T2's behavior).
+
+        What this does and does NOT defend against, precisely: Django's
+        own WSGIRequest wraps the WSGI input stream in a LimitedStream
+        bounded by the Content-Length header's own value (defaulting to
+        0 bytes if that header is absent or malformed --
+        django.core.handlers.wsgi.WSGIRequest.__init__), and
+        LimitedStream.read() enforces that bound even for a "read
+        everything" call with no size argument. For this fork's
+        synchronous gunicorn worker class (worker_class = 'sync' in
+        gunicorn.py), that means a request can never actually deliver
+        more bytes to this app than its own declared Content-Length,
+        regardless of what this function does -- there is no "read
+        unlimited bytes into memory" vulnerability at this layer to fix.
+        What this function actually improves: (a) the size decision is
+        based on bytes Django's stream actually handed back, not a
+        client-supplied number taken on faith, and (b) a request with no
+        Content-Length header no longer skips size checking outright.
+
+        Populates request._body and request._stream (Django's own
+        caching attributes) with the bytes read here, so a later
+        request.body access downstream (used by the write views to
+        parse JSON) returns this exact data rather than attempting to
+        re-read the stream, which Django does not support once .read()
+        has been called once.
+    '''
+    if getattr(request, '_body', None) is not None:
+        return False
+    try:
+        chunk = request.read(limit + 1)
+    except Exception:
+        chunk = b''
+    request._body = chunk
+    request._stream = BytesIO(chunk)
+    return len(chunk) > limit
 
 
 class BridgeView(View):
@@ -52,7 +97,22 @@ class BridgeView(View):
         loud warning rather than silently degrading. It never blocks the
         request -- an operator may have a legitimate alternate ingress
         this app cannot verify -- and never mentions the bearer token.
+
+        read_only_exempt (class attribute, default False): the read-only
+        gate below blocks every non-GET/HEAD/OPTIONS request by HTTP
+        method, which is the right default since every T1/T2 route is
+        read-only and every other T3 write route (POST /sources,
+        POST /sources/{uuid}/sync) genuinely mutates. POST
+        /sources/validate is the one exception -- it never persists
+        anything, and the vendored contract's own operation definition
+        for it lists no 403 ReadOnly response at all (unlike /sources and
+        /sources/{uuid}/sync, which both do). ValidateSourceView sets
+        read_only_exempt = True to match the contract exactly, rather
+        than blocking a genuinely non-mutating request because of its
+        HTTP method alone.
     '''
+
+    read_only_exempt = False
 
     def dispatch(self, request, *args, **kwargs):
         request_id = _resolve_request_id(request)
@@ -103,7 +163,11 @@ class BridgeView(View):
                     request_id=request_id,
                     retryable=False,
                 )
-            if request.method not in SAFE_METHODS and config.is_read_only():
+            if (
+                request.method not in SAFE_METHODS
+                and config.is_read_only()
+                and not self.read_only_exempt
+            ):
                 return error_response(
                     status=403,
                     code='PROVIDER_READ_ONLY',
@@ -112,21 +176,15 @@ class BridgeView(View):
                     request_id=request_id,
                     retryable=False,
                 )
-            content_length = request.META.get('CONTENT_LENGTH')
-            if content_length not in (None, ''):
-                try:
-                    length = int(content_length)
-                except (TypeError, ValueError):
-                    length = None
-                if length is not None and length > config.max_body_bytes():
-                    return error_response(
-                        status=413,
-                        code='REQUEST_TOO_LARGE',
-                        title='Request body too large',
-                        detail=f'Request body exceeds MEDIANEST_BRIDGE_MAX_BODY_BYTES ({config.max_body_bytes()} bytes).',
-                        request_id=request_id,
-                        retryable=False,
-                    )
+            if _read_body_is_oversized(request, config.max_body_bytes()):
+                return error_response(
+                    status=413,
+                    code='REQUEST_TOO_LARGE',
+                    title='Request body too large',
+                    detail=f'Request body exceeds MEDIANEST_BRIDGE_MAX_BODY_BYTES ({config.max_body_bytes()} bytes).',
+                    request_id=request_id,
+                    retryable=False,
+                )
             response = super().dispatch(request, *args, **kwargs)
         except Exception:
             # No raw stack trace, no exception message, ever reaches the
@@ -184,18 +242,20 @@ class CapabilitiesView(BridgeView):
     def get(self, request, *args, **kwargs):
         body = {
             'health': True,
-            # T2: GET /sources, GET /sources/{uuid}, GET /sources/{uuid}/media
-            # are implemented (read-only). Everything below stays false
-            # until the corresponding write/task endpoints ship in T3+.
+            # T2: read endpoints. T3: validate/create/sync-now (both
+            # channel and playlist go through the same SourceForm-based
+            # validate/create logic, so both flags flip together, not
+            # independently). updateSource/disableSource/deleteSource
+            # stay false -- no such endpoints exist anywhere in this app.
             'readSources': True,
-            'validateChannelSource': False,
-            'validatePlaylistSource': False,
-            'createChannelSource': False,
-            'createPlaylistSource': False,
+            'validateChannelSource': True,
+            'validatePlaylistSource': True,
+            'createChannelSource': True,
+            'createPlaylistSource': True,
             'updateSource': False,
             'disableSource': False,
             'deleteSource': False,
-            'syncSource': False,
+            'syncSource': True,
             'readMedia': True,
             'retryMedia': False,
             'skipMedia': False,
