@@ -1,0 +1,36 @@
+tubesync/medianest_bridge/readiness.py
+  s_36f755e68122c7::t_a963fd214bb202 428-459,461-475
+  s_36f755e68122c7::t_ed8815828177d6 31-44,55,70-100
+  s_36f755e68122c7::t_6172b20ca05b68 134-135,151-154
+  s_36f755e68122c7::t_5b2801eef89256 530-536,539-540
+  s_36f755e68122c7::t_0ea536b7bf411e 45-54,56-69
+  s_36f755e68122c7::t_2970a9b040b506 155
+tubesync/medianest_bridge/tests/test_readiness.py
+  s_36f755e68122c7::t_98ee61c8bcddd2 9-13,16,18
+  s_36f755e68122c7::t_738f4eda6d0f11 341-343
+  s_36f755e68122c7::t_fd1917d86f3fca 410-421,424-427,431,436-439
+  s_36f755e68122c7::t_90da099b6de4cc 248-249,288-340,344-409,422-423,428-430,432-435,440
+tubesync/medianest_bridge/tests/test_endpoints.py
+  s_36f755e68122c7::t_ecff5740ad15ed 105-126,142-147,152,155-165
+  s_36f755e68122c7::t_5118b4767f8b62 10,12
+  s_36f755e68122c7::t_0cde0cb7190a96 166
+tubesync/medianest_bridge/README.md
+  s_36f755e68122c7::t_6f91d43544e51b 220
+  s_36f755e68122c7::t_2b0c5c27d1feb9 467-471
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "ea9410e40eaed32ab6c6f1db5c8920a04e8aee32",
+  "prompts": {},
+  "sessions": {
+    "s_36f755e68122c7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2218c4e0-ce8c-47d2-a7f4-2c9f3474c829",
+        "model": "claude-fable-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
