@@ -1,0 +1,16 @@
+tubesync/medianest_bridge/readiness.py
+  h_6000354274ce50 139-145,147
+tubesync/medianest_bridge/tests/test_readiness.py
+  h_6000354274ce50 150
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "7186ad2972b28bddaebd12bc38a22930ea6959ff",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
