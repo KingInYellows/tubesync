@@ -335,6 +335,30 @@ class SerializeMediaTaskStateTestCase(TestCase):
         self.assertIsNotNone(body['retryAt'])
         self.assertEqual(body['error'], 'network unreachable')
 
+    def test_stale_error_suppressed_when_downloaded_via_separate_failed_task_row(self):
+        # P2 review finding: when a failed download is retried as a new
+        # TaskHistory row and succeeds, batch_media_download_tasks() still
+        # returns the older failed row (successful completions are excluded
+        # from the fallback tier). media.downloaded short-circuits
+        # get_download_state() to "downloaded", but a stale task error must
+        # not still surface in the JSON response.
+        source = make_source()
+        media = make_media(source, downloaded=True)
+        failure_signal_at = timezone.now() - timezone.timedelta(seconds=120)
+        make_download_task(
+            media,
+            start_at=timezone.now() - timezone.timedelta(seconds=130),
+            end_at=failure_signal_at,
+            scheduled_at=timezone.now() - timezone.timedelta(seconds=130),
+            failed_at=failure_signal_at,
+            last_error='RuntimeError: network unreachable',
+            attempts=1,
+        )
+        body = mapping.serialize_media(media)
+        self.assertEqual(body['normalizedState'], 'downloaded')
+        self.assertIsNone(body['error'])
+        self.assertIsNone(body['retryAt'])
+
     def test_stale_error_cleared_after_a_same_row_retry_succeeds(self):
         # P2 review finding: huey's retries= mechanism reuses the same
         # task_id/row across attempts (see the retryAt docstring above).
@@ -573,6 +597,39 @@ class BatchMediaDownloadTasksTestCase(TestCase):
         body = mapping.serialize_media(media)
         self.assertEqual(body['normalizedState'], 'discovered')
 
+    def test_auto_revoked_duplicate_does_not_mask_failed_sibling(self):
+        '''
+            common/huey.py::on_executing_remove_duplicates() can revoke a
+            duplicate download task without the [revoked] verbose_name
+            prefix. When the executing sibling later fails, the revoked
+            duplicate must not win the fallback tier just because it has a
+            later scheduled_at.
+        '''
+        source = make_source()
+        media = make_media(source)
+        failure_signal_at = timezone.now() - timezone.timedelta(seconds=30)
+        failed_task = make_download_task(
+            media,
+            start_at=timezone.now() - timezone.timedelta(seconds=60),
+            end_at=failure_signal_at,
+            scheduled_at=timezone.now() - timezone.timedelta(seconds=60),
+            failed_at=failure_signal_at,
+            last_error='RuntimeError: network unreachable',
+            attempts=1,
+        )
+        make_download_task(
+            media,
+            start_at=None,
+            scheduled_at=timezone.now() + timezone.timedelta(seconds=300),
+            end_at=timezone.now() - timezone.timedelta(seconds=55),
+            attempts=0,
+        )
+        result = mapping.batch_media_download_tasks([media.pk])
+        self.assertEqual(result[str(media.pk)].pk, failed_task.pk)
+        body = mapping.serialize_media(media)
+        self.assertEqual(body['normalizedState'], 'failed')
+        self.assertEqual(body['error'], 'network unreachable')
+
     def test_serialize_media_does_not_requery_for_a_batched_running_task(self):
         '''
             T2 review P2 finding: Media.get_download_state(task) checks
@@ -604,10 +661,11 @@ class BatchMediaDownloadTasksTestCase(TestCase):
         )
         media_rows = [running_media, failed_media, pending_media]
 
-        with self.assertNumQueries(2):
-            # Query 1: running tier. Query 2: pending/failed fallback
-            # tier. Neither media.get_download_state() call below should
-            # add a query if locked_by_pid_running was bound correctly.
+        with self.assertNumQueries(4):
+            # Query 1: running tier. Queries 2-4: executed-sibling
+            # prefetch, failed fallback tier, and pending fallback tier.
+            # Neither media.get_download_state() call below should add a
+            # query if locked_by_pid_running was bound correctly.
             download_tasks = mapping.batch_media_download_tasks(
                 [m.pk for m in media_rows],
             )

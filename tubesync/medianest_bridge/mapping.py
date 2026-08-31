@@ -13,6 +13,7 @@ from datetime import timezone as dt_timezone
 from functools import reduce
 from operator import or_ as _or_
 
+from django.conf import settings
 from django.db.models import Q
 from django.utils import timezone
 
@@ -30,6 +31,36 @@ _MISSING = object()
 # exclusion a revoked row would otherwise still match the pending/failed
 # fallback tier below and be reported as "queued" forever.
 _REVOKED_VERBOSE_PREFIX = '[revoked] '
+
+
+def _max_run_time_cutoff():
+    max_run_time = getattr(settings, 'MAX_RUN_TIME', 3600)
+    return timezone.now() - timezone.timedelta(seconds=max_run_time)
+
+
+def _pending_likely_auto_revoked_duplicate(pending_task, executed_siblings):
+    '''
+        common/huey.py::on_executing_remove_duplicates() revokes duplicate
+        download tasks via SIGNAL_REVOKED without setting start_at or the
+        [revoked] verbose_name prefix (see sync_dedup.py's index-task
+        analogue). Such a row still matches the pending fallback shape
+        (start_at IS NULL, failed_at IS NULL) and, when it has a later
+        scheduled_at than an executing sibling that subsequently fails,
+        would otherwise win the -scheduled_at ordering and report
+        "queued" forever. A genuinely fresh retry enqueue, by contrast,
+        is recorded after the sibling's terminal signal, so its end_at
+        is not still before that sibling's end_at.
+    '''
+    if pending_task.attempts != 0 or pending_task.failed_at is not None:
+        return False
+    for sibling in executed_siblings:
+        if sibling.pk == pending_task.pk:
+            continue
+        if sibling.failed_at is None or sibling.attempts == 0:
+            continue
+        if pending_task.end_at < sibling.end_at:
+            return True
+    return False
 
 
 def _iso(value):
@@ -184,20 +215,50 @@ def batch_media_download_tasks(media_ids):
             _or_,
             (Q(task_params__istartswith=f'[["{media_id}"') for media_id in remaining),
         )
-        pending_or_failed_qs = (
+        cutoff = _max_run_time_cutoff()
+        base_qs = (
             TaskHistory.objects
             .exclude(verbose_name__startswith=_REVOKED_VERBOSE_PREFIX)
             .filter(name__endswith='download_media_file')
-            .filter(Q(failed_at__isnull=False) | Q(start_at__isnull=True))
             .filter(id_filter)
-            .order_by('-scheduled_at')
         )
-        for task in pending_or_failed_qs:
+        executed_by_media = {}
+        for task in base_qs.filter(attempts__gt=0):
             params = task.task_params
             if not params or not params[0]:
                 continue
             media_id = str(params[0][0])
             if media_id in remaining:
+                executed_by_media.setdefault(media_id, []).append(task)
+        failed_qs = base_qs.filter(
+            failed_at__isnull=False,
+        ).order_by('-scheduled_at')
+        for task in failed_qs:
+            params = task.task_params
+            if not params or not params[0]:
+                continue
+            media_id = str(params[0][0])
+            if media_id in remaining:
+                _bind_known_running_state(task, is_running=False)
+                result[media_id] = task
+                remaining.discard(media_id)
+        if remaining:
+            pending_qs = base_qs.filter(
+                start_at__isnull=True,
+                failed_at__isnull=True,
+                scheduled_at__gt=cutoff,
+            ).order_by('-scheduled_at')
+            for task in pending_qs:
+                params = task.task_params
+                if not params or not params[0]:
+                    continue
+                media_id = str(params[0][0])
+                if media_id not in remaining:
+                    continue
+                if _pending_likely_auto_revoked_duplicate(
+                    task, executed_by_media.get(media_id, []),
+                ):
+                    continue
                 _bind_known_running_state(task, is_running=False)
                 result[media_id] = task
                 remaining.discard(media_id)
@@ -350,7 +411,11 @@ def serialize_media(media, *, download_task=_MISSING):
         task = False
 
     raw_state = media.get_download_state(task or None)
-    has_error = _task_failure_is_current(task)
+    has_error = (
+        not media.downloaded
+        and bool(task)
+        and _task_failure_is_current(task)
+    )
     # sync.tasks.get_error_message() strips only the exception-type
     # prefix off the raw TaskHistory.last_error line -- a filesystem
     # path, cookie-file reference, or anything credential-shaped in the

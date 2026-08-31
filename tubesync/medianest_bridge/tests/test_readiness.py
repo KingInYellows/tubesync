@@ -158,6 +158,21 @@ class QueuesCheckTestCase(ReadinessCacheResetMixin, SimpleTestCase):
         self.assertEqual(result['status'], 'degraded')
         self.assertIn('huey-net-limited', result['detail'])
 
+    def test_unknown_when_wantedup_cannot_be_queried(self):
+        present_dirs = {'/run/service'} | {f'/run/service/{n}' for n in readiness.HUEY_SERVICE_NAMES}
+
+        def wanted_up(name):
+            return None if name == 'huey-net-limited' else True
+
+        with (
+            patch.object(readiness.os.path, 'isdir', _isdir_side_effect(present_dirs)),
+            patch.object(readiness.os.path, 'exists', _exists_side_effect(set())),
+            patch.object(readiness, '_s6_service_wanted_up', side_effect=wanted_up),
+        ):
+            result = readiness.check_queues()
+        self.assertEqual(result['status'], 'unknown')
+        self.assertIn('huey-net-limited', result['detail'])
+
 
 class StorageThresholdTestCase(ReadinessCacheResetMixin, SimpleTestCase):
 

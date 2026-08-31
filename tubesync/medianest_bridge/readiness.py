@@ -320,13 +320,25 @@ def check_queues():
                    'expected outside the container image',
         )
     paused = []
+    indeterminate = []
     for name in HUEY_SERVICE_NAMES:
         wanted_up = _s6_service_wanted_up(name)
         if wanted_up is False:
             paused.append(name)
             continue
+        if wanted_up is None:
+            indeterminate.append(name)
+            continue
         if os.path.exists(os.path.join('/run/service', name, 'down')):
             paused.append(name)
+    if indeterminate:
+        return _status(
+            'unknown',
+            detail=(
+                'queue wantedup state could not be determined: '
+                f'{", ".join(indeterminate)}'
+            ),
+        )
     if not paused:
         return _status('healthy', detail='no queue is administratively paused')
     return _status(
