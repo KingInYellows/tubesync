@@ -22,9 +22,11 @@ Two claims, verified separately, per the T4 hardening brief:
    message/PR body), but it is now a standing assertion in the suite
    itself, not only a command someone has to remember to run.
 
-2. **A container upgrade from upstream-latest to the fork's codebase
-   applies cleanly against an existing (already-migrated) TubeSync
-   database.** Not expressible as a single `manage.py test` run --
+2. **A container upgrade from the pinned upstream base
+   (`docs/UPSTREAM_SHA`) to the fork's codebase applies cleanly against
+   an existing (already-migrated) TubeSync database.** This is not a
+   rehearsal against whatever `meeb/tubesync` `main` is today. Not
+   expressible as a single `manage.py test` run --
    requires two different code checkouts running sequentially against
    the same database file -- so this was executed once as a scripted
    procedure and the output captured here. No destructive step: a fresh
@@ -32,6 +34,11 @@ Two claims, verified separately, per the T4 hardening brief:
    afterward.
 
 ## Procedure (reproducible)
+
+Angle-bracket and `/path/to/...` values below (`<fork-worktree>`,
+`/path/to/shared-local-settings.py`, the pre-built `ts-bridge-test:latest`
+image) are environment-specific substitutions, not commands that work
+from a clone with no further setup.
 
 ```bash
 # 1. A disposable worktree at the upstream-base commit this fork tracks --

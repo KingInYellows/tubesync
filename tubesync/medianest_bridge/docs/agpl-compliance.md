@@ -61,12 +61,12 @@ review would start from.
    for this fork to audit -- upstream's own dependency licensing is
    upstream's responsibility, unchanged by this fork).
 
-5. **No third-party code is copied into `medianest_bridge/`.** Checked
-   directly (`grep -rln "Copyright\|SPDX-License" medianest_bridge
-   --include="*.py"` returns nothing) -- every file in this app is
-   fork-authored, consistent with the "built entirely from TubeSync's own
-   models, forms, and task-scheduling primitives" claim already in this
-   app's `README.md` "Purpose" section.
+5. **No Copyright/SPDX markers were found in `medianest_bridge/`.**
+   Checked directly (`grep -rln "Copyright\|SPDX-License" medianest_bridge
+   --include="*.py"` returns nothing). That is limited evidence, not
+   proof that no third-party code was copied -- files can omit those
+   markers. The app is still built from TubeSync's own models, forms,
+   and task-scheduling primitives as described in `README.md`.
 
 ## Open item, flagged rather than resolved here
 

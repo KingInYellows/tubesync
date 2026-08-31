@@ -136,17 +136,22 @@ _SUBPROCESS_TIMEOUT_SECONDS = 2
 _BLOCKING_CALL_TIMEOUT_SECONDS = 2
 _CACHE_TTL_SECONDS = 5
 
-# Shared, bounded executor for database/storage/youtube-probe checks. A
-# per-call executor with shutdown(wait=False) leaked one orphaned thread
-# on every timeout; under sustained readiness polling against a dead
-# mount that unboundedly accumulated blocked threads. Three workers cap
-# the stuck-thread count at the number of blocking checks this module
-# runs (database + storage + youtube wall-clock probe) while still
-# bounding each caller's wait via Future.result(timeout=...).
-_blocking_call_executor = ThreadPoolExecutor(
-    max_workers=3,
-    thread_name_prefix='medianest_bridge_readiness',
+# One worker per kernel-blocking syscall check. future.cancel() cannot
+# stop a thread blocked in the kernel, so a shared pool would let a
+# stuck NFS stat occupy every worker and then make database probes time
+# out even when the database is healthy. Isolating the executors keeps a
+# poisoned check from starving the other. Each still leaks at most one
+# thread for the process lifetime if that check's syscall never returns.
+# The YouTube HTTP probe is not on this pool: requests already times out.
+_database_executor = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix='medianest_bridge_readiness_db',
 )
+_storage_executor = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix='medianest_bridge_readiness_storage',
+)
+
 
 # youtube probe: see this module's docstring for the full rationale.
 _YOUTUBE_PROBE_URL = 'https://www.youtube.com/generate_204'
@@ -155,17 +160,18 @@ _YOUTUBE_PROBE_WALL_TIMEOUT_SECONDS = 2
 _YOUTUBE_CACHE_TTL_SECONDS = 120
 
 
-def _call_with_timeout(fn, *, timeout=_BLOCKING_CALL_TIMEOUT_SECONDS):
+def _call_with_timeout(fn, *, timeout=_BLOCKING_CALL_TIMEOUT_SECONDS, executor):
     '''
-        Bounds a blocking call (a DB query, a disk stat) that has no
-        native Python timeout parameter -- unlike the subprocess calls
-        elsewhere in this module, a plain syscall such as statvfs() on a
-        dead network mount can block in the kernel for a very long time,
-        uninterruptible by ordinary Python-level mechanisms. Running it
-        on the module-level bounded executor and bounding *this* call's
-        wait via Future.result(timeout=...) bounds the caller's wait even
-        though the underlying thread may itself remain stuck forever (at
-        most two such threads process-wide, not one new leak per poll).
+        Bounds a blocking call (a DB query, a disk stat, a DNS lookup)
+        that has no native Python timeout parameter -- unlike the
+        subprocess calls elsewhere in this module, a plain syscall such
+        as statvfs() on a dead network mount can block in the kernel for
+        a very long time, uninterruptible by ordinary Python-level
+        mechanisms. Running it on the caller-supplied one-worker executor
+        and bounding *this* call's wait via Future.result(timeout=...)
+        bounds the caller's wait even though the underlying thread may
+        itself remain stuck forever (at most one leaked thread per check
+        for the process lifetime).
 
         Raises FutureTimeoutError on timeout; callers decide what status
         that maps to (see check_database/check_storage below).
@@ -174,9 +180,9 @@ def _call_with_timeout(fn, *, timeout=_BLOCKING_CALL_TIMEOUT_SECONDS):
         -- that context manager's __exit__ calls shutdown(wait=True),
         which blocks until the submitted thread finishes, defeating the
         entire point of the timeout the moment the wrapped call actually
-        hangs. The shared executor is never shut down from this path.
+        hangs. The per-check executor is never shut down from this path.
     '''
-    future = _blocking_call_executor.submit(fn)
+    future = executor.submit(fn)
     try:
         return future.result(timeout=timeout)
     except FutureTimeoutError:
@@ -225,7 +231,7 @@ def check_database():
     # unresponsive network DB should report unavailable within
     # _BLOCKING_CALL_TIMEOUT_SECONDS, not hang this endpoint.
     try:
-        _call_with_timeout(_select_1)
+        _call_with_timeout(_select_1, executor=_database_executor)
     except FutureTimeoutError:
         return _status('unavailable', detail='database query timed out')
     except Exception:
@@ -404,7 +410,9 @@ def check_storage():
     # (exists/access/disk_usage) in the kernel for a very long time.
     # Bounded the same way check_database() now is.
     try:
-        exists, writable, usage = _call_with_timeout(_stat_download_root)
+        exists, writable, usage = _call_with_timeout(
+            _stat_download_root, executor=_storage_executor,
+        )
     except FutureTimeoutError:
         return _status('unavailable', detail='DOWNLOAD_ROOT stat timed out')
     except OSError:
@@ -462,16 +470,21 @@ def _probe_youtube():
         extra requests and latency on top of it -- caught in review
         before this shipped, not after.
 
-        The whole fetch runs inside _call_with_timeout() so a stalled DNS
-        resolver cannot hold /health/ready past
-        _YOUTUBE_PROBE_WALL_TIMEOUT_SECONDS regardless of requests'
-        per-phase timeout= semantics. See this module's docstring.
+        Wall-clock bound uses a throwaway one-worker executor so a
+        stalled DNS lookup cannot occupy the database/storage executors.
+        shutdown(wait=False) returns on timeout even if the worker is
+        still blocked; that thread is abandoned, not reused.
     '''
     start = time.monotonic()
+    probe_executor = ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix='medianest_bridge_yt_probe',
+    )
     try:
         response = _call_with_timeout(
             _fetch_youtube_probe_response,
             timeout=_YOUTUBE_PROBE_WALL_TIMEOUT_SECONDS,
+            executor=probe_executor,
         )
     except FutureTimeoutError:
         latency_ms = round((time.monotonic() - start) * 1000, 1)
@@ -482,6 +495,8 @@ def _probe_youtube():
             'unavailable',
             detail=f'{type(exc).__name__} after {latency_ms}ms',
         )
+    finally:
+        probe_executor.shutdown(wait=False)
     latency_ms = round((time.monotonic() - start) * 1000, 1)
     if 200 <= response.status_code < 400:
         return _status('healthy', detail=f'HTTP {response.status_code} in {latency_ms}ms')

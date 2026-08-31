@@ -20,6 +20,8 @@ from common.models import TaskHistory
 from sync.choices import MediaState, Val, YouTube_SourceType
 from sync.tasks import get_error_message, get_running_tasks, get_source_index_task
 
+from .error_sanitize import sanitize_error_message
+
 _MISSING = object()
 
 # Set by sync/views/tasks.py's RevokeTaskView (and mirrored by
@@ -28,8 +30,6 @@ _MISSING = object()
 # exclusion a revoked row would otherwise still match the pending/failed
 # fallback tier below and be reported as "queued" forever.
 _REVOKED_VERBOSE_PREFIX = '[revoked] '
-
-from .error_sanitize import sanitize_error_message
 
 
 def _iso(value):
@@ -159,7 +159,7 @@ def batch_media_download_tasks(media_ids):
     id_set = {str(media_id) for media_id in media_ids}
     if not id_set:
         return {}
-    result = {media_id: False for media_id in id_set}
+    result = dict.fromkeys(id_set, False)
 
     running_qs = get_running_tasks().filter(name__endswith='download_media_file')
     for task in running_qs:
@@ -294,8 +294,20 @@ def _task_failure_is_current(task):
         failure is no longer this row's current state (P2 review
         finding: a media item that failed once and later succeeded on
         retry kept reporting a stale error indefinitely).
+
+        Huey's SIGNAL_SCHEDULED after ERROR advances end_at without
+        clearing failed_at. That makes failed_at < end_at even though a
+        retry is still queued (scheduled_at in the future). Treat that
+        pending-retry window as a current failure so serialize_media()
+        keeps normalizedState=failed, error, and retryAt together,
+        instead of get_download_state() reporting ERROR while this
+        helper returned false and stripped error/retryAt.
     '''
-    return bool(task) and task.failed_at is not None and task.failed_at == task.end_at
+    if not task or task.failed_at is None:
+        return False
+    if task.failed_at == task.end_at:
+        return True
+    return bool(task.scheduled_at and task.scheduled_at > timezone.now())
 
 
 def _is_stale_given_current_media_state(media, task, *, is_running):

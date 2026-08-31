@@ -150,8 +150,10 @@ in this order, each check short-circuiting on failure:
    is no "read unlimited bytes into memory" vulnerability at this layer
    to fix. What the T3 hardening actually adds: the size decision is now
    based on bytes Django's stream actually handed back, not a
-   client-supplied number taken on faith, and a request with no
-   `Content-Length` header no longer skips size checking outright. See
+   client-supplied number taken on faith. When `Content-Length` is
+   absent or malformed, Django 6 assigns a zero-byte `LimitedStream`, so
+   this gate observes 0 bytes and cannot detect an oversized chunked
+   body -- it does not claim to. See
    `medianest_bridge/views.py::_read_body_is_oversized`'s docstring for
    the full reasoning.
 
@@ -272,7 +274,8 @@ path:
 
 ## Endpoints
 
-All under `/api/medianest/v1/`, all `GET`, all requiring the bearer token.
+All under `/api/medianest/v1/`, all requiring the bearer token. T1/T2
+reads are `GET`; T3 writes are `POST`.
 
 **T1 (diagnostics):**
 

@@ -67,9 +67,12 @@ unconditionally safe just because this app's own guarantee holds.
 - **Configuration drift between versions.** If a rolled-back-to version
   predates an environment variable a newer version introduced (see
   `medianest_bridge/README.md`'s "Environment variables" table), that
-  variable is simply unread by the older code -- harmless, not a rollback
-  blocker, but worth knowing if an operator's deployment config carries
-  settings a rollback target doesn't understand.
+  variable is simply unread by the older code. Metadata-only variables
+  are then inert. Security-affecting ones are not: rolling back past
+  `MEDIANEST_BRIDGE_ALLOWED_CIDRS` or `MEDIANEST_BRIDGE_READ_ONLY`
+  disables those gates even though bearer auth still runs. Confirm the
+  rollback target still enforces CIDR allowlisting and read-only writes
+  before treating the extra env as leftover config.
 - **The GitHub Actions publish workflow itself is unproven** (see
   `medianest_bridge/docs/image-build-proof.md` and this workflow's own
   header comment) -- rollback here assumes a previously *published* tag

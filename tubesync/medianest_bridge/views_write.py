@@ -240,7 +240,7 @@ class CreateSourceView(SourceLookupView):
                 or Source.objects.filter(directory=directory).exists()
             ):
                 return _namespace_conflict(request_id)
-            return _invalid(request_id, [str(form.errors)])
+            return _invalid(request_id, _clean_form_errors(form))
 
         run_edit_source_checks(form)
         if not form.is_valid():

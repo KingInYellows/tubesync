@@ -312,6 +312,29 @@ class SerializeMediaTaskStateTestCase(TestCase):
         self.assertIsNotNone(body['retryAt'])
         self.assertEqual(body['error'], 'network unreachable')
 
+    def test_pending_retry_after_scheduled_signal_keeps_failed_error_and_retry_at(self):
+        # Huey SIGNAL_SCHEDULED after ERROR advances end_at on the same
+        # row without clearing failed_at. That is the real retry window,
+        # not the simplified failed_at == end_at fixture above.
+        source = make_source()
+        media = make_media(source)
+        past = timezone.now() - timezone.timedelta(seconds=30)
+        retry_at = timezone.now() + timezone.timedelta(seconds=300)
+        failure_signal_at = timezone.now() - timezone.timedelta(seconds=5)
+        scheduled_signal_at = timezone.now()
+        make_download_task(
+            media,
+            start_at=past,
+            end_at=scheduled_signal_at,
+            scheduled_at=retry_at,
+            failed_at=failure_signal_at,
+            last_error='RuntimeError: network unreachable',
+        )
+        body = mapping.serialize_media(media)
+        self.assertEqual(body['normalizedState'], 'failed')
+        self.assertIsNotNone(body['retryAt'])
+        self.assertEqual(body['error'], 'network unreachable')
+
     def test_stale_error_cleared_after_a_same_row_retry_succeeds(self):
         # P2 review finding: huey's retries= mechanism reuses the same
         # task_id/row across attempts (see the retryAt docstring above).

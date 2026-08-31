@@ -592,7 +592,6 @@ components:
             # bounded body (MEDIANEST_BRIDGE_MAX_BODY_BYTES) on every request.
             - REQUEST_TOO_LARGE
             - INTERNAL_PROVIDER_ERROR
-            - REQUEST_TOO_LARGE
         detail:
           type: string
         requestId:
