@@ -322,20 +322,13 @@ BASICAUTH_DISABLE = True
 BASICAUTH_REALM = 'Authenticate to TubeSync'
 BASICAUTH_ALWAYS_ALLOW_URIS = (
     '/healthcheck',
-    # medianest_bridge (api/medianest/v1/) authenticates its own requests
-    # with a bearer token (see medianest_bridge/auth.py); it must not also
-    # be challenged by BasicAuthMiddleware. BasicAuthMiddleware's exemption
-    # check (common/middleware.py) is an exact `request.path in ...` match,
-    # not a prefix match, so every bridge route must be listed individually
-    # here -- a T2/T3 PR adding a new bridge route must add its exact path
-    # too (medianest_bridge/tests/test_basicauth_exemption.py asserts the
-    # two lists stay in sync). This is a deliberate trade-off: an unlisted
-    # sub-path under api/medianest/v1/ fails closed behind Basic Auth
-    # instead of silently bypassing it.
-    '/api/medianest/v1/health/live',
-    '/api/medianest/v1/health/ready',
-    '/api/medianest/v1/meta',
-    '/api/medianest/v1/capabilities',
+)
+# Path-prefix exemptions for routes a static exact-match tuple cannot
+# enumerate (e.g. medianest_bridge's path-parameterized /sources/{uuid}
+# routes). Every route under a prefix still enforces its own complete,
+# independent auth in BridgeView.dispatch() regardless of Basic Auth.
+BASICAUTH_PREFIX_ALLOW_URIS = (
+    '/api/medianest/v1/',
 )
 BASICAUTH_USERS = {}
 

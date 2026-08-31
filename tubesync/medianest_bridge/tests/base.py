@@ -7,7 +7,7 @@ import os
 import tempfile
 from contextlib import contextmanager
 
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 
 BRIDGE_TOKEN = 'unit-test-bridge-token-do-not-use-in-prod'
 BRIDGE_ENV_VARS = (
@@ -37,11 +37,21 @@ def env_override(**kwargs):
                 os.environ[key] = value
 
 
-class BridgeTestCase(TestCase):
+class BridgeTestMixin:
     '''
         Clears every bridge env var before each test (so no test can leak
         configuration into another) and provides self.enable_bridge() to
-        opt back in with a real token file.
+        opt back in with a real token file. Shared between BridgeTestCase
+        (the normal case, wrapped in a transaction/savepoint per test --
+        fast, and correct for anything that doesn't need a real,
+        independently-committing DB write mid-test) and
+        BridgeTransactionTestCase (no such wrapping -- required for tests
+        that deliberately trigger a real UNIQUE constraint violation via a
+        second, genuinely separate write against the same table, which
+        Django's TestCase-level savepoint nesting cannot support: nesting
+        a real Model.save() inside another one, both hitting sqlite
+        mid-transaction, raises "database table is locked", not the
+        IntegrityError the test is actually trying to provoke).
     '''
 
     def setUp(self):
@@ -63,3 +73,17 @@ class BridgeTestCase(TestCase):
 
     def auth_header(self, token=BRIDGE_TOKEN):
         return {'HTTP_AUTHORIZATION': f'Bearer {token}'}
+
+
+class BridgeTestCase(BridgeTestMixin, TestCase):
+    pass
+
+
+class BridgeTransactionTestCase(BridgeTestMixin, TransactionTestCase):
+    '''
+        See BridgeTestMixin's docstring. Slower than BridgeTestCase (no
+        shared savepoint to roll back -- each test's data is cleaned up
+        by TransactionTestCase truncating tables afterward instead), so
+        use this only when a test genuinely needs a real,
+        independently-committing nested write.
+    '''

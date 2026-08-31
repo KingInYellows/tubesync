@@ -13,7 +13,7 @@
     None of these settings are registered in Django's settings.py — the app
     is deliberately self-configuring so that the fork's upstream-touch list
     stays limited to INSTALLED_APPS, the URL include, and the
-    BASICAUTH_ALWAYS_ALLOW_URIS exemption.
+    BASICAUTH_PREFIX_ALLOW_URIS exemption.
 '''
 import ipaddress
 from pathlib import Path

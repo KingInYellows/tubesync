@@ -27,6 +27,17 @@ class BasicAuthMiddleware(BaseBasicAuthMiddleware):
 
     def process_request(self, request):
         bypass_uris = getattr(settings, 'BASICAUTH_ALWAYS_ALLOW_URIS', [])
-        if request.path in bypass_uris:
-            return None
+        prefix_uris = getattr(settings, 'BASICAUTH_PREFIX_ALLOW_URIS', [])
+        # BASICAUTH_ALWAYS_ALLOW_URIS keeps the original exact-match
+        # behaviour unchanged. BASICAUTH_PREFIX_ALLOW_URIS is a separate
+        # tuple for path-prefix exemptions (request.path startswith the
+        # entry) so existing trailing-slash exact entries in
+        # BASICAUTH_ALWAYS_ALLOW_URIS are not silently reinterpreted as
+        # prefix matches.
+        for uri in bypass_uris:
+            if request.path == uri:
+                return None
+        for uri in prefix_uris:
+            if request.path.startswith(uri):
+                return None
         return super().process_request(request)

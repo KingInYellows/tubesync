@@ -796,8 +796,29 @@ RUN set -x && \
 # Create a healthcheck
 HEALTHCHECK --interval=1m --timeout=10s --start-period=3m CMD ["/app/healthcheck.py"]
 
+# medianest_bridge (T5): build-time pin of the upstream commit this fork
+# tracks, read at request time by medianest_bridge/config.py::upstream_sha()
+# for GET /meta's upstreamCommit field (bridge-openapi.v1.yaml's Meta schema:
+# "Full git SHA of the upstream commit the fork tracks" -- the fixed
+# upstream base this fork was branched from and re-verified against on every
+# migration/upgrade proof run, NOT this image's own build commit, which
+# changes on every fork commit and isn't what the contract field means).
+# Empty default preserved deliberately: a build that doesn't pass this arg
+# yields an empty env var, and config.py's own `.strip() or 'unknown'`
+# fallback reports the honest "unknown" sentinel, exactly as it already does
+# for the bare/local (non-container) path. See
+# medianest_bridge/README.md's "Compatibility reporting" section and
+# medianest_bridge/docs/UPSTREAM_SHA (the single canonical source for the
+# actual pinned value -- read here only as a default value for illustration
+# in the ARG line below, but the value actually baked into a real image
+# build should come from that file via the build invocation's
+# --build-arg, not this default, so a forgotten build-arg fails honest
+# rather than silently going stale).
+ARG MEDIANEST_BRIDGE_UPSTREAM_SHA=""
+
 # ENVS and ports
 ENV DENO_DIR="/config/cache/deno" \
+    MEDIANEST_BRIDGE_UPSTREAM_SHA="${MEDIANEST_BRIDGE_UPSTREAM_SHA}" \
     PYTHON_BASIC_REPL="1" \
     PYTHONPATH="/app" \
     PYTHONPYCACHEPREFIX="/config/cache/pycache" \

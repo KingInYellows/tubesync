@@ -22,6 +22,33 @@ META_URL = '/api/medianest/v1/meta'
 CAPS_URL = '/api/medianest/v1/capabilities'
 
 
+def _is_json_type(value, type_name):
+    '''
+        JSON-Schema-flavored type check. Bool is deliberately NOT treated
+        as a valid "integer"/"number" match even though Python's bool is
+        an int subclass -- a JSON boolean is not a JSON integer, and a
+        contract field typed "integer" that actually received True/False
+        should fail this check, not pass it by Python subtyping accident.
+    '''
+    if type_name == 'boolean':
+        return isinstance(value, bool)
+    if type_name == 'integer':
+        return isinstance(value, int) and not isinstance(value, bool)
+    if type_name == 'number':
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if type_name == 'string':
+        return isinstance(value, str)
+    if type_name == 'array':
+        return isinstance(value, list)
+    if type_name == 'object':
+        return isinstance(value, dict)
+    if type_name == 'null':
+        return value is None
+    # Unrecognized type name in the fixture -- don't fail on it, the enum/
+    # pattern/required checks still cover what they can.
+    return True
+
+
 def assert_matches_schema(test, body, schema_name):
     schema = SCHEMAS[schema_name]
     for field in schema['required']:
@@ -30,23 +57,29 @@ def assert_matches_schema(test, body, schema_name):
         if field not in body:
             continue
         value = body[field]
-        expected_type = spec.get('type')
-        if expected_type == 'string':
-            test.assertIsInstance(value, str, f'{schema_name}.{field} must be a string')
-        elif expected_type == 'boolean':
-            test.assertIsInstance(value, bool, f'{schema_name}.{field} must be a boolean')
-        elif expected_type == 'integer':
-            test.assertIsInstance(value, int, f'{schema_name}.{field} must be an integer')
-        elif expected_type == 'object':
-            test.assertIsInstance(value, dict, f'{schema_name}.{field} must be an object')
-        elif isinstance(expected_type, list):
-            if 'string' in expected_type and value is not None:
-                test.assertIsInstance(value, str, f'{schema_name}.{field} must be a string or null')
+        type_spec = spec.get('type')
+        if type_spec:
+            type_names = type_spec if isinstance(type_spec, list) else [type_spec]
+            test.assertTrue(
+                any(_is_json_type(value, name) for name in type_names),
+                f'{schema_name}.{field}={value!r} ({type(value).__name__}) '
+                f'does not match declared type(s) {type_names!r}',
+            )
         enum = spec.get('enum')
         if enum:
             test.assertIn(
                 value, enum,
                 f'{schema_name}.{field}={value!r} not in {enum!r}',
+            )
+        pattern = spec.get('pattern')
+        if pattern and isinstance(value, str):
+            # The contract's own pattern descriptions (e.g.
+            # relativePath's) explicitly say the pattern does not apply
+            # to a null value -- only enforce it when the field actually
+            # is a string.
+            test.assertIsNotNone(
+                re.match(pattern, value),
+                f'{schema_name}.{field}={value!r} does not match pattern {pattern!r}',
             )
         if field.endswith('At') and isinstance(value, str):
             test.assertRegex(
@@ -82,9 +115,14 @@ class HealthReadyEndpointTestCase(BridgeTestCase):
 
     def test_never_fabricates_healthy_for_unverifiable_components(self):
         '''
-            queues, workers, youtube are not cheaply verifiable from the web
-            process in T1 (see readiness.py's module docstring) and must
-            report "unknown", never "healthy".
+            youtube is permanently "unknown" by design (see readiness.py's
+            module docstring on why a bridge-initiated reachability probe
+            isn't a confirmed proxy for yt-dlp's own egress path). queues
+            and workers became real checks in T4 (readiness.py::check_workers/
+            check_queues, via s6-svstat against /run/service) but this test
+            environment doesn't run under s6-overlay, so they correctly
+            fall back to "unknown" here too -- see test_readiness.py for
+            the healthy/degraded/unavailable cases with /run/service mocked.
         '''
         self.enable_bridge()
         response = self.client.get(READY_URL, **self.auth_header())
@@ -130,13 +168,13 @@ class CapabilitiesEndpointTestCase(BridgeTestCase):
         body = json.loads(response.content)
         assert_matches_schema(self, body, 'Capabilities')
 
-    def test_t1_honesty_only_health_is_true(self):
+    def test_health_is_always_true(self):
         self.enable_bridge()
         response = self.client.get(CAPS_URL, **self.auth_header())
         body = json.loads(response.content)
         self.assertTrue(body['health'])
-        other_flags = {k: v for k, v in body.items() if k != 'health'}
-        self.assertTrue(
-            all(v is False for v in other_flags.values()),
-            f'T1 must report every non-health capability as false, got {other_flags}',
-        )
+        # The full "which flags are true" assertion, including T2's
+        # readSources/readMedia, lives in
+        # tests/test_sources.py::CapabilitiesReflectsT2TestCase -- kept
+        # there so this file doesn't need updating every time a slice
+        # flips another capability true.

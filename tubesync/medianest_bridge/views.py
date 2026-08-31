@@ -1,10 +1,14 @@
 '''
     T1 diagnostics + auth-skeleton views: GET /health/live, GET /health/ready,
-    GET /meta, GET /capabilities. No source/media/task endpoints -- those are
-    T2/T3 (see the fork's PR description for scope).
+    GET /meta, GET /capabilities. T2's source/media read endpoints live in
+    views_sources.py; T3's write endpoints live in views_write.py -- all
+    built on the same BridgeView here.
 '''
+import json
+import time
 import uuid
 from datetime import datetime, timezone
+from io import BytesIO
 
 from django.conf import settings
 from django.http import JsonResponse
@@ -35,6 +39,120 @@ def _resolve_request_id(request):
     return str(uuid.uuid4())
 
 
+def _read_body_is_oversized(request, limit):
+    '''
+        T3 hardening of the T1 body-size gate (T1 verifier LOW, carried
+        forward through T2): actually reads the body, bounded to
+        `limit + 1` bytes, rather than trusting the Content-Length
+        header's stated value without verification -- and applies that
+        same bound uniformly even when Content-Length is absent, instead
+        of skipping the check entirely in that case (T1/T2's behavior).
+
+        What this does and does NOT defend against, precisely: Django's
+        own WSGIRequest wraps the WSGI input stream in a LimitedStream
+        bounded by the Content-Length header's own value (defaulting to
+        0 bytes if that header is absent or malformed --
+        django.core.handlers.wsgi.WSGIRequest.__init__), and
+        LimitedStream.read() enforces that bound even for a "read
+        everything" call with no size argument. For this fork's
+        synchronous gunicorn worker class (worker_class = 'sync' in
+        gunicorn.py), that means a request can never actually deliver
+        more bytes to this app than its own declared Content-Length,
+        regardless of what this function does -- there is no "read
+        unlimited bytes into memory" vulnerability at this layer to fix.
+        What this function actually improves: (a) the size decision is
+        based on bytes Django's stream actually handed back, not a
+        client-supplied number taken on faith, and (b) a request with no
+        Content-Length header no longer skips size checking outright.
+
+        Populates request._body and request._stream (Django's own
+        caching attributes) with the bytes read here, so a later
+        request.body access downstream (used by the write views to
+        parse JSON) returns this exact data rather than attempting to
+        re-read the stream, which Django does not support once .read()
+        has been called once.
+    '''
+    if getattr(request, '_body', None) is not None:
+        return False
+    try:
+        chunk = request.read(limit + 1)
+    except Exception:
+        chunk = b''
+    request._body = chunk
+    request._stream = BytesIO(chunk)
+    return len(chunk) > limit
+
+
+def _response_json_field(response, field_name):
+    '''
+        Best-effort read of one field from a JSON response body, for
+        logging only -- never raises, never used for control flow.
+    '''
+    try:
+        return json.loads(response.content).get(field_name)
+    except Exception:
+        return None
+
+
+def _log_outcome(request, response, request_id, duration_ms):
+    '''
+        T4: one structured line per request, for every route, success or
+        error alike -- not a metrics stack (this fork has none, and
+        upstream has no Prometheus hook to build on; researched, not
+        assumed -- see the T4 PR body), just consistent, greppable
+        request/outcome logging matching this app's existing
+        common.logger.log usage. Exactly five fields, always the same
+        five: route, method, status, duration, request_id. Never the
+        bearer token (nothing here ever touches it), never a filesystem
+        path (route is the URL path, not a disk path).
+    '''
+    log.info(
+        'medianest_bridge: request_complete route=%s method=%s status=%s duration_ms=%s request_id=%s',
+        request.path, request.method, response.status_code, duration_ms, request_id,
+    )
+
+
+def _log_mutation_audit(request, response, request_id, kwargs):
+    '''
+        One audit-shaped line for every mutation *attempt* on a bridge
+        route -- both accepted and rejected, including a read-only
+        rejection, since "was a mutation attempted and what happened"
+        is the audit-relevant fact regardless of outcome. Only called
+        for non-safe methods (dispatch() checks this before calling).
+
+        source_uuid is read from the URL kwargs when the route names one
+        (POST /sources/{uuid}/sync) or, for a successful POST /sources
+        (201, no uuid in the URL -- the uuid is newly assigned), from the
+        response body's own uuid field. Never the bearer token, never a
+        filesystem path.
+    '''
+    if 200 <= response.status_code < 300:
+        outcome = 'accepted'
+    else:
+        code = _response_json_field(response, 'code') or str(response.status_code)
+        outcome = f'rejected_{code}'
+    source_uuid = kwargs.get('source_uuid') or _response_json_field(response, 'uuid')
+    log.info(
+        'medianest_bridge: mutation_audit route=%s outcome=%s source_uuid=%s request_id=%s',
+        request.path, outcome, source_uuid or '-', request_id,
+    )
+
+
+def _swallow_logging_failure(request_id, path):
+    '''
+        Last-resort handler when outcome/audit logging itself fails.
+        Must never raise: a broken logging handler must not discard an
+        already-computed HTTP response.
+    '''
+    try:
+        log.exception(
+            'medianest_bridge: outcome/audit logging failed request_id=%s path=%s',
+            request_id, path,
+        )
+    except Exception:
+        pass
+
+
 @method_decorator(csrf_exempt, name='dispatch')
 class BridgeView(View):
     '''
@@ -42,13 +160,14 @@ class BridgeView(View):
         dispatch() rather than Django middleware. This is deliberate: adding
         an entry to settings.MIDDLEWARE would be a fourth upstream touch
         point, beyond the three the fork delta is scoped to (INSTALLED_APPS,
-        the URL include, and the BASICAUTH_ALWAYS_ALLOW_URIS exemption).
+        the URL include, and the BASICAUTH_PREFIX_ALLOW_URIS exemption).
 
         CSRF is exempted here (not via settings) for the same reason: the
         bridge is a bearer-token server-to-server API; MediaNest callers
         never carry Django's CSRF cookie/token. Without this exemption,
-        CsrfViewMiddleware would reject mutating requests with an HTML 403
-        before dispatch() runs.
+        CsrfViewMiddleware would reject T3's three POST routes (validate,
+        create, sync-now) with an HTML 403 before dispatch()'s own
+        bearer/read-only/body-size gates ever ran.
 
         Gate order (checked in this sequence, each short-circuiting on
         failure): disabled -> CIDR -> bearer -> read-only -> body-size ->
@@ -65,15 +184,74 @@ class BridgeView(View):
         loud warning rather than silently degrading. It never blocks the
         request -- an operator may have a legitimate alternate ingress
         this app cannot verify -- and never mentions the bearer token.
+
+        read_only_exempt (class attribute, default False): the read-only
+        gate below blocks every non-GET/HEAD/OPTIONS request by HTTP
+        method, which is the right default since every T1/T2 route is
+        read-only and every other T3 write route (POST /sources,
+        POST /sources/{uuid}/sync) genuinely mutates. POST
+        /sources/validate is the one exception -- it never persists
+        anything, and the vendored contract's own operation definition
+        for it lists no 403 ReadOnly response at all (unlike /sources and
+        /sources/{uuid}/sync, which both do). ValidateSourceView sets
+        read_only_exempt = True to match the contract exactly, rather
+        than blocking a genuinely non-mutating request because of its
+        HTTP method alone.
     '''
 
+    read_only_exempt = False
+
     def dispatch(self, request, *args, **kwargs):
+        '''
+            Thin wrapper around _run_gates(): computes request_id/
+            correlation_id once, then -- regardless of which internal
+            gate (or the concrete view itself) produced the response --
+            logs exactly one structured outcome line and, for a mutation
+            attempt, exactly one audit line. This is why the gate logic
+            below lives in a separate method rather than dispatch()
+            itself: _run_gates() has several early `return
+            error_response(...)` points (disabled, CIDR, auth, read-only,
+            body-size), and duplicating the outcome/audit logging at each
+            of those return points would be easy to miss one on a future
+            edit. One wrapper, one place, applies to all of them
+            uniformly.
+
+            The two logging calls below are each wrapped in their own
+            try/except (T4 review fix-up): _run_gates()'s own try/except
+            only covers the gate checks and the concrete view's handler,
+            not these two calls, which run after it returns. Separate
+            guards ensure a failure in outcome logging does not suppress
+            mutation audit logging, and _swallow_logging_failure() itself
+            never raises so a broken logging handler cannot discard an
+            already-computed response.
+        '''
         request_id = _resolve_request_id(request)
+        # Stashed so a concrete view's own error responses (e.g. 404
+        # SOURCE_NOT_FOUND, 400 SOURCE_INVALID in views_sources.py) can
+        # reuse the exact same request_id dispatch() will echo in the
+        # X-Request-ID response header below, rather than resolving a
+        # second, different one.
+        request._bridge_request_id = request_id
         correlation_id = request.META.get('HTTP_X_CORRELATION_ID', '').strip()
         log.debug(
             'medianest_bridge: request path=%s method=%s request_id=%s correlation_id=%s',
             request.path, request.method, request_id, correlation_id or '-',
         )
+        start = time.monotonic()
+        response = self._run_gates(request, request_id, *args, **kwargs)
+        duration_ms = round((time.monotonic() - start) * 1000, 2)
+        try:
+            _log_outcome(request, response, request_id, duration_ms)
+        except Exception:
+            _swallow_logging_failure(request_id, request.path)
+        if request.method not in SAFE_METHODS:
+            try:
+                _log_mutation_audit(request, response, request_id, kwargs)
+            except Exception:
+                _swallow_logging_failure(request_id, request.path)
+        return response
+
+    def _run_gates(self, request, request_id, *args, **kwargs):
         try:
             if not config.bridge_enabled():
                 return error_response(
@@ -110,7 +288,11 @@ class BridgeView(View):
                     request_id=request_id,
                     retryable=False,
                 )
-            if request.method not in SAFE_METHODS and config.is_read_only():
+            if (
+                request.method not in SAFE_METHODS
+                and config.is_read_only()
+                and not self.read_only_exempt
+            ):
                 return error_response(
                     status=403,
                     code='PROVIDER_READ_ONLY',
@@ -119,39 +301,15 @@ class BridgeView(View):
                     request_id=request_id,
                     retryable=False,
                 )
-            if request.method not in SAFE_METHODS:
-                content_length = request.META.get('CONTENT_LENGTH')
-                length = None
-                if content_length not in (None, ''):
-                    try:
-                        length = int(content_length)
-                    except (TypeError, ValueError):
-                        length = None
-                if length is None:
-                    transfer_encoding = (
-                        request.META.get('HTTP_TRANSFER_ENCODING') or ''
-                    ).lower()
-                    if 'chunked' in transfer_encoding:
-                        return error_response(
-                            status=413,
-                            code='REQUEST_TOO_LARGE',
-                            title='Request body too large',
-                            detail=(
-                                'Chunked request bodies cannot be size-checked '
-                                'before read; use Content-Length instead.'
-                            ),
-                            request_id=request_id,
-                            retryable=False,
-                        )
-                elif length > config.max_body_bytes():
-                    return error_response(
-                        status=413,
-                        code='REQUEST_TOO_LARGE',
-                        title='Request body too large',
-                        detail=f'Request body exceeds MEDIANEST_BRIDGE_MAX_BODY_BYTES ({config.max_body_bytes()} bytes).',
-                        request_id=request_id,
-                        retryable=False,
-                    )
+            if _read_body_is_oversized(request, config.max_body_bytes()):
+                return error_response(
+                    status=413,
+                    code='REQUEST_TOO_LARGE',
+                    title='Request body too large',
+                    detail=f'Request body exceeds MEDIANEST_BRIDGE_MAX_BODY_BYTES ({config.max_body_bytes()} bytes).',
+                    request_id=request_id,
+                    retryable=False,
+                )
             response = super().dispatch(request, *args, **kwargs)
         except Exception:
             # No raw stack trace, no exception message, ever reaches the
@@ -209,16 +367,21 @@ class CapabilitiesView(BridgeView):
     def get(self, request, *args, **kwargs):
         body = {
             'health': True,
-            'readSources': False,
-            'validateChannelSource': False,
-            'validatePlaylistSource': False,
-            'createChannelSource': False,
-            'createPlaylistSource': False,
+            # T2: read endpoints. T3: validate/create/sync-now (both
+            # channel and playlist go through the same SourceForm-based
+            # validate/create logic, so both flags flip together, not
+            # independently). updateSource/disableSource/deleteSource
+            # stay false -- no such endpoints exist anywhere in this app.
+            'readSources': True,
+            'validateChannelSource': True,
+            'validatePlaylistSource': True,
+            'createChannelSource': True,
+            'createPlaylistSource': True,
             'updateSource': False,
             'disableSource': False,
             'deleteSource': False,
-            'syncSource': False,
-            'readMedia': False,
+            'syncSource': True,
+            'readMedia': True,
             'retryMedia': False,
             'skipMedia': False,
             'enableMedia': False,
