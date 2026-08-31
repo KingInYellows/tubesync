@@ -1,0 +1,30 @@
+tubesync/medianest_bridge/README.md
+  h_6000354274ce50 153-156,277-278
+tubesync/medianest_bridge/contract/contract_fixtures.json
+  h_6000354274ce50 5,59
+tubesync/medianest_bridge/docs/agpl-compliance.md
+  h_6000354274ce50 64-69
+tubesync/medianest_bridge/docs/migration-upgrade-proof.md
+  h_6000354274ce50 25-29,38-42
+tubesync/medianest_bridge/docs/rollback.md
+  h_6000354274ce50 70-75
+tubesync/medianest_bridge/mapping.py
+  h_6000354274ce50 23-24,162,297-304,306-310
+tubesync/medianest_bridge/readiness.py
+  h_6000354274ce50 139-148,150-154,163,165-174,183,185,234,413-415,473-476,479-482,487,498-499
+tubesync/medianest_bridge/tests/test_mapping.py
+  h_6000354274ce50 315-337
+tubesync/medianest_bridge/views_write.py
+  h_6000354274ce50 243
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "d942cb3cdb7f776714bce1f577db32a79411826b",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
