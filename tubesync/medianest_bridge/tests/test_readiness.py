@@ -147,7 +147,7 @@ class QueuesCheckTestCase(ReadinessCacheResetMixin, SimpleTestCase):
         present_dirs = {'/run/service'} | {f'/run/service/{n}' for n in readiness.HUEY_SERVICE_NAMES}
 
         def wanted_up(name):
-            return name == 'huey-net-limited' and False or True
+            return False if name == 'huey-net-limited' else True
 
         with (
             patch.object(readiness.os.path, 'isdir', _isdir_side_effect(present_dirs)),

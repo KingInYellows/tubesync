@@ -136,14 +136,15 @@ _SUBPROCESS_TIMEOUT_SECONDS = 2
 _BLOCKING_CALL_TIMEOUT_SECONDS = 2
 _CACHE_TTL_SECONDS = 5
 
-# Shared, bounded executor for database/storage checks. A per-call executor
-# with shutdown(wait=False) leaked one orphaned thread on every timeout;
-# under sustained readiness polling against a dead mount that unboundedly
-# accumulated blocked threads. Two workers cap the stuck-thread count at
-# the number of blocking checks this module runs (database + storage) while
-# still bounding each caller's wait via Future.result(timeout=...).
+# Shared, bounded executor for database/storage/youtube-probe checks. A
+# per-call executor with shutdown(wait=False) leaked one orphaned thread
+# on every timeout; under sustained readiness polling against a dead
+# mount that unboundedly accumulated blocked threads. Three workers cap
+# the stuck-thread count at the number of blocking checks this module
+# runs (database + storage + youtube wall-clock probe) while still
+# bounding each caller's wait via Future.result(timeout=...).
 _blocking_call_executor = ThreadPoolExecutor(
-    max_workers=2,
+    max_workers=3,
     thread_name_prefix='medianest_bridge_readiness',
 )
 
