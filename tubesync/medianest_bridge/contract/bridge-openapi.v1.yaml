@@ -2,7 +2,14 @@
 #
 # Canonical source: KingInYellows/medianest,
 #   docs/planning/tubesync-integration/bridge-openapi.v1.yaml
-#   @ ce17a28773a6f3866c9c9235ae4eae04f4bafff4 (2026-08-21)
+#   @ 35a9c069fe4f1512ff7b606c33c0c2a11c7efa76 (2026-08-21)
+#   (T3 re-vendor was @ 713f9b4ac9efc24e0f285f9af58a50276f29ebb9; this
+#   update is description-only: codifies DECISIONS #27 -- the
+#   /sources/validate slice-1 scope [SourceForm field-level checks +
+#   validate_url() shape cross-check only, no directory-traversal/
+#   media-format checks, no network calls] and ValidatedSource.displayName's
+#   canonicalKey-echo placeholder -- both already implemented exactly this
+#   way since T3. No schema/enum changes; conformance tests are unaffected.)
 #
 # Vendored into this fork so the bridge app's conformance tests
 # (medianest_bridge/tests/test_contract_conformance.py) can validate
@@ -179,10 +186,14 @@ paths:
       operationId: validateSource
       summary: Validate a candidate source before creation
       description: >-
-        Validates using TubeSync application logic (SourceForm plus the
-        EditSourceMixin.form_valid checks — directory-traversal guard via
-        safe_join, and the media-format-example check). Does not persist
-        anything.
+        Slice-1 scope (amended post-T3, DECISIONS #27): validates using
+        SourceForm's field-level checks for sourceType/canonicalKey plus a
+        pure validate_url() shape cross-check that canonicalUrl matches the
+        declared sourceType. The EditSourceMixin.form_valid checks
+        (directory-traversal guard, media-format-example check) do NOT run
+        at validate-time — this request schema supplies no directory to
+        check them against; they run at create-time inside POST /sources.
+        Does not persist anything and performs no network calls.
       parameters:
         - $ref: "#/components/parameters/CorrelationId"
         - $ref: "#/components/parameters/RequestId"
@@ -575,8 +586,12 @@ components:
             - SOURCE_NOT_FOUND
             - MEDIA_NOT_FOUND
             - RATE_LIMITED
-            - INTERNAL_PROVIDER_ERROR
+            # REQUEST_TOO_LARGE (HTTP 413): added post-T1 at the bridge
+            # implementer's request — the slice-1 enum had no honest code for
+            # an oversized-request-body rejection. The T1 bridge enforces a
+            # bounded body (MEDIANEST_BRIDGE_MAX_BODY_BYTES) on every request.
             - REQUEST_TOO_LARGE
+            - INTERNAL_PROVIDER_ERROR
         detail:
           type: string
         requestId:
@@ -828,6 +843,11 @@ components:
           format: uri
         displayName:
           type: string
+          description: >-
+            Slice 1 (DECISIONS #27): an honest placeholder — the canonicalKey
+            echoed back. NOT a real title (no metadata fetch at
+            validate-time); callers must not present it as one. Real display
+            names come from source reads after creation.
         thumbnailUrl:
           type: [string, "null"]
           format: uri
