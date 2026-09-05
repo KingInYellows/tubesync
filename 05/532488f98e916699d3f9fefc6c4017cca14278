@@ -1,0 +1,61 @@
+.github/workflows/ci.yaml
+  s_8b5149dbe74c81::t_2aa05933ae8efd 70-71
+Dockerfile
+  s_8b5149dbe74c81::t_c4ae05246cd003 4,503-504
+Pipfile
+  s_8b5149dbe74c81::t_d0922b7b966813 28,32
+README.md
+  s_8b5149dbe74c81::t_57a92bae225e08 270,293
+docs/wiki
+  s_8b5149dbe74c81::t_abf72129096bd6 1
+tubesync/common/huey.py
+  s_8b5149dbe74c81::t_23b02bf7e9609f 18,419,487
+tubesync/common/logs/syslog/hat/_default.py
+  s_8b5149dbe74c81::t_ca878999633cb2 374,411-431
+tubesync/common/models/tasks.py
+  s_8b5149dbe74c81::t_2886a5199d7c6a 11-13,84,211,224
+tubesync/common/utils.py
+  s_8b5149dbe74c81::t_3f3d06eab3b61e 212,223-224,287,289,302,304,308-346,353
+tubesync/common/yt_dlp.py
+  s_8b5149dbe74c81::t_e8075e0fc9b6d7 1-28
+tubesync/shasum.py
+  s_8b5149dbe74c81::t_60f2e6539d0ea1 13,22,227,231,241-243,252,259-262,265,304-309,353-356,369,372-374,390,394-403,425
+tubesync/shasum_tests.py
+  s_8b5149dbe74c81::t_a93c8aec47f43b 9,96
+tubesync/sync/admin.py
+  s_8b5149dbe74c81::t_750ebb15fa98a6 1,3,11,31-96
+tubesync/sync/models/media.py
+  s_8b5149dbe74c81::t_19c795e2736d8f 8,23,50-51,63,66,70,87,603,609-613,686-688,728,783-787,792,853-868,1049-1050,1091
+tubesync/sync/models/source.py
+  s_8b5149dbe74c81::t_8c00cfd0b9ea93 6,24-25,31-34,53,56,66,76,79,495-513,578,590,597-598,606-635,648
+tubesync/sync/tasks.py
+  s_8b5149dbe74c81::t_e9788feed7d982 41,206,219,514-515,740-750,941,946-955
+tubesync/sync/tests/test_admin.py
+  s_8b5149dbe74c81::t_6caa610a22d042 1-110
+tubesync/sync/tests/test_filepath.py
+  s_8b5149dbe74c81::t_cb57037fa64947 1,7,163-233
+tubesync/sync/tests/test_source_images.py
+  s_8b5149dbe74c81::t_4fb3a2b130ae84 1-274
+tubesync/sync/youtube.py
+  s_8b5149dbe74c81::t_0aed14771d4a9d 7-8,48,54,87-122,126-147,154,163,265,313-314,399-400
+tubesync/tubesync/local_settings.py.container
+  s_8b5149dbe74c81::t_5aec3c0d9f56c4 111-113
+tubesync/tubesync/settings.py
+  s_8b5149dbe74c81::t_0f438d447d72d3 14,392,407-412
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "05532488f98e916699d3f9fefc6c4017cca14278",
+  "prompts": {},
+  "sessions": {
+    "s_8b5149dbe74c81": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "092b6f7e-abc2-495b-b879-af3c38290cab",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
