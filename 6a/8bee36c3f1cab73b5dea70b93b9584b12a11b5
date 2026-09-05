@@ -1,0 +1,19 @@
+tubesync/medianest_bridge/contract/contract_fixtures.json
+  s_8b5149dbe74c81::t_18c24184e083df 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.2",
+  "base_commit_sha": "6a8bee36c3f1cab73b5dea70b93b9584b12a11b5",
+  "prompts": {},
+  "sessions": {
+    "s_8b5149dbe74c81": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "092b6f7e-abc2-495b-b879-af3c38290cab",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
