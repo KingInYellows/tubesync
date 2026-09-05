@@ -9,12 +9,13 @@ name: MediaNest Bridge Release Image
 # side. See medianest_bridge/docs/upstream-sync.md for the fork's upstream
 # sync process this file is designed to survive unmodified.
 #
-# BLOCKED until GitHub Actions is enabled for this fork repository
-# (KingInYellows/tubesync) -- a recorded open item for Brad in the
-# program's requirements. This file has been authored and validated with
-# `actionlint` but has never actually run: it cannot run until Actions is
-# turned on for this repository. Do not infer a successful run from this
-# file's mere presence.
+# GitHub Actions is enabled for this fork repository (KingInYellows/tubesync;
+# the CI workflow runs on main). This file has been authored and validated
+# with `actionlint` but, as of the bridge-v1.0.0 release package
+# (2026-09-05), has never actually run -- no workflow_dispatch and no
+# bridge-v* tag yet. The build-only proof is a workflow_dispatch with
+# push=false; both it and the tag are repository-owner actions. Do not infer
+# a successful run from this file's mere presence.
 #
 # Reuses this repo's own existing composite actions (.github/actions/*),
 # unmodified, the same way upstream's own release.yaml does -- FFmpeg-Builds
