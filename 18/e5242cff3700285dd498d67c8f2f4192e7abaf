@@ -1,0 +1,21 @@
+tubesync/medianest_bridge/docs/compatibility-matrix.md
+  s_8b5149dbe74c81::t_d98c29773eef65 97-105
+tubesync/medianest_bridge/docs/release-notes-bridge-v1.0.0.md
+  s_8b5149dbe74c81::t_8670bb503f807a 1-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "18e5242cff3700285dd498d67c8f2f4192e7abaf",
+  "prompts": {},
+  "sessions": {
+    "s_8b5149dbe74c81": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "092b6f7e-abc2-495b-b879-af3c38290cab",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
