@@ -34,7 +34,7 @@ signal-driven task scheduling.
 
 ## Fork delta
 
-Five upstream files are touched, four of them minimal:
+Four upstream files are touched at five points (`settings.py` twice), four of the five minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
 
 1. `tubesync/tubesync/settings.py` -- `INSTALLED_APPS += 'medianest_bridge'`.
 2. `tubesync/tubesync/urls.py` -- one `include('medianest_bridge.urls')` at

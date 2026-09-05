@@ -10,6 +10,12 @@
 #   media-format checks, no network calls] and ValidatedSource.displayName's
 #   canonicalKey-echo placeholder -- both already implemented exactly this
 #   way since T3. No schema/enum changes; conformance tests are unaffected.)
+#   Fork commit d20563a7 (T1 review fix) then added, directly in this file,
+#   the 403/413/503 response entries on the four diagnostics paths and the
+#   ProviderUnavailable / RequestTooLarge response components. The MediaNest
+#   release-readiness session (2026-09-05) ported those additions into the
+#   canonical copy (MediaNest DECISIONS #34), so the canonical file equals
+#   this file after this comment header. Future changes go canonical-first.
 #
 # Vendored into this fork so the bridge app's conformance tests
 # (medianest_bridge/tests/test_contract_conformance.py) can validate
