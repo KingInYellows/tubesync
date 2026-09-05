@@ -102,4 +102,4 @@ is created by the repository owner.
 
 | Bridge tag | Fork commit | `UPSTREAM_SHA` (upstream version) | Contract | MediaNest min | Notes |
 | --- | --- | --- | --- | --- | --- |
-| `bridge-v1.0.0` (proposed) | `c802ff5e1efd49640bc32c1c460455041476e57a` | `3b9d72f28dda9c931776f76e7428a72a24a57f82` (v0.18.3 era; 85 behind v0.18.4 at tag time, rehearsal merge clean) | `bridge-openapi.v1.yaml` `1.0.0` | `v1.0.0-rc2` (proposed) | See `release-notes-bridge-v1.0.0.md`. yt-dlp/FFmpeg resolved at build time (not source-pinned). |
+| `bridge-v1.0.0` (proposed) | fork `main` after PR #9 merges (docs-only on top of `c802ff5e1efd49640bc32c1c460455041476e57a`; bridge code identical to that SHA) | `3b9d72f28dda9c931776f76e7428a72a24a57f82` (v0.18.3 era; 85 behind v0.18.4 at tag time, rehearsal merge clean) | `bridge-openapi.v1.yaml` `1.0.0` | `v1.0.0-rc2` (proposed) | See `release-notes-bridge-v1.0.0.md`. yt-dlp/FFmpeg resolved at build time (not source-pinned). |

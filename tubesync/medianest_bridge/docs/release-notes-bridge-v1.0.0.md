@@ -30,7 +30,7 @@ would contain and what was verified.
 | Item | Value | Source of truth |
 | --- | --- | --- |
 | Bridge version (`GET /meta` → `bridgeVersion`) | `1.0.0` | `medianest_bridge/config.py::BRIDGE_VERSION` |
-| Contract | `bridge-openapi.v1.yaml`, `info.version 1.0.0` | vendored copy `medianest_bridge/contract/`; canonical `KingInYellows/medianest` `docs/planning/tubesync-integration/bridge-openapi.v1.yaml`. The canonical copy was re-synced to this vendored copy's additive 403/413/503 diagnostics responses during release readiness (MediaNest DECISIONS #34); the vendored file itself is unchanged for this tag. |
+| Contract | `bridge-openapi.v1.yaml`, `info.version 1.0.0` | vendored copy `medianest_bridge/contract/`; canonical `KingInYellows/medianest` `docs/planning/tubesync-integration/bridge-openapi.v1.yaml`. The canonical copy was re-synced to this vendored copy's additive 403/413/503 diagnostics responses during release readiness (MediaNest DECISIONS #34); this tag changes only the vendored file's comment header (body byte-identical to the canonical). |
 | Upstream base (`GET /meta` → `upstreamCommit`) | `3b9d72f28dda9c931776f76e7428a72a24a57f82` | `medianest_bridge/docs/UPSTREAM_SHA` (= `merge-base origin/main upstream/main`); `GET /meta` → `tubesyncVersion` reports `0.18.3` |
 | Upstream drift at tag time | 85 commits behind `meeb/tubesync` `255b5b754` (v0.18.4, 2026-09-04) | Rehearsal merge into a throwaway worktree: zero conflicts, full suite 331/331 on the merge result. **Decision: v1 stays pinned; re-pin is the first post-release PR** (`docs/upstream-sync.md` process, single commit updating `UPSTREAM_SHA`, migration-upgrade rehearsal). |
 | MediaNest minimum | `v1.0.0-rc2` (the MediaNest release carrying M0–M7; proposed) | MediaNest `CHANGELOG.md` / release PR |
@@ -50,6 +50,11 @@ would contain and what was verified.
   200, `/capabilities` truthful. See MediaNest
   `docs/planning/tubesync-integration/EVIDENCE.md` § "Release-readiness
   session".
+- Fork CI's `docker-image` jobs built the real `Dockerfile` for linux/amd64
+  and linux/arm64 on this exact SHA (runs 33453586425 and 33787539511,
+  `docker/github-builder` reusable workflow, same yt-dlp/FFmpeg build-args)
+  — without `MEDIANEST_BRIDGE_UPSTREAM_SHA`, so `/meta` in those images
+  reports `unknown`; they are not a substitute for the publish dry run.
 - Production image (`Dockerfile`, workflow build-args): **not buildable on the
   release host** — the WSL2 kernel's `WSLInterop` binfmt (magic `4d5a`)
   intercepts the QuickJS APE binary at stage `quickjs-extracted`
@@ -66,6 +71,18 @@ would contain and what was verified.
   v0.18.4 already adjusts `hat-juggler`). Fork CI has no `pip-audit` step.
 - `GET /health/ready` reports `queues`/`workers` as `unknown` outside the s6
   container image (by design; the production image runs under s6).
+
+## Known deviations from SUCCESS-SPEC §16 (accepted for v1, MediaNest DECISIONS #44)
+
+- §16.2 "record the upstream commit in image labels": the image carries no
+  OCI `LABEL`s; the upstream commit is baked as
+  `ENV MEDIANEST_BRIDGE_UPSTREAM_SHA` and surfaced by `GET /meta`
+  (`upstreamCommit`), which is what MediaNest's diagnostics read. Follow-up:
+  `org.opencontainers.image.revision`/`source` labels via
+  `docker/metadata-action` in the publish workflow.
+- §16.8 SBOM / provenance attestation: not produced by the publish workflow
+  (the inherited `ci.yaml` builder requests `id-token: write`, so the
+  plumbing exists). Follow-up alongside the labels.
 
 ## Licensing
 
@@ -90,5 +107,5 @@ config/downloads volumes untouched.
 ## How this becomes a release (owner actions, in order)
 
 1. `gh workflow run medianest-bridge-release.yaml --repo KingInYellows/tubesync -f tag=bridge-v1.0.0 -f push=false` — build-only proof; record the run id and the resolved yt-dlp/FFmpeg values.
-2. `git tag -a bridge-v1.0.0 c802ff5e -m "medianest_bridge 1.0.0"` and `git push origin bridge-v1.0.0` — triggers the publish workflow with `push=true`.
+2. After merging this PR (fork #9): `git tag -a bridge-v1.0.0 <fork-main-sha-after-#9> -m "medianest_bridge 1.0.0"` and `git push origin bridge-v1.0.0` — triggers the publish workflow with `push=true`. The tag goes on `main` after #9 so it carries these notes and the matrix row; the bridge code in that tree is identical to `c802ff5e` (#9 is docs and comments only), which is the tree CI and the harness verified.
 3. Create the GitHub Release from the tag with this file as the body; the inherited `release.yaml` skips `bridge-v*` releases by design.

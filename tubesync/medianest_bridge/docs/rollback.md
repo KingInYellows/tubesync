@@ -73,9 +73,17 @@ unconditionally safe just because this app's own guarantee holds.
   disables those gates even though bearer auth still runs. Confirm the
   rollback target still enforces CIDR allowlisting and read-only writes
   before treating the extra env as leftover config.
-- **The GitHub Actions publish workflow itself is unproven** (see
-  `medianest_bridge/docs/image-build-proof.md` and this workflow's own
-  header comment) -- rollback here assumes a previously *published* tag
-  exists to roll back to, which requires Actions to have been enabled and
-  a successful publish to have already happened at least once. Until
-  then, "run the prior tag" has no prior tag to run.
+- **The publish workflow has not yet run end-to-end** (GitHub Actions is
+  enabled on the fork and `CI` is green on `main`, but
+  `medianest-bridge-release.yaml` has never been dispatched and no
+  `bridge-v*` tag exists as of the `bridge-v1.0.0` release package,
+  2026-09-05 -- see `release-notes-bridge-v1.0.0.md`). Rollback here assumes
+  a previously *published* tag exists to roll back to; for the first tag
+  there is none. **Pre-bridge fallback for the first release:** run the
+  upstream-equivalent image the deployment used before the fork (or a
+  locally built image from the prior commit, see `image-build-proof.md`)
+  with `MEDIANEST_BRIDGE_TOKEN_FILE` unset -- the bridge then reports
+  `PROVIDER_UNAVAILABLE`/fails closed and MediaNest degrades honestly
+  (its own rollback is the provider-mode flip documented in MediaNest's
+  `docs/deployment/two-host-rollback.md`). TubeSync config and downloads
+  volumes are untouched either way (zero fork migrations).
