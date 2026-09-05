@@ -1,0 +1,19 @@
+.github/workflows/medianest-bridge-release.yaml
+  s_8b5149dbe74c81::t_429b0380929a2d 12-18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "7d00bd2ae25e765844398be0fd7e9d70d4510f66",
+  "prompts": {},
+  "sessions": {
+    "s_8b5149dbe74c81": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "092b6f7e-abc2-495b-b879-af3c38290cab",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
