@@ -1,0 +1,20 @@
+tubesync/medianest_bridge/tests/test_readiness.py
+  s_1767d4e1e41c5a::t_4d32b246c7101c 178-185,192-198,200,203,206,209,212,215-218,227,233-251
+  s_1767d4e1e41c5a::t_85ccdee95e96d7 252
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "4074b349d21f99ef522746cae2b7abd4ed8c5417",
+  "prompts": {},
+  "sessions": {
+    "s_1767d4e1e41c5a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbdea677-5faf-40ca-b106-e7eb7623d279",
+        "model": "claude-opus-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
