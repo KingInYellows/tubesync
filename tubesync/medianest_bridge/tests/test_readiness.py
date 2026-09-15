@@ -175,35 +175,47 @@ class QueuesCheckTestCase(ReadinessCacheResetMixin, SimpleTestCase):
 
 
 class StorageThresholdTestCase(ReadinessCacheResetMixin, SimpleTestCase):
+    '''
+        check_storage() stats DOWNLOAD_ROOT (exists/access/disk_usage, bundled
+        in _stat_download_root) before it ever looks at the thresholds. These
+        tests patch that one seam rather than disk_usage + a process-global
+        os.access, so they no longer depend on DOWNLOAD_ROOT existing on disk
+        (a fresh clone has no downloads/ directory; the full suite only
+        passed because an upstream sync test happened to create it first).
+    '''
 
     def _usage(self, free_bytes):
         class Usage:
             free = free_bytes
         return Usage()
 
+    def _stat_result(self, free_bytes=None, *, exists=True, writable=True):
+        usage = None if free_bytes is None else self._usage(free_bytes)
+        return patch(
+            'medianest_bridge.readiness._stat_download_root',
+            return_value=(exists, writable, usage),
+        )
+
     def test_healthy_above_warn_threshold(self):
-        with (
-            patch('medianest_bridge.readiness.shutil.disk_usage', return_value=self._usage(10 * 1024 ** 3)),
-            patch('os.access', return_value=True),
-        ):
+        with self._stat_result(10 * 1024 ** 3):
             result = readiness.check_storage()
         self.assertEqual(result['status'], 'healthy')
+        self.assertIn('free_bytes=', result['detail'])
 
     def test_degraded_between_warn_and_critical(self):
-        with (
-            patch('medianest_bridge.readiness.shutil.disk_usage', return_value=self._usage(2 * 1024 ** 3)),
-            patch('os.access', return_value=True),
-        ):
+        with self._stat_result(2 * 1024 ** 3):
             result = readiness.check_storage()
         self.assertEqual(result['status'], 'degraded')
+        self.assertIn('free_bytes=', result['detail'])
 
     def test_unavailable_below_critical_threshold(self):
-        with (
-            patch('medianest_bridge.readiness.shutil.disk_usage', return_value=self._usage(100)),
-            patch('os.access', return_value=True),
-        ):
+        with self._stat_result(100):
             result = readiness.check_storage()
         self.assertEqual(result['status'], 'unavailable')
+        # Must be the threshold branch, not the missing-directory branch --
+        # this test used to pass for the wrong reason when downloads/ was absent.
+        self.assertIn('free_bytes=', result['detail'])
+        self.assertIn('critical threshold', result['detail'])
 
     def test_thresholds_configurable_via_env(self):
         from .base import env_override
@@ -212,12 +224,31 @@ class StorageThresholdTestCase(ReadinessCacheResetMixin, SimpleTestCase):
                 MEDIANEST_BRIDGE_STORAGE_WARN_BYTES=str(50 * 1024 ** 3),
                 MEDIANEST_BRIDGE_STORAGE_CRITICAL_BYTES=str(20 * 1024 ** 3),
             ),
-            patch('medianest_bridge.readiness.shutil.disk_usage', return_value=self._usage(30 * 1024 ** 3)),
-            patch('os.access', return_value=True),
+            self._stat_result(30 * 1024 ** 3),
         ):
             # 30 GiB free is below the overridden 50 GiB warn threshold.
             result = readiness.check_storage()
         self.assertEqual(result['status'], 'degraded')
+
+    def test_unavailable_when_download_root_missing(self):
+        with self._stat_result(exists=False, writable=False):
+            result = readiness.check_storage()
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertEqual(result['detail'], 'DOWNLOAD_ROOT does not exist')
+
+    def test_unavailable_when_download_root_not_writable(self):
+        with self._stat_result(exists=True, writable=False):
+            result = readiness.check_storage()
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertEqual(result['detail'], 'DOWNLOAD_ROOT is not writable')
+
+    def test_healthy_when_free_space_unknown(self):
+        # disk_usage raised OSError inside _stat_download_root: writable, so
+        # healthy, but the detail says the free-space figure is unavailable.
+        with self._stat_result(None):
+            result = readiness.check_storage()
+        self.assertEqual(result['status'], 'healthy')
+        self.assertIn('free space could not be determined', result['detail'])
 
 
 class FailureIsolationTestCase(ReadinessCacheResetMixin, SimpleTestCase):
