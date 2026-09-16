@@ -6,6 +6,9 @@
     anything not matching the exact paths/commands under test) rather
     than patching them unconditionally, so this doesn't destabilize
     unrelated filesystem/subprocess calls made elsewhere during a test.
+    StorageThresholdTestCase is the one exception: it patches the
+    purpose-built _stat_download_root seam wholesale (see its docstring)
+    rather than the stdlib calls behind it.
 
     T-side follow-up (post-M6b egress determination): YoutubeProbeTestCase
     below adds the real youtube reachability probe. Every test mocks
@@ -189,7 +192,12 @@ class StorageThresholdTestCase(ReadinessCacheResetMixin, SimpleTestCase):
             free = free_bytes
         return Usage()
 
-    def _stat_result(self, free_bytes=None, *, exists=True, writable=True):
+    def _patched_stat_download_root(self, free_bytes=None, *, exists=True, writable=True):
+        '''
+            Context manager replacing _stat_download_root with a stub that
+            returns the (exists, writable, usage) tuple the real function
+            would; usage is None when free_bytes is None.
+        '''
         usage = None if free_bytes is None else self._usage(free_bytes)
         return patch(
             'medianest_bridge.readiness._stat_download_root',
@@ -197,25 +205,35 @@ class StorageThresholdTestCase(ReadinessCacheResetMixin, SimpleTestCase):
         )
 
     def test_healthy_above_warn_threshold(self):
-        with self._stat_result(10 * 1024 ** 3):
+        with self._patched_stat_download_root(10 * 1024 ** 3):
             result = readiness.check_storage()
         self.assertEqual(result['status'], 'healthy')
         self.assertIn('free_bytes=', result['detail'])
 
     def test_degraded_between_warn_and_critical(self):
-        with self._stat_result(2 * 1024 ** 3):
+        with self._patched_stat_download_root(2 * 1024 ** 3):
             result = readiness.check_storage()
         self.assertEqual(result['status'], 'degraded')
         self.assertIn('free_bytes=', result['detail'])
 
     def test_unavailable_below_critical_threshold(self):
-        with self._stat_result(100):
+        with self._patched_stat_download_root(100):
             result = readiness.check_storage()
         self.assertEqual(result['status'], 'unavailable')
         # Must be the threshold branch, not the missing-directory branch --
         # this test used to pass for the wrong reason when downloads/ was absent.
         self.assertIn('free_bytes=', result['detail'])
         self.assertIn('critical threshold', result['detail'])
+
+    def test_thresholds_are_inclusive_at_the_boundary(self):
+        # Defaults: warn 5 GiB, critical 1 GiB; both comparisons are <=.
+        with self._patched_stat_download_root(1 * 1024 ** 3):
+            at_critical = readiness.check_storage()
+        readiness._reset_cache()
+        with self._patched_stat_download_root(5 * 1024 ** 3):
+            at_warn = readiness.check_storage()
+        self.assertEqual(at_critical['status'], 'unavailable')
+        self.assertEqual(at_warn['status'], 'degraded')
 
     def test_thresholds_configurable_via_env(self):
         from .base import env_override
@@ -224,31 +242,56 @@ class StorageThresholdTestCase(ReadinessCacheResetMixin, SimpleTestCase):
                 MEDIANEST_BRIDGE_STORAGE_WARN_BYTES=str(50 * 1024 ** 3),
                 MEDIANEST_BRIDGE_STORAGE_CRITICAL_BYTES=str(20 * 1024 ** 3),
             ),
-            self._stat_result(30 * 1024 ** 3),
+            self._patched_stat_download_root(30 * 1024 ** 3),
         ):
             # 30 GiB free is below the overridden 50 GiB warn threshold.
             result = readiness.check_storage()
         self.assertEqual(result['status'], 'degraded')
+        # The overridden value, not the 5 GiB default, must be what tripped it.
+        self.assertIn(f'warn threshold {50 * 1024 ** 3}', result['detail'])
 
     def test_unavailable_when_download_root_missing(self):
-        with self._stat_result(exists=False, writable=False):
+        with self._patched_stat_download_root(exists=False):
             result = readiness.check_storage()
         self.assertEqual(result['status'], 'unavailable')
         self.assertEqual(result['detail'], 'DOWNLOAD_ROOT does not exist')
 
     def test_unavailable_when_download_root_not_writable(self):
-        with self._stat_result(exists=True, writable=False):
+        with self._patched_stat_download_root(exists=True, writable=False):
             result = readiness.check_storage()
         self.assertEqual(result['status'], 'unavailable')
         self.assertEqual(result['detail'], 'DOWNLOAD_ROOT is not writable')
 
     def test_healthy_when_free_space_unknown(self):
-        # disk_usage raised OSError inside _stat_download_root: writable, so
-        # healthy, but the detail says the free-space figure is unavailable.
-        with self._stat_result(None):
+        # Models the outcome of disk_usage raising OSError inside
+        # _stat_download_root (usage=None): writable, so healthy, but the
+        # detail says the free-space figure is unavailable.
+        with self._patched_stat_download_root(None):
             result = readiness.check_storage()
         self.assertEqual(result['status'], 'healthy')
         self.assertIn('free space could not be determined', result['detail'])
+
+    def test_unavailable_when_stat_times_out(self):
+        # _call_with_timeout re-raises the executor's FutureTimeoutError; the
+        # check maps it to unavailable rather than letting it escape.
+        with patch(
+            'medianest_bridge.readiness._stat_download_root',
+            side_effect=readiness.FutureTimeoutError(),
+        ):
+            result = readiness.check_storage()
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertEqual(result['detail'], 'DOWNLOAD_ROOT stat timed out')
+
+    def test_unavailable_when_stat_raises_oserror(self):
+        # exists()/access() themselves raising (stale NFS handle) -- only
+        # disk_usage is guarded inside _stat_download_root.
+        with patch(
+            'medianest_bridge.readiness._stat_download_root',
+            side_effect=OSError('stale file handle'),
+        ):
+            result = readiness.check_storage()
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertEqual(result['detail'], 'DOWNLOAD_ROOT could not be statted')
 
 
 class FailureIsolationTestCase(ReadinessCacheResetMixin, SimpleTestCase):
