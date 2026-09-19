@@ -4,10 +4,60 @@
 # and yt-dlp/ffmpeg tooling used by MediaNest YouTube processing.
 set -euo pipefail
 
-cd "$(git rev-parse --show-toplevel 2>/dev/null || echo /workspace)"
+# Use this script's repository, not the caller's Git working directory.
+# Invoking from MediaNest (or any other checkout) would otherwise install
+# into the wrong tree and still rewrite host /config and /downloads.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+if [ ! -f tubesync/manage.py ] || [ ! -f Pipfile ]; then
+  echo "ERROR: TubeSync install.sh must run against the TubeSync git root (cwd=${REPO_ROOT})" >&2
+  exit 1
+fi
+if [ "${TUBESYNC_INSTALL_STOP_AFTER:-}" = "root" ]; then
+  pwd
+  exit 0
+fi
 
 export DEBIAN_FRONTEND=noninteractive
 export PATH="/usr/local/bin:${HOME}/.local/bin:${PATH}"
+
+if [ -z "${TUBESYNC_INSTALL_STOP_AFTER:-}" ]; then
+# Graphite stacked-PR CLI. Auth is GRAPHITE_AUTH_TOKEN (Cursor environment
+# secret); gt >= 1.8.3 reads it automatically. Never echo the token or write it
+# to disk. Environment builds may not inject secrets, so this step must not
+# require the token. Reinstall when gt is missing or older than that minimum
+# (presence-only would leave env-var auth broken on stale images).
+# Skip when TUBESYNC_INSTALL_STOP_AFTER is set so safeguard tests stay hermetic.
+echo "==> [install] Ensuring Graphite CLI (gt) is available"
+GT_MIN_VERSION="1.8.3"
+need_gt_install=0
+if ! command -v gt >/dev/null 2>&1; then
+  need_gt_install=1
+else
+  gt_ver="$(gt --version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -n1 || true)"
+  if [ -z "${gt_ver}" ] ||
+    [ "$(printf '%s\n%s\n' "${gt_ver}" "${GT_MIN_VERSION}" | sort -V | head -n1)" != "${GT_MIN_VERSION}" ]; then
+    need_gt_install=1
+  fi
+fi
+if [ "${need_gt_install}" -eq 1 ]; then
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "    ERROR: npm is required to install Graphite CLI" >&2
+    exit 1
+  fi
+  echo "    installing @withgraphite/graphite-cli@stable via npm"
+  sudo env PATH="${PATH}" npm install -g --prefix /usr/local \
+    @withgraphite/graphite-cli@stable
+  hash -r
+fi
+echo "    $(command -v gt) $(gt --version)"
+
+if [ -f "$REPO_ROOT/.git/.graphite_repo_config" ]; then
+  echo "==> [install] Graphite already initialized for this repo"
+else
+  echo "==> [install] Initializing Graphite (trunk=main)"
+  gt init --trunk main --no-interactive --cwd "$REPO_ROOT"
+fi
 
 sudo apt-get update -qq
 sudo apt-get install -y --no-install-recommends \
@@ -40,12 +90,39 @@ uv --no-config --no-managed-python --no-progress \
 sudo env PATH="${PATH}" uv --no-config --no-managed-python --no-progress \
   pip install --python /usr/bin/python3 --system --break-system-packages --strict \
   --requirements /tmp/Pipfile-requirements-with-hashes.txt
+fi
 
 mkdir -p "${HOME}/.config/TubeSync/config" \
   "${HOME}/.config/TubeSync/downloads/audio" \
   "${HOME}/.config/TubeSync/downloads/video"
-sudo ln -sfn "${HOME}/.config/TubeSync/config" /config
-sudo ln -sfn "${HOME}/.config/TubeSync/downloads" /downloads
+
+assert_disposable_symlink() {
+  local linkpath="$1" intended="$2"
+  local intended_resolved current
+  intended_resolved="$(mkdir -p "$intended" && readlink -f "$intended")"
+  if [ -L "$linkpath" ]; then
+    current="$(readlink -f "$linkpath" || true)"
+    if [ "$current" = "$intended_resolved" ]; then
+      return 0
+    fi
+    echo "ERROR: ${linkpath} already points at ${current:-unresolved}; refusing to replace a non-disposable mount" >&2
+    exit 1
+  fi
+  if [ -e "$linkpath" ]; then
+    echo "ERROR: ${linkpath} exists and is not a TubeSync symlink; refusing to clobber" >&2
+    exit 1
+  fi
+}
+
+TUBESYNC_CONFIG_LINK="${TUBESYNC_CONFIG_LINK:-/config}"
+TUBESYNC_DOWNLOADS_LINK="${TUBESYNC_DOWNLOADS_LINK:-/downloads}"
+assert_disposable_symlink "$TUBESYNC_CONFIG_LINK" "${HOME}/.config/TubeSync/config"
+assert_disposable_symlink "$TUBESYNC_DOWNLOADS_LINK" "${HOME}/.config/TubeSync/downloads"
+sudo ln -sfn "${HOME}/.config/TubeSync/config" "$TUBESYNC_CONFIG_LINK"
+sudo ln -sfn "${HOME}/.config/TubeSync/downloads" "$TUBESYNC_DOWNLOADS_LINK"
+if [ "${TUBESYNC_INSTALL_STOP_AFTER:-}" = "links" ]; then
+  exit 0
+fi
 
 if [ ! -f tubesync/tubesync/local_settings.py ]; then
   cp -p tubesync/tubesync/local_settings.py.example tubesync/tubesync/local_settings.py
