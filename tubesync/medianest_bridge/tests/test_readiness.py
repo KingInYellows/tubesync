@@ -8,7 +8,8 @@
     unrelated filesystem/subprocess calls made elsewhere during a test.
     StorageThresholdTestCase is the one exception: it patches the
     purpose-built _stat_download_root seam wholesale (see its docstring)
-    rather than the stdlib calls behind it.
+    rather than the stdlib calls behind it. StatDownloadRootSeamTestCase
+    keeps one focused test of the real seam wiring.
 
     T-side follow-up (post-M6b egress determination): YoutubeProbeTestCase
     below adds the real youtube reachability probe. Every test mocks
@@ -16,11 +17,13 @@
     suite, matching this program's "no live YouTube in CI" rule.
 '''
 import subprocess
+import tempfile
 import time
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import requests
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, override_settings
 
 from .. import readiness
 
@@ -177,6 +180,85 @@ class QueuesCheckTestCase(ReadinessCacheResetMixin, SimpleTestCase):
         self.assertIn('huey-net-limited', result['detail'])
 
 
+class StatDownloadRootSeamTestCase(SimpleTestCase):
+    '''
+        Exercises the real _stat_download_root() wiring (exists/access/
+        disk_usage) so regressions there cannot slip past the mocked
+        check_storage() tests below. Uses a controlled temp directory and
+        patches only the stdlib calls the seam delegates to.
+    '''
+
+    def _usage(self, free_bytes):
+        class Usage:
+            free = free_bytes
+        return Usage()
+
+    def test_wires_exists_access_and_disk_usage_for_writable_root(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with (
+                override_settings(DOWNLOAD_ROOT=root),
+                patch(
+                    'medianest_bridge.readiness.shutil.disk_usage',
+                    return_value=self._usage(99),
+                ) as mock_disk_usage,
+            ):
+                exists, writable, usage = readiness._stat_download_root()
+            mock_disk_usage.assert_called_once_with(root)
+
+        self.assertTrue(exists)
+        self.assertTrue(writable)
+        self.assertEqual(usage.free, 99)
+
+    def test_missing_root_skips_access_and_disk_usage(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            missing = Path(tmpdir) / 'does-not-exist'
+            with (
+                override_settings(DOWNLOAD_ROOT=missing),
+                patch('medianest_bridge.readiness.os.access') as mock_access,
+                patch('medianest_bridge.readiness.shutil.disk_usage') as mock_disk_usage,
+            ):
+                exists, writable, usage = readiness._stat_download_root()
+
+        self.assertFalse(exists)
+        self.assertFalse(writable)
+        self.assertIsNone(usage)
+        mock_access.assert_not_called()
+        mock_disk_usage.assert_not_called()
+
+    def test_non_writable_root_skips_disk_usage(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with (
+                override_settings(DOWNLOAD_ROOT=root),
+                patch('medianest_bridge.readiness.os.access', return_value=False) as mock_access,
+                patch('medianest_bridge.readiness.shutil.disk_usage') as mock_disk_usage,
+            ):
+                exists, writable, usage = readiness._stat_download_root()
+            mock_access.assert_called_once_with(root, readiness.os.W_OK)
+
+        self.assertTrue(exists)
+        self.assertFalse(writable)
+        self.assertIsNone(usage)
+        mock_disk_usage.assert_not_called()
+
+    def test_disk_usage_oserror_yields_none_usage(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with (
+                override_settings(DOWNLOAD_ROOT=root),
+                patch(
+                    'medianest_bridge.readiness.shutil.disk_usage',
+                    side_effect=OSError('stale file handle'),
+                ),
+            ):
+                exists, writable, usage = readiness._stat_download_root()
+
+        self.assertTrue(exists)
+        self.assertTrue(writable)
+        self.assertIsNone(usage)
+
+
 class StorageThresholdTestCase(ReadinessCacheResetMixin, SimpleTestCase):
     '''
         check_storage() stats DOWNLOAD_ROOT (exists/access/disk_usage, bundled
@@ -186,6 +268,16 @@ class StorageThresholdTestCase(ReadinessCacheResetMixin, SimpleTestCase):
         (a fresh clone has no downloads/ directory; the full suite only
         passed because an upstream sync test happened to create it first).
     '''
+
+    def setUp(self):
+        super().setUp()
+        from .base import env_override
+        self._storage_threshold_env = env_override(
+            MEDIANEST_BRIDGE_STORAGE_WARN_BYTES=None,
+            MEDIANEST_BRIDGE_STORAGE_CRITICAL_BYTES=None,
+        )
+        self._storage_threshold_env.__enter__()
+        self.addCleanup(self._storage_threshold_env.__exit__, None, None, None)
 
     def _usage(self, free_bytes):
         class Usage:
