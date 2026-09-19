@@ -13,10 +13,15 @@ if [ ! -f tubesync/manage.py ] || [ ! -f Pipfile ]; then
   echo "ERROR: TubeSync install.sh must run against the TubeSync git root (cwd=${REPO_ROOT})" >&2
   exit 1
 fi
+if [ "${TUBESYNC_INSTALL_STOP_AFTER:-}" = "root" ]; then
+  pwd
+  exit 0
+fi
 
 export DEBIAN_FRONTEND=noninteractive
 export PATH="/usr/local/bin:${HOME}/.local/bin:${PATH}"
 
+if [ -z "${TUBESYNC_INSTALL_STOP_AFTER:-}" ]; then
 sudo apt-get update -qq
 sudo apt-get install -y --no-install-recommends \
   python3-dev python3-pip python3-venv python3-libsass \
@@ -48,6 +53,7 @@ uv --no-config --no-managed-python --no-progress \
 sudo env PATH="${PATH}" uv --no-config --no-managed-python --no-progress \
   pip install --python /usr/bin/python3 --system --break-system-packages --strict \
   --requirements /tmp/Pipfile-requirements-with-hashes.txt
+fi
 
 mkdir -p "${HOME}/.config/TubeSync/config" \
   "${HOME}/.config/TubeSync/downloads/audio" \
@@ -71,10 +77,15 @@ assert_disposable_symlink() {
   fi
 }
 
-assert_disposable_symlink /config "${HOME}/.config/TubeSync/config"
-assert_disposable_symlink /downloads "${HOME}/.config/TubeSync/downloads"
-sudo ln -sfn "${HOME}/.config/TubeSync/config" /config
-sudo ln -sfn "${HOME}/.config/TubeSync/downloads" /downloads
+TUBESYNC_CONFIG_LINK="${TUBESYNC_CONFIG_LINK:-/config}"
+TUBESYNC_DOWNLOADS_LINK="${TUBESYNC_DOWNLOADS_LINK:-/downloads}"
+assert_disposable_symlink "$TUBESYNC_CONFIG_LINK" "${HOME}/.config/TubeSync/config"
+assert_disposable_symlink "$TUBESYNC_DOWNLOADS_LINK" "${HOME}/.config/TubeSync/downloads"
+sudo ln -sfn "${HOME}/.config/TubeSync/config" "$TUBESYNC_CONFIG_LINK"
+sudo ln -sfn "${HOME}/.config/TubeSync/downloads" "$TUBESYNC_DOWNLOADS_LINK"
+if [ "${TUBESYNC_INSTALL_STOP_AFTER:-}" = "links" ]; then
+  exit 0
+fi
 
 if [ ! -f tubesync/tubesync/local_settings.py ]; then
   cp -p tubesync/tubesync/local_settings.py.example tubesync/tubesync/local_settings.py
