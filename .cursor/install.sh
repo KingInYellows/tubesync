@@ -9,6 +9,32 @@ cd "$(git rev-parse --show-toplevel 2>/dev/null || echo /workspace)"
 export DEBIAN_FRONTEND=noninteractive
 export PATH="/usr/local/bin:${HOME}/.local/bin:${PATH}"
 
+# This script's repo root (never a sibling checkout such as MediaNest).
+TUBESYNC_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Graphite stacked-PR CLI. Auth is GRAPHITE_AUTH_TOKEN (Cursor environment
+# secret); gt >= 1.8.3 reads it automatically. Never echo the token or write it
+# to disk. Environment builds may not inject secrets, so this step must not
+# require the token.
+echo "==> [install] Ensuring Graphite CLI (gt) is available"
+if ! command -v gt >/dev/null 2>&1; then
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "    ERROR: npm is required to install Graphite CLI" >&2
+    exit 1
+  fi
+  sudo env PATH="${PATH}" npm install -g --prefix /usr/local \
+    @withgraphite/graphite-cli@stable
+  hash -r
+fi
+echo "    $(command -v gt) $(gt --version)"
+
+if [ -f "$TUBESYNC_ROOT/.git/.graphite_repo_config" ]; then
+  echo "==> [install] Graphite already initialized for this repo"
+else
+  echo "==> [install] Initializing Graphite (trunk=main)"
+  gt init --trunk main --no-interactive --cwd "$TUBESYNC_ROOT"
+fi
+
 sudo apt-get update -qq
 sudo apt-get install -y --no-install-recommends \
   python3-dev python3-pip python3-venv python3-libsass \
