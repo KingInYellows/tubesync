@@ -22,6 +22,43 @@ export DEBIAN_FRONTEND=noninteractive
 export PATH="/usr/local/bin:${HOME}/.local/bin:${PATH}"
 
 if [ -z "${TUBESYNC_INSTALL_STOP_AFTER:-}" ]; then
+# Graphite stacked-PR CLI. Auth is GRAPHITE_AUTH_TOKEN (Cursor environment
+# secret); gt >= 1.8.3 reads it automatically. Never echo the token or write it
+# to disk. Environment builds may not inject secrets, so this step must not
+# require the token. Reinstall when gt is missing or older than that minimum
+# (presence-only would leave env-var auth broken on stale images).
+# Skip when TUBESYNC_INSTALL_STOP_AFTER is set so safeguard tests stay hermetic.
+echo "==> [install] Ensuring Graphite CLI (gt) is available"
+GT_MIN_VERSION="1.8.3"
+need_gt_install=0
+if ! command -v gt >/dev/null 2>&1; then
+  need_gt_install=1
+else
+  gt_ver="$(gt --version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -n1 || true)"
+  if [ -z "${gt_ver}" ] ||
+    [ "$(printf '%s\n%s\n' "${gt_ver}" "${GT_MIN_VERSION}" | sort -V | head -n1)" != "${GT_MIN_VERSION}" ]; then
+    need_gt_install=1
+  fi
+fi
+if [ "${need_gt_install}" -eq 1 ]; then
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "    ERROR: npm is required to install Graphite CLI" >&2
+    exit 1
+  fi
+  echo "    installing @withgraphite/graphite-cli@stable via npm"
+  sudo env PATH="${PATH}" npm install -g --prefix /usr/local \
+    @withgraphite/graphite-cli@stable
+  hash -r
+fi
+echo "    $(command -v gt) $(gt --version)"
+
+if [ -f "$REPO_ROOT/.git/.graphite_repo_config" ]; then
+  echo "==> [install] Graphite already initialized for this repo"
+else
+  echo "==> [install] Initializing Graphite (trunk=main)"
+  gt init --trunk main --no-interactive --cwd "$REPO_ROOT"
+fi
+
 sudo apt-get update -qq
 sudo apt-get install -y --no-install-recommends \
   python3-dev python3-pip python3-venv python3-libsass \
