@@ -197,8 +197,18 @@ def media_post_save(sender, instance, created, **kwargs):
             # Recalculate the "skip_changed" flag
             skip_changed = filter_media(instance)
 
+    # Index-only sources (download_media=False) never download anything, so
+    # there is no point fetching per-item metadata or a thumbnail from
+    # YouTube for their media -- see settings.INDEX_ONLY_SKIP_METADATA's
+    # docstring for why this is safe (title/duration/published already come
+    # from the index listing). Gated behind the setting to stay
+    # upstream-compatible.
+    skip_index_only_fetch = (
+        getattr(settings, 'INDEX_ONLY_SKIP_METADATA', True) and
+        not instance.source.download_media
+    )
     # If the media is missing metadata schedule it to be downloaded
-    if not (media.skip or media.has_metadata or existing_media_metadata_task):
+    if not (media.skip or media.has_metadata or existing_media_metadata_task or skip_index_only_fetch):
         log.info(f'Scheduling task to download metadata for: {media.url}')
         TaskHistory.schedule(
             download_media_metadata,
@@ -210,7 +220,7 @@ def media_post_save(sender, instance, created, **kwargs):
     # If the media is missing a thumbnail schedule it to be downloaded (unless we are skipping this media)
     if not media.thumb_file_exists:
         media.thumb = None
-    if not (media.skip or media.thumb or existing_media_thumbnail_task):
+    if not (media.skip or media.thumb or existing_media_thumbnail_task or skip_index_only_fetch):
         thumbnail_url = media.thumbnail
         if thumbnail_url:
             log.info(

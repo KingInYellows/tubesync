@@ -350,6 +350,20 @@ MEDIA_THUMBNAIL_WIDTH = 430                 # Width in pixels to resize thumbnai
 MEDIA_THUMBNAIL_HEIGHT = 240                # Height in pixels to resize thumbnails to
 
 
+# Fork addition (not upstream): index-only sources (download_media=False) index
+# their media listing but never download it. Without this, TubeSync still
+# fetches full per-item metadata and a thumbnail from YouTube for every media
+# item on such a source, on every re-index -- pointless network/YouTube-quota
+# load for a source that will never download anything. Title, duration, and
+# publish date are already populated from the index listing itself
+# (sync.tasks.index_source), so skipping the per-item fetch does not blank
+# those fields. Defaults to True in this fork; set to 'false' to restore
+# upstream's unconditional per-item fetch behavior.
+INDEX_ONLY_SKIP_METADATA = 'false' != getenv(
+    'TUBESYNC_INDEX_ONLY_SKIP_METADATA', 'true',
+).strip().lower()
+
+
 VIDEO_HEIGHT_CUTOFF = 240                   # Smallest resolution in pixels permitted to download
 VIDEO_HEIGHT_IS_HD = 500                    # Height in pixels to count as 'HD'
 VIDEO_HEIGHT_UPGRADE = True                 # Download again when a format with more pixels is available

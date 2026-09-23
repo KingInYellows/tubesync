@@ -862,6 +862,16 @@ def download_media_metadata(media_id):
         log.info(f'Task for ID: {media_id} / {media} skipped, due to task being manually skipped.')
         return
     source = media.source
+    if getattr(settings, 'INDEX_ONLY_SKIP_METADATA', True) and not source.download_media:
+        # Source has been (or still is) index-only since this task was
+        # queued. Turning download_media back on reschedules metadata
+        # normally, via source_post_save -> save_all_media_for_source ->
+        # save_media -> this same media_post_save signal.
+        log.debug(
+            f'Task for ID: {media_id} / {media} skipped, source "{source}" '
+            f'is index-only (download_media is disabled).'
+        )
+        return
     wait_for_errors(
         media,
         queue_name=Val(TaskQueue.LIMIT),
@@ -968,6 +978,14 @@ def download_media_image(media_id, url):
     except Media.DoesNotExist as e:
         # Task triggered but the media no longer exists, do nothing
         raise CancelExecution(_('no such media'), retry=False) from e
+    if getattr(settings, 'INDEX_ONLY_SKIP_METADATA', True) and not media.source.download_media:
+        # Source has been (or still is) index-only since this task was
+        # queued. See the matching guard in download_media_metadata().
+        log.debug(
+            f'Task for ID: {media_id} / {media} skipped, source '
+            f'"{media.source}" is index-only (download_media is disabled).'
+        )
+        return False
     if media.skip or media.manual_skip:
         # Media was toggled to be skipped after the task was scheduled
         log.warn(f'Download task triggered for media: {media} (UUID: {media.pk}) but '

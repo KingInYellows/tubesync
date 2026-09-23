@@ -267,6 +267,7 @@ useful if you are manually installing TubeSync in some other environment. These 
 | TUBESYNC_DIRECTORY_PREFIX    | Enable `video` and `audio` directory prefixes in `/downloads` | True                                                                          |
 | TUBESYNC_SHRINK_NEW          | Filter unneeded information from newly retrieved metadata     | True                                                                          |
 | TUBESYNC_SHRINK_OLD          | Filter unneeded information from metadata loaded from the database | True                                                                     |
+| TUBESYNC_INDEX_ONLY_SKIP_METADATA | Fork addition (not upstream): skip per-item metadata/thumbnail fetches from YouTube for index-only sources (`download_media` disabled). Defaults to True; set to `false` to restore upstream's unconditional per-item fetch behavior. | True |
 | GUNICORN_WORKERS             | Number of `gunicorn` (web request) workers to spawn           | 3                                                                             |
 | LISTEN_HOST                  | IP address for `gunicorn` to listen on                        | 127.0.0.1                                                                     |
 | LISTEN_PORT                  | Port number for `gunicorn` to listen on                       | 8080                                                                          |
