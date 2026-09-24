@@ -10,15 +10,15 @@ a process that exists only in principle.
 
 ## Before syncing: know what "the fork delta" actually is
 
-Everything the bridge needs lives in `medianest_bridge/` plus nine
+Everything the bridge needs lives in `medianest_bridge/` plus ten
 explicitly enumerated upstream touch points (see
 `medianest_bridge/README.md`'s "Fork delta" section for the exact
 files/lines -- not repeated here, so this doc can't drift out of sync with
 that one). A sync that touches anything outside that list has, by
 definition, either picked up an unrelated upstream change (expected and
-fine) or introduced a merge conflict against one of those eight files
+fine) or introduced a merge conflict against one of those nine files
 (expected occasionally, and the specific reason this fork's delta is kept
-deliberately small -- an eight-file, mostly-few-line delta is cheap to
+deliberately small -- a nine-file, mostly-few-line delta is cheap to
 re-apply by hand if a merge conflicts).
 
 ## Step 1 -- fetch upstream
