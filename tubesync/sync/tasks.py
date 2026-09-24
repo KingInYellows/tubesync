@@ -176,6 +176,41 @@ def get_media_thumbnail_task(media_id):
     tqs = get_running_tasks_by_name('download_media_image', media_id)
     return tqs.first() or False
 
+def schedule_manual_media_download(media):
+    '''
+        Schedules a manual (override=True) media download. Both call
+        sites that can trigger a manual download for the same media --
+        MediaRedownloadView.form_valid()'s can_download branch, and
+        download_media_metadata(manual=True)'s own chained download once
+        a manual metadata fetch makes the media downloadable -- MUST call
+        this one function rather than their own TaskHistory.schedule()
+        with independently-chosen parameters.
+
+        Why: common/huey.py's on_executing_remove_duplicates() only
+        revokes a duplicate pending download_media_file task when the
+        already-executing task's priority/retries dominate the pending
+        one's (`a.priority <= b.priority and a.retries >= b.retries`,
+        where `a` is the pending task and `b` the one that started
+        executing). If the two call sites scheduled with different
+        priority/retries, whichever one happened to start executing
+        first could fail that comparison against the other, so huey
+        would leave both to run and download the media twice. Identical
+        parameters on both sides guarantee the comparison holds
+        regardless of which one starts first.
+    '''
+    TaskHistory.schedule(
+        download_media_file,
+        str(media.pk),
+        override=True,
+        priority=90,
+        remove_duplicates=True,
+        delay=10,
+        retries=3,
+        retry_delay=600,
+        vn_fmt=_('Downloading media (manually) for "{}"'),
+        vn_args=(media.name,),
+    )
+
 def get_source_index_task(source_id):
     tqs = get_running_tasks_by_name('index_source', source_id)
     return tqs.first() or False
@@ -528,6 +563,15 @@ def index_source(source_id):
     # An inactive Source would return an empty list for videos anyway
     if not source.is_active:
         return False
+    # See the matching guards in media_post_save() (sync/signals.py) and
+    # download_media_metadata()/download_media_image() above: an
+    # index-only source never downloads anything, so there is no point
+    # scheduling a per-item metadata/thumbnail fetch for a newly-indexed
+    # item either.
+    skip_index_only_fetch = (
+        getattr(settings, 'INDEX_ONLY_SKIP_METADATA', True) and
+        not source.download_media
+    )
     indexing_lock = huey_lock_task(
         f'source:{source.uuid}',
         queue=Val(TaskQueue.FS),
@@ -647,33 +691,39 @@ def index_source(source_id):
         else:
             # log the new media instances
             log.info(f'Indexed new media: {source} / {media}')
-            log.info(f'Scheduling tasks to download thumbnail for: {media.key}')
-            thumbnail_fmt = 'https://i.ytimg.com/vi/{}/{}default.jpg'
-            for num, prefix in enumerate(reversed(('hq', 'sd', 'maxres',))):
-                thumbnail_url = thumbnail_fmt.format(
-                    media.key,
-                    prefix,
+            if skip_index_only_fetch:
+                log.debug(
+                    f'Not scheduling metadata/thumbnail fetches for: {media.key}, '
+                    f'source "{source}" is index-only (download_media is disabled).'
                 )
-                download_media_image(
-                    str(media.pk),
-                    thumbnail_url,
-                    priority=10+(5*num),
-                    delay=max(0, 65-(30*num)),
-                )
-            priority = download_media_metadata.settings.get('default_priority', 50)
-            if source.download_media:
-                priority += 5
             else:
-                priority -= 5
-            log.info(f'Scheduling task to download metadata for: {media.url}')
-            TaskHistory.schedule(
-                download_media_metadata,
-                str(media.pk),
-                priority=priority,
-                remove_duplicates=True,
-                vn_fmt=_('Downloading metadata for: "{}": {}'),
-                vn_args=(media.key, media.name,),
-            )
+                log.info(f'Scheduling tasks to download thumbnail for: {media.key}')
+                thumbnail_fmt = 'https://i.ytimg.com/vi/{}/{}default.jpg'
+                for num, prefix in enumerate(reversed(('hq', 'sd', 'maxres',))):
+                    thumbnail_url = thumbnail_fmt.format(
+                        media.key,
+                        prefix,
+                    )
+                    download_media_image(
+                        str(media.pk),
+                        thumbnail_url,
+                        priority=10+(5*num),
+                        delay=max(0, 65-(30*num)),
+                    )
+                priority = download_media_metadata.settings.get('default_priority', 50)
+                if source.download_media:
+                    priority += 5
+                else:
+                    priority -= 5
+                log.info(f'Scheduling task to download metadata for: {media.url}')
+                TaskHistory.schedule(
+                    download_media_metadata,
+                    str(media.pk),
+                    priority=priority,
+                    remove_duplicates=True,
+                    vn_fmt=_('Downloading metadata for: "{}": {}'),
+                    vn_args=(media.key, media.name,),
+                )
     # Reset task.verbose_name to the saved value
     update_task_status(task, None)
     # Update any remaining items in the batches
@@ -847,9 +897,22 @@ def upgrade_media(media_id):
         download_media_file.call_local(str(media.pk), override=True)
 
 @db_task(delay=60, priority=60, retries=3, retry_delay=600, queue=Val(TaskQueue.LIMIT))
-def download_media_metadata(media_id):
+def download_media_metadata(media_id, manual=False):
     '''
         Downloads the metadata for a media item.
+
+        When manual=False (the default) and INDEX_ONLY_SKIP_METADATA is
+        enabled for an index-only source, the task returns immediately
+        without network I/O; Huey records this as a normal successful
+        completion (no retry or failure).
+
+        manual=True marks this as an explicit, user-initiated fetch (e.g.
+        MediaRedownloadView) rather than the normal automatic scheduling in
+        media_post_save()/index_source(). It bypasses the index-only skip
+        guard below, so a user can still pull metadata -- and, once that
+        succeeds, trigger an actual download -- for an index-only source's
+        media even though automatic scheduling is disabled for it. See
+        settings.INDEX_ONLY_SKIP_METADATA.
     '''
     try:
         media = Media.objects.get(pk=media_id)
@@ -862,6 +925,21 @@ def download_media_metadata(media_id):
         log.info(f'Task for ID: {media_id} / {media} skipped, due to task being manually skipped.')
         return
     source = media.source
+    if (
+        getattr(settings, 'INDEX_ONLY_SKIP_METADATA', True) and
+        not manual and
+        not source.download_media
+    ):
+        # Source has been (or still is) index-only since this task was
+        # queued. Turning download_media back on reschedules metadata
+        # normally, via source_post_save -> save_all_media_for_source ->
+        # save_media -> this same media_post_save signal. A manual=True
+        # call (an explicit user action) always bypasses this.
+        log.debug(
+            f'Task for ID: {media_id} / {media} skipped, source "{source}" '
+            f'is index-only (download_media is disabled).'
+        )
+        return
     wait_for_errors(
         media,
         queue_name=Val(TaskQueue.LIMIT),
@@ -955,19 +1033,69 @@ def download_media_metadata(media_id):
                  f'{source} / {media}: {media_id}')
     finally:
         metadata_lock.acquired = False
+    if (
+        manual and
+        media.can_download and
+        not source.download_media
+    ):
+        # media_post_save() (triggered by media.save() above) recalculated
+        # can_download from the metadata we just fetched, but its own
+        # automatic download_media_file scheduling requires
+        # source.download_media -- which is False for the index-only
+        # source this manual fetch exists to work around (for a normal
+        # source, that automatic scheduling already covers it, so there
+        # is nothing to chain here). Schedule the download explicitly,
+        # the same way MediaRedownloadView does for media that already
+        # had metadata (override=True bypasses
+        # Media.download_checklist()'s own source.download_media check).
+        # Uses the shared schedule_manual_media_download() helper (not
+        # our own TaskHistory.schedule() call) so this and
+        # MediaRedownloadView's can_download branch schedule with
+        # identical parameters -- if a user triggers both close
+        # together, common/huey.py's on_executing_remove_duplicates()
+        # recognizes them as the same task and revokes the duplicate,
+        # the same way upstream already relies on it elsewhere.
+        log.info(
+            f'Manually-fetched metadata for: {media} (UUID: {media.pk}) makes it '
+            f'downloadable; scheduling a manual download.'
+        )
+        schedule_manual_media_download(media)
 
 
 @db_task(delay=10, priority=90, retries=15, backoff_class=DjangoBackgroundTasksBackoff, task_base=AttemptsTask, queue=Val(TaskQueue.NET))
-def download_media_image(media_id, url):
+def download_media_image(media_id, url, manual=False):
     '''
         Downloads an image from a URL and save it as a local thumbnail attached to a
         Media instance.
+
+        When manual=False (the default) and INDEX_ONLY_SKIP_METADATA is
+        enabled for an index-only source, the task returns immediately
+        without fetching; Huey records this as a normal successful
+        completion (no retry or failure).
+
+        manual=True marks this as an explicit, user-initiated fetch (e.g.
+        the "redownload thumbnail" action on a media item's page) and
+        bypasses the index-only skip guard below -- see the matching
+        docstring on download_media_metadata() and
+        settings.INDEX_ONLY_SKIP_METADATA.
     '''
     try:
         media = Media.objects.get(pk=media_id)
     except Media.DoesNotExist as e:
         # Task triggered but the media no longer exists, do nothing
         raise CancelExecution(_('no such media'), retry=False) from e
+    if (
+        getattr(settings, 'INDEX_ONLY_SKIP_METADATA', True) and
+        not manual and
+        not media.source.download_media
+    ):
+        # Source has been (or still is) index-only since this task was
+        # queued. See the matching guard in download_media_metadata().
+        log.debug(
+            f'Task for ID: {media_id} / {media} skipped, source '
+            f'"{media.source}" is index-only (download_media is disabled).'
+        )
+        return False
     if media.skip or media.manual_skip:
         # Media was toggled to be skipped after the task was scheduled
         log.warn(f'Download task triggered for media: {media} (UUID: {media.pk}) but '

@@ -239,6 +239,39 @@ class SerializeMediaTestCase(TestCase):
         self.assertNotIn('leaked', body['error'])
         self.assertIn('<redacted>', body['error'])
 
+    def test_index_only_media_without_metadata_still_reports_title_and_published(self):
+        '''
+            Regression guard for the index-only metadata-skip fork fix
+            (sync/signals.py media_post_save() + sync/tasks.py's
+            download_media_metadata()/download_media_image() runtime
+            guards): those per-item fetches are now skipped entirely for
+            an index-only source (Source.download_media=False), so this
+            media never gets has_metadata=True.
+
+            title and publishedAt must still come through correctly --
+            they are set directly from the index listing by
+            sync.tasks.index_source() (Media.title/Media.published),
+            independent of the per-item metadata fetch this fix skips.
+            eligible legitimately stays False (can_download depends on
+            has_metadata, which never becomes True here) -- that is an
+            accurate reflection of reality, not a regression: this media
+            was never going to be downloaded anyway on an index-only
+            source. duration and a per-item thumbnail URL are not part of
+            the vendored MediaItem contract at all (see
+            contract/contract_fixtures.json's MediaItem schema), so
+            skipping the thumbnail fetch has no bridge-visible effect
+            either.
+        '''
+        source = make_source(download_media=False)
+        media = make_media(source)
+        self.assertFalse(media.has_metadata)
+        body = mapping.serialize_media(media)
+        self.assertEqual(body['title'], 'Test Video')
+        self.assertIsNotNone(body['publishedAt'])
+        self.assertFalse(body['eligible'])
+        self.assertNotIn('duration', body)
+        self.assertNotIn('thumbnailUrl', body)
+
 
 class SerializeMediaTaskStateTestCase(TestCase):
     '''

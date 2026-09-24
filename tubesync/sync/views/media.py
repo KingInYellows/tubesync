@@ -18,8 +18,9 @@ from ..models import Source, Media, Metadata
 from django import forms
 from ..utils import delete_file
 from ..tasks import (
-    get_media_download_task, download_media_image, download_media_file,
-    refresh_formats,
+    get_media_download_task, download_media_image,
+    download_media_metadata, refresh_formats,
+    schedule_manual_media_download,
 )
 
 
@@ -192,6 +193,20 @@ class MediaItemView(DetailView):
     def get_context_data(self, *args, **kwargs):
         data = super().get_context_data(*args, **kwargs)
         data['message'] = self.message
+        # Only an index-only source's media (with the fork's skip-fetch
+        # gate actually enabled) ever fails to get metadata/can_download
+        # automatically -- see settings.INDEX_ONLY_SKIP_METADATA and
+        # media_post_save()'s own gate in sync/signals.py. A normal
+        # source's item without metadata yet is just in the ordinary
+        # brief window before its automatic fetch runs, and offering a
+        # manual fetch there would schedule a second, non-deduped
+        # metadata task alongside the automatic one (huey's duplicate
+        # matching includes task kwargs, so manual=True never matches
+        # the automatic, non-manual call).
+        data['media_is_index_only_metadata_skip'] = (
+            getattr(settings, 'INDEX_ONLY_SKIP_METADATA', True) and
+            not self.object.source.download_media
+        )
         combined_exact, combined_format = self.object.get_best_combined_format()
         audio_exact, audio_format = self.object.get_best_audio_format()
         video_exact, video_format = self.object.get_best_video_format()
@@ -229,6 +244,9 @@ class MediaItemView(DetailView):
                 download_media_image,
                 str(media.pk),
                 media.thumbnail,
+                # Explicit, user-initiated request: bypass the index-only
+                # skip guard (see download_media_image()'s docstring).
+                manual=True,
                 priority=1+download_media_image.settings.get('default_priority', 0),
                 vn_fmt=_('Redownload thumbnail for "{}": {}'),
                 vn_args=(
@@ -278,22 +296,58 @@ class MediaRedownloadView(FormView, SingleObjectMixin):
                 vn_fmt=_('Refreshing formats (manually) for "{}"'),
                 vn_args=(media.key,),
             )
+            # schedule_manual_media_download() (not our own
+            # TaskHistory.schedule() call) is deliberate: it must use the
+            # exact same scheduling parameters as
+            # download_media_metadata(manual=True)'s own chained
+            # download, so common/huey.py's on_executing_remove_duplicates()
+            # recognizes a double-click (or the chain scheduling on top of
+            # this) as the same task and revokes the duplicate, the same
+            # way upstream already relies on it elsewhere.
+            schedule_manual_media_download(media)
+        elif not media.has_metadata:
+            # No metadata yet -- most commonly an index-only source's
+            # media, which never gets it automatically (see
+            # settings.INDEX_ONLY_SKIP_METADATA). A manual redownload
+            # request is still an explicit, user-initiated action, so
+            # fetch metadata now regardless of that gate; if it succeeds
+            # and makes the media downloadable, download_media_metadata()
+            # itself schedules the actual (override=True) download.
             TaskHistory.schedule(
-                download_media_file,
+                download_media_metadata,
                 str(media.pk),
-                override=True,
+                manual=True,
                 priority=90,
                 remove_duplicates=True,
-                delay=10,
-                retries=3,
-                retry_delay=600,
-                vn_fmt=_('Downloading media (manually) for "{}"'),
-                vn_args=(media.name,),
+                vn_fmt=_('Downloading metadata (manually) for "{}": "{}"'),
+                vn_args=(media.key, media.name,),
             )
         # If the thumbnail file exists on disk, delete it
         if self.object.thumb_file_exists:
             delete_file(self.object.thumb.path)
             self.object.thumb = None
+            # An index-only source's media never gets its thumbnail
+            # re-fetched automatically (media_post_save()'s own
+            # scheduling is skipped for it -- see
+            # settings.INDEX_ONLY_SKIP_METADATA), so without this it
+            # would be lost for good the moment any manual action here
+            # deletes it. manual=True bypasses that same skip guard.
+            # No extra dedupe guard here, matching the pre-existing
+            # /media-thumb-redownload/ action (MediaItemView.get()),
+            # which schedules the same way with no such check either.
+            if (
+                getattr(settings, 'INDEX_ONLY_SKIP_METADATA', True) and
+                not self.object.source.download_media and
+                self.object.thumbnail
+            ):
+                TaskHistory.schedule(
+                    download_media_image,
+                    str(self.object.pk),
+                    self.object.thumbnail,
+                    manual=True,
+                    vn_fmt=_('Redownload thumbnail for "{}": {}'),
+                    vn_args=(self.object.key, self.object.name,),
+                )
         # If the media file exists on disk, delete it
         if self.object.media_file_exists:
             delete_file(self.object.media_file.path)
