@@ -40,6 +40,7 @@ from common.utils import (  django_queryset_generator as qs_gen,
                             remove_enclosed, seconds_to_timestr, )
 from .choices import Val, IndexSchedule, TaskQueue
 from .models import Source, Media, MediaServer, Metadata
+from .tvshow_nfo import write_tvshow_nfo
 from .utils import get_remote_image, resize_image_to_height, filter_response
 from .youtube import YouTubeError
 
@@ -747,6 +748,9 @@ def index_source(source_id):
             source.name,
         ),
     )
+    # Refresh the show-level NFO now that this run may have indexed new
+    # media (resolve_show_title()'s media-based fallback tiers can change).
+    write_tvshow_nfo(source)
     return True
 
 
@@ -806,6 +810,10 @@ def download_source_images(source_id):
         i = image_file = None
 
     log.info(f'Thumbnail downloaded for source with ID: {source_id} / {source}')
+    # This is also what populates the channel/playlist Metadata cache
+    # resolve_show_title()/resolve_show_plot() prefer (F6) -- refresh the
+    # show-level NFO now that it may have just become available.
+    write_tvshow_nfo(source)
 
 
 @db_task(delay=60, priority=90, retries=5, retry_delay=60, queue=Val(TaskQueue.FS))
