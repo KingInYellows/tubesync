@@ -991,9 +991,13 @@ class Media(models.Model):
         nfo.append(_nfo_element(nfo,
             'title', clean_emoji(self.title),
         ))
-        # showtitle = source name
+        # showtitle = resolved show title (T2): the cached channel/playlist
+        # Metadata (sync/tvshow_nfo.py), then the latest media's own
+        # channel/uploader/playlist_title, then source.name -- same
+        # resolution tvshow.nfo's <title> uses, so both agree.
+        from ..tvshow_nfo import resolve_show_title
         nfo.append(_nfo_element(nfo,
-            'showtitle', clean_emoji(str(self.source.name).strip()),
+            'showtitle', clean_emoji(str(resolve_show_title(self.source)).strip()),
         ))
         # season = episode_date year (playlists keep the legacy '1')
         nfo.append(_nfo_element(nfo,
