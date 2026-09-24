@@ -34,7 +34,7 @@ signal-driven task scheduling.
 
 ## Fork delta
 
-Four upstream files are touched at five points (`settings.py` twice), four of the five minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
+Six upstream files are touched at seven points (`settings.py` twice), five of the seven minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
 
 1. `tubesync/tubesync/settings.py` -- `INSTALLED_APPS += 'medianest_bridge'`.
 2. `tubesync/tubesync/urls.py` -- one `include('medianest_bridge.urls')` at
@@ -56,6 +56,18 @@ Four upstream files are touched at five points (`settings.py` twice), four of th
    an existing multi-line `ENV`, no new `ENV` instruction). Empty by
    default, so every image build that doesn't pass the build-arg behaves
    identically to every pre-T5 build. See "Compatibility reporting" below.
+6. `sync/models/media.py` (T1) -- adds `Media.episode_date`,
+   `Media.title_full_bounded`, `Media._same_day_index`,
+   `Media.episode_yyyy` and `Media.episode_mmddnn` (new properties/method,
+   no existing method bodies changed), three new keys in `format_dict`, and
+   changes `nfoxml`'s `<season>`/`<episode>` computation for non-playlist
+   sources only -- playlists keep the pre-T1 `upload_date.year` /
+   `calculate_episode_number()` values unchanged.
+7. `sync/models/source.py` (T1) -- adds the same three keys
+   (`episode_yyyy`, `episode_mmddnn`, `title_full_bounded`) to
+   `example_media_format_dict`, required for `get_example_media_format()`
+   (and so `run_edit_source_checks`) to accept a `media_format` that uses
+   them; no existing keys or method bodies changed.
 
 Everything else the bridge needs is imported (models,
 `common.utils.getenv`, `common.logger.log`, `sync.tasks` helpers), never
@@ -525,7 +537,7 @@ public), satisfying AGPLv3 §13's network-use clause.
 fork; it is not present in upstream `meeb/tubesync` at the pinned
 upstream-base commit (`medianest_bridge/docs/UPSTREAM_SHA`). It is
 licensed identically to the rest of this repository, AGPLv3, under the
-unmodified `LICENSE` at the repository root. The five upstream files this
+unmodified `LICENSE` at the repository root. The six upstream files this
 fork's delta touches ("Fork delta" section above) remain licensed as
 upstream TubeSync itself is licensed, modified only as that section
 describes. See `medianest_bridge/docs/agpl-compliance.md` for the full
