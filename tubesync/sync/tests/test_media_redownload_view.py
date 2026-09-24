@@ -8,13 +8,11 @@
 '''
 import io
 import logging
-import uuid
 from PIL import Image
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, Client, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from common.models import TaskHistory
 from sync.choices import Val, YouTube_SourceType
 from sync.models import Source, Media
 from sync.tasks import get_model_tasks
@@ -70,27 +68,6 @@ class MediaRedownloadThumbnailRefetchTestCase(TestCase):
         tasks = get_model_tasks(str(media.pk), name='download_media_image')
         self.assertEqual(tasks.count(), 1)
         self.assertIn("'manual': True", tasks.first().task_params[1])
-
-    def test_not_duplicated_when_an_incomplete_fetch_already_exists(self):
-        source = make_source(key='UC_dedupe', directory='/tmp/dedupe', download_media=False)
-        media = make_media_with_thumb(source, key='video2')
-        # A pending (never-started) thumbnail task already exists.
-        TaskHistory.objects.create(
-            task_id=str(uuid.uuid4()),
-            name='sync.tasks.download_media_image',
-            task_params=[[str(media.pk), media.thumbnail], '{}'],
-            start_at=None,
-            end_at=timezone.now(),
-            scheduled_at=timezone.now(),
-        )
-
-        response = self._post_redownload(media)
-        self.assertEqual(response.status_code, 302)
-
-        # No second task was added.
-        self.assertEqual(
-            get_model_tasks(str(media.pk), name='download_media_image').count(), 1,
-        )
 
     def test_not_scheduled_for_a_normal_source(self):
         # media_post_save() (triggered by self.object.save() later in

@@ -19,7 +19,7 @@ from django import forms
 from ..utils import delete_file
 from ..tasks import (
     get_media_download_task, download_media_image,
-    download_media_metadata, has_incomplete_task, refresh_formats,
+    download_media_metadata, refresh_formats,
     schedule_manual_media_download,
 )
 
@@ -300,14 +300,11 @@ class MediaRedownloadView(FormView, SingleObjectMixin):
             # TaskHistory.schedule() call) is deliberate: it must use the
             # exact same scheduling parameters as
             # download_media_metadata(manual=True)'s own chained
-            # download, or huey's duplicate-task revocation
-            # (common/huey.py) may not recognize the two as the same
-            # task and both could run. has_incomplete_task() also skips
-            # this entirely if that chain already scheduled (or a prior
-            # attempt is still running) -- see both functions' own
-            # docstrings in sync/tasks.py.
-            if not has_incomplete_task(str(media.pk), name='download_media_file'):
-                schedule_manual_media_download(media)
+            # download, so common/huey.py's on_executing_remove_duplicates()
+            # recognizes a double-click (or the chain scheduling on top of
+            # this) as the same task and revokes the duplicate, the same
+            # way upstream already relies on it elsewhere.
+            schedule_manual_media_download(media)
         elif not media.has_metadata:
             # No metadata yet -- most commonly an index-only source's
             # media, which never gets it automatically (see
@@ -335,13 +332,13 @@ class MediaRedownloadView(FormView, SingleObjectMixin):
             # settings.INDEX_ONLY_SKIP_METADATA), so without this it
             # would be lost for good the moment any manual action here
             # deletes it. manual=True bypasses that same skip guard.
-            # has_incomplete_task() respects the existing dedupe: don't
-            # schedule a second fetch if one is already pending/running.
+            # No extra dedupe guard here, matching the pre-existing
+            # /media-thumb-redownload/ action (MediaItemView.get()),
+            # which schedules the same way with no such check either.
             if (
                 getattr(settings, 'INDEX_ONLY_SKIP_METADATA', True) and
                 not self.object.source.download_media and
-                self.object.thumbnail and
-                not has_incomplete_task(str(self.object.pk), name='download_media_image')
+                self.object.thumbnail
             ):
                 TaskHistory.schedule(
                     download_media_image,

@@ -1,6 +1,5 @@
 import json
 import logging
-import uuid
 from collections import deque
 from datetime import timedelta
 from unittest.mock import patch
@@ -8,18 +7,15 @@ from PIL import Image
 from django.test import TestCase, Client, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from common.models import TaskHistory
 from sync.choices import (
     Fallback, SourceResolution, Val, YouTube_AudioCodec, YouTube_SourceType, YouTube_VideoCodec,
 )
 from sync.models import Source, Media
 from sync.tasks import (
     cleanup_old_media,
-    download_media_file,
     download_media_image,
     download_media_metadata,
     get_model_tasks,
-    has_incomplete_task,
     index_source,
 )
 from .fixtures import all_test_metadata
@@ -30,71 +26,6 @@ def download_task_has_override(media):
     # is repr(task_obj.kwargs), a string, not a real dict.
     tasks = get_model_tasks(str(media.pk), name='download_media_file')
     return any("'override': True" in (t.task_params[1] or '') for t in tasks)
-
-
-def make_download_media_file_task(media, *, start_at, end_at=None, failed_at=None):
-    '''
-        Builds a raw download_media_file TaskHistory row with a chosen
-        lifecycle state, matching common/models/tasks.py::th_schedule()'s
-        and common/huey.py::historical_task()'s own shape:
-
-          running:               start_at == end_at
-          finished (success or
-          failure-without-retry): start_at is set and start_at != end_at
-
-        Only valid for start_at values other than None: has_incomplete_task()
-        checks a start_at=NULL row against huey's own live queue state
-        (see _task_row_is_actually_live()'s docstring in sync/tasks.py),
-        which this DB-only fixture has no corresponding entry in. Use
-        schedule_real_pending_download() to build a genuinely pending
-        (start_at=NULL, actually enqueued) row instead.
-    '''
-    assert start_at is not None
-    now = timezone.now()
-    return TaskHistory.objects.create(
-        task_id=str(uuid.uuid4()),
-        name='sync.tasks.download_media_file',
-        task_params=[[str(media.pk)], '{}'],
-        start_at=start_at,
-        end_at=end_at if end_at is not None else now,
-        scheduled_at=now,
-        failed_at=failed_at,
-    )
-
-
-def schedule_real_pending_download(media):
-    '''
-        Schedules a genuine download_media_file(override=True) task the
-        same way schedule_manual_media_download() does -- a real huey
-        enqueue, not just a TaskHistory row -- so it is actually present
-        in huey.pending()/huey.scheduled() and can be genuinely revoked.
-        Returns the resulting TaskHistory row.
-    '''
-    TaskHistory.schedule(
-        download_media_file,
-        str(media.pk),
-        override=True,
-        remove_duplicates=True,
-        vn_fmt='Downloading media (manually) for "{}"',
-        vn_args=(media.name,),
-    )
-    return get_model_tasks(str(media.pk), name='download_media_file').get()
-
-
-def get_queue_for_task_row(row):
-    '''
-        Mirrors sync.tasks._task_row_is_actually_live()'s own
-        TaskHistory.queue (a huey instance's .name, e.g.
-        'huey_net_limited') -> django_huey.get_queue() key (e.g.
-        'limited') reverse lookup, for tests that need the real huey
-        queue object to set up a task's live state (e.g. revoking it).
-    '''
-    from django_huey import DJANGO_HUEY, get_queue
-    queue_key = next(
-        (k for k, cfg in DJANGO_HUEY.get('queues', {}).items() if cfg.get('name', k) == row.queue),
-        row.queue,
-    )
-    return get_queue(queue_key)
 
 class TasksTestCase(TestCase):
 
@@ -290,78 +221,6 @@ class ManualActionBypassesIndexOnlyGuardTestCase(TestCase):
         self.assertFalse(download_task_has_override(media))
         self.assertTrue(get_model_tasks(str(media.pk), name='download_media_file').exists())
 
-    def _make_index_only_source_and_media(self, *, key_suffix):
-        source = Source.objects.create(
-            key=f'ro-manual-chain-{key_suffix}', name=f'ro-manual-chain-{key_suffix}',
-            directory=f'/tmp/ro-manual-chain-{key_suffix}',
-            download_media=False,
-            source_resolution=Val(SourceResolution.VIDEO_1080P),
-            source_vcodec=Val(YouTube_VideoCodec.VP9),
-            source_acodec=Val(YouTube_AudioCodec.OPUS),
-            prefer_60fps=False,
-            prefer_hdr=False,
-            fallback=Val(Fallback.FAIL),
-        )
-        media = Media.objects.create(
-            source=source, key=f'vid-manual-chain-{key_suffix}',
-            title=f'Vid Manual Chain {key_suffix}', published=timezone.now(),
-        )
-        return source, media
-
-    def test_manual_download_chain_ignores_a_finished_download_task(self):
-        # A download_media_file row from an earlier, now-finished attempt
-        # (succeeded, or failed with no retry pending: start_at is set
-        # and no longer equal to end_at) is kept for
-        # COMPLETED_TASKS_DAYS_TO_KEEP days and must not block scheduling
-        # a fresh manual download.
-        source, media = self._make_index_only_source_and_media(key_suffix='finished')
-        past = timezone.now() - timedelta(days=1)
-        make_download_media_file_task(media, start_at=past, end_at=past + timedelta(minutes=5))
-
-        fake_response = json.loads(all_test_metadata['minimal'])
-        with patch.object(Media, 'index_metadata', return_value=fake_response):
-            download_media_metadata.call_local(str(media.pk), manual=True)
-
-        media.refresh_from_db()
-        self.assertTrue(media.can_download)
-        self.assertTrue(download_task_has_override(media))
-
-    def test_manual_download_chain_ignores_a_failed_download_task(self):
-        source, media = self._make_index_only_source_and_media(key_suffix='failed')
-        past = timezone.now() - timedelta(days=1)
-        failed_at = past + timedelta(minutes=5)
-        make_download_media_file_task(media, start_at=past, end_at=failed_at, failed_at=failed_at)
-
-        fake_response = json.loads(all_test_metadata['minimal'])
-        with patch.object(Media, 'index_metadata', return_value=fake_response):
-            download_media_metadata.call_local(str(media.pk), manual=True)
-
-        media.refresh_from_db()
-        self.assertTrue(media.can_download)
-        self.assertTrue(download_task_has_override(media))
-
-    def test_manual_download_chain_is_blocked_by_a_pending_download_task(self):
-        source, media = self._make_index_only_source_and_media(key_suffix='pending')
-        # Pending: never started, and genuinely still enqueued in huey.
-        schedule_real_pending_download(media)
-        self.assertEqual(
-            get_model_tasks(str(media.pk), name='download_media_file').count(), 1,
-        )
-
-        fake_response = json.loads(all_test_metadata['minimal'])
-        with patch.object(Media, 'index_metadata', return_value=fake_response):
-            download_media_metadata.call_local(str(media.pk), manual=True)
-
-        media.refresh_from_db()
-        self.assertTrue(media.can_download)
-        # No second download_media_file task was added on top of the
-        # existing pending one (which is itself already override=True,
-        # from schedule_real_pending_download() -- a plain download,
-        # override or not, already counts as "incomplete").
-        self.assertEqual(
-            get_model_tasks(str(media.pk), name='download_media_file').count(), 1,
-        )
-
     def test_manual_thumbnail_fetch_bypasses_guard(self):
         source = Source.objects.create(
             key='ro-manual-thumb', name='ro-manual-thumb', directory='/tmp/ro-manual-thumb',
@@ -377,100 +236,6 @@ class ManualActionBypassesIndexOnlyGuardTestCase(TestCase):
         self.assertTrue(result)
         media.refresh_from_db()
         self.assertTrue(media.thumb_file_exists)
-
-    def test_manual_metadata_fetch_chains_download_despite_completed_history(self):
-        source = Source.objects.create(
-            key='ro-manual-retry', name='ro-manual-retry', directory='/tmp/ro-manual-retry',
-            download_media=False,
-            source_resolution=Val(SourceResolution.VIDEO_1080P),
-            source_vcodec=Val(YouTube_VideoCodec.VP9),
-            source_acodec=Val(YouTube_AudioCodec.OPUS),
-            prefer_60fps=False,
-            prefer_hdr=False,
-            fallback=Val(Fallback.FAIL),
-        )
-        media = Media.objects.create(
-            source=source, key='vid-manual-4', title='Vid Manual 4', published=timezone.now(),
-        )
-        now = timezone.now()
-        TaskHistory.objects.create(
-            name='sync.tasks.download_media_file',
-            task_id=str(uuid.uuid4()),
-            task_params=[[str(media.pk)], "{'override': True}"],
-            start_at=now - timedelta(hours=1),
-            scheduled_at=now - timedelta(hours=1),
-            end_at=now,
-            failed_at=now,
-            last_error='previous attempt failed',
-        )
-
-        fake_response = json.loads(all_test_metadata['minimal'])
-        with patch.object(Media, 'index_metadata', return_value=fake_response):
-            download_media_metadata.call_local(str(media.pk), manual=True)
-
-        self.assertTrue(download_task_has_override(media))
-
-
-class HasIncompleteTaskRevocationTestCase(TestCase):
-    '''
-        A codex review caught that has_incomplete_task() treated ANY
-        start_at=NULL row as still pending -- but common/huey.py's
-        on_executing_remove_duplicates() revokes a lower-priority/
-        fewer-retries duplicate before it ever executes, and a revoked
-        (or expired) row never gets start_at set either, so it looked
-        identical to a genuinely still-queued task at the Django-model
-        level. That permanently blocked scheduling a real replacement
-        for up to COMPLETED_TASKS_DAYS_TO_KEEP days. Fixed by asking
-        huey directly (_task_row_is_actually_live()) for any start_at=
-        NULL candidate.
-    '''
-
-    def setUp(self):
-        logging.disable(logging.CRITICAL)
-
-    def tearDown(self):
-        logging.disable(logging.NOTSET)
-
-    def _make_source_and_media(self, key_suffix):
-        source = Source.objects.create(
-            key=f'ro-revoke-{key_suffix}', name=f'ro-revoke-{key_suffix}',
-            directory=f'/tmp/ro-revoke-{key_suffix}',
-            download_media=False,
-        )
-        media = Media.objects.create(
-            source=source, key=f'vid-revoke-{key_suffix}',
-            title=f'Vid Revoke {key_suffix}', published=timezone.now(),
-        )
-        return source, media
-
-    def test_revoked_never_started_task_does_not_block(self):
-        _, media = self._make_source_and_media('revoked')
-        row = schedule_real_pending_download(media)
-        queue = get_queue_for_task_row(row)
-        queue.revoke_by_id(row.task_id, revoke_once=True)
-
-        self.assertFalse(has_incomplete_task(str(media.pk), name='download_media_file'))
-
-    def test_genuinely_pending_task_still_blocks(self):
-        _, media = self._make_source_and_media('pending')
-        schedule_real_pending_download(media)
-
-        self.assertTrue(has_incomplete_task(str(media.pk), name='download_media_file'))
-
-    def test_running_task_still_blocks(self):
-        _, media = self._make_source_and_media('running')
-        now = timezone.now()
-        make_download_media_file_task(media, start_at=now, end_at=now)
-
-        self.assertTrue(has_incomplete_task(str(media.pk), name='download_media_file'))
-
-    def test_completed_task_does_not_block(self):
-        _, media = self._make_source_and_media('completed')
-        past = timezone.now() - timedelta(days=1)
-        make_download_media_file_task(media, start_at=past, end_at=past + timedelta(minutes=5))
-
-        self.assertFalse(has_incomplete_task(str(media.pk), name='download_media_file'))
-
 
 class IndexSourceSkipsIndexOnlyFetchTestCase(TestCase):
     '''
@@ -537,24 +302,24 @@ class IndexSourceSkipsIndexOnlyFetchTestCase(TestCase):
         self.assertTrue(get_model_tasks(str(media.pk), name='download_media_image').exists())
 
 
-class ManualDownloadDuplicateRaceTestCase(TestCase):
+class ManualDownloadSchedulingParityTestCase(TestCase):
     '''
-        Two independent call sites can each end up scheduling a manual
-        (override=True) download_media_file task for the same media:
         MediaRedownloadView.form_valid()'s can_download branch (the
-        "Begin Downloading" link), and download_media_metadata(manual=
-        True)'s own chained download once a manual metadata fetch makes
-        the media downloadable (the "Fetch Metadata and Download" link).
-        A codex review caught that, before this fix, those two call
-        sites scheduled with different priority/retries, which could
-        make common/huey.py's on_executing_remove_duplicates() fail to
-        revoke whichever one was still pending -- letting both run and
-        download the same media twice. Fixed by (a) both call sites
-        using the shared schedule_manual_media_download() helper for
-        identical scheduling parameters, and (b) both call sites
-        checking has_incomplete_task() first, so the second call site
-        never schedules a second task in the first place regardless of
-        huey's own revocation timing.
+        "Begin Downloading" link) and download_media_metadata(manual=
+        True)'s own chained download (the "Fetch Metadata and Download"
+        link) both schedule a manual (override=True) download_media_file
+        task via the single schedule_manual_media_download() helper
+        (sync/tasks.py) -- not their own independently-parameterized
+        TaskHistory.schedule() calls. This is deliberate: if a user
+        triggers both paths for the same media close together,
+        common/huey.py's own duplicate-task handling
+        (on_executing_remove_duplicates()) only revokes a pending
+        duplicate when the executing task's priority/retries match (or
+        dominate) the pending one's -- which requires identical
+        scheduling parameters on both sides regardless of which one
+        starts first. Proving that huey actually revokes one requires a
+        running consumer (out of scope for a unit test); this instead
+        proves the parity itself directly.
     '''
 
     def setUp(self):
@@ -565,8 +330,8 @@ class ManualDownloadDuplicateRaceTestCase(TestCase):
 
     def _make_index_only_source_and_media(self, key_suffix, **media_overrides):
         source = Source.objects.create(
-            key=f'ro-race-{key_suffix}', name=f'ro-race-{key_suffix}',
-            directory=f'/tmp/ro-race-{key_suffix}',
+            key=f'ro-parity-{key_suffix}', name=f'ro-parity-{key_suffix}',
+            directory=f'/tmp/ro-parity-{key_suffix}',
             download_media=False,
             source_resolution=Val(SourceResolution.VIDEO_1080P),
             source_vcodec=Val(YouTube_VideoCodec.VP9),
@@ -576,57 +341,35 @@ class ManualDownloadDuplicateRaceTestCase(TestCase):
             fallback=Val(Fallback.FAIL),
         )
         media = Media.objects.create(
-            source=source, key=f'vid-race-{key_suffix}',
-            title=f'Vid Race {key_suffix}', published=timezone.now(),
+            source=source, key=f'vid-parity-{key_suffix}',
+            title=f'Vid Parity {key_suffix}', published=timezone.now(),
             **media_overrides,
         )
         return source, media
 
-    def _post_redownload(self, media):
-        return Client().post(reverse('sync:redownload-media', kwargs={'pk': media.pk}))
-
-    def test_view_then_chain_results_in_one_pending_download(self):
-        # Media already downloadable (as if an earlier manual fetch
-        # already succeeded) -- this is what the view's can_download
+    def test_view_and_chain_schedule_download_with_identical_parameters(self):
+        # View path: media already downloadable (as if an earlier manual
+        # fetch already succeeded) -- this is what the can_download
         # branch schedules from.
-        source, media = self._make_index_only_source_and_media(
-            'view-then-chain', can_download=True,
+        _, view_media = self._make_index_only_source_and_media(
+            'view', can_download=True,
         )
-
-        response = self._post_redownload(media)
+        response = Client().post(
+            reverse('sync:redownload-media', kwargs={'pk': view_media.pk}),
+        )
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(
-            get_model_tasks(str(media.pk), name='download_media_file').count(), 1,
-        )
+        view_task = get_model_tasks(str(view_media.pk), name='download_media_file').get()
 
-        # A manual metadata re-fetch afterward (the chain path) must not
-        # add a second download now that one is already pending.
+        # Chain path: a manual metadata fetch makes a different media
+        # downloadable and schedules its own download.
+        _, chain_media = self._make_index_only_source_and_media('chain')
         fake_response = json.loads(all_test_metadata['minimal'])
         with patch.object(Media, 'index_metadata', return_value=fake_response):
-            download_media_metadata.call_local(str(media.pk), manual=True)
+            download_media_metadata.call_local(str(chain_media.pk), manual=True)
+        chain_task = get_model_tasks(str(chain_media.pk), name='download_media_file').get()
 
-        self.assertEqual(
-            get_model_tasks(str(media.pk), name='download_media_file').count(), 1,
-        )
-
-    def test_chain_then_view_results_in_one_pending_download(self):
-        source, media = self._make_index_only_source_and_media('chain-then-view')
-
-        # Chain path first: a manual metadata fetch makes it downloadable
-        # and schedules the download itself.
-        fake_response = json.loads(all_test_metadata['minimal'])
-        with patch.object(Media, 'index_metadata', return_value=fake_response):
-            download_media_metadata.call_local(str(media.pk), manual=True)
-        media.refresh_from_db()
-        self.assertTrue(media.can_download)
-        self.assertEqual(
-            get_model_tasks(str(media.pk), name='download_media_file').count(), 1,
-        )
-
-        # View path second: the redownload form must not add a second
-        # download now that one is already pending.
-        response = self._post_redownload(media)
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(
-            get_model_tasks(str(media.pk), name='download_media_file').count(), 1,
-        )
+        self.assertEqual(view_task.priority, chain_task.priority)
+        # task_params[1] is repr(kwargs) -- task_params[0] (the media pk)
+        # legitimately differs between the two media used here, so only
+        # the kwargs portion is compared.
+        self.assertEqual(view_task.task_params[1], chain_task.task_params[1])
