@@ -42,7 +42,22 @@
        attempting to build a whole SourceForm for the directory-less
        validate case -- see its own docstring for why a synthetic
        placeholder directory/name is not an acceptable substitute either.
+
+    3. (T3) build_source_form() also accepts an optional
+       `defaults_overlay` -- config.source_defaults()'s per-type
+       operator-configured field overrides (MEDIANEST_BRIDGE_SOURCE_DEFAULTS),
+       applied onto default_form_data() before the request's own
+       type/key/name/directory. build_synthetic_source_form() and
+       extract_form_errors() below exist so config.validate_source_defaults()
+       can run that same overlay through this module's own validation
+       path (for the `sourceDefaults` readiness component and POST
+       /sources' own pre-check) without a real request or a saved row --
+       see build_synthetic_source_form()'s own docstring for why a
+       synthetic placeholder is acceptable there when it was rejected for
+       /sources/validate above.
 '''
+import uuid
+
 from django.conf import settings
 from django.core.exceptions import SuspiciousFileOperation, ValidationError
 from django.forms.models import model_to_dict
@@ -78,6 +93,24 @@ _ERRORS = {
 # ad hoc at each call site.
 _LIST_SHAPED_FIELDS = {'sponsorblock_categories'}
 
+# T3: fields a MEDIANEST_BRIDGE_SOURCE_DEFAULTS overlay may never set --
+# these are the four fields the create contract itself always supplies
+# (CreateSourceRequest's sourceType/canonicalKey/name/directory, mapped by
+# build_source_form() below) and that config.source_defaults() rejects
+# outright if named in an overlay.
+SOURCE_DEFAULTS_FORBIDDEN_FIELDS = frozenset({'source_type', 'key', 'name', 'directory'})
+
+
+def allowed_source_default_fields():
+    '''
+        Every SourceForm field a MEDIANEST_BRIDGE_SOURCE_DEFAULTS overlay
+        may set: SourceForm.base_fields minus the four the create contract
+        owns (SOURCE_DEFAULTS_FORBIDDEN_FIELDS). Kept here rather than in
+        config.py because SourceForm's field set is this module's own
+        concern (default_form_data() already reads it the same way).
+    '''
+    return frozenset(SourceForm.base_fields.keys()) - SOURCE_DEFAULTS_FORBIDDEN_FIELDS
+
 
 def contract_source_type_to_tubesync(contract_source_type):
     return _CONTRACT_TO_TUBESYNC_SOURCE_TYPE[contract_source_type]
@@ -107,14 +140,28 @@ def validate_canonical_url(contract_source_type, canonical_key, canonical_url):
     return errors
 
 
-def default_form_data():
-    '''TubeSync's own Source model defaults for every SourceForm field.'''
-    blank = Source()
-    data = model_to_dict(blank, fields=list(SourceForm.base_fields.keys()))
+def _coerce_list_shaped_fields(data):
+    '''
+        Mutates and returns `data` in place: normalizes any
+        _LIST_SHAPED_FIELDS value to the list shape the auto-generated
+        form field expects (see _LIST_SHAPED_FIELDS' own comment). Shared
+        by default_form_data() (TubeSync's own model default is the
+        comma-joined string form) and build_source_form()/
+        build_synthetic_source_form() (a MEDIANEST_BRIDGE_SOURCE_DEFAULTS
+        overlay could supply either shape -- a plain string like the model
+        default, or already a list).
+    '''
     for field in _LIST_SHAPED_FIELDS:
         if field in data and not isinstance(data[field], list):
             data[field] = [data[field]] if data[field] else []
     return data
+
+
+def default_form_data():
+    '''TubeSync's own Source model defaults for every SourceForm field.'''
+    blank = Source()
+    data = model_to_dict(blank, fields=list(SourceForm.base_fields.keys()))
+    return _coerce_list_shaped_fields(data)
 
 
 def validate_source_type_and_key(*, source_type, key):
@@ -146,7 +193,7 @@ def validate_source_type_and_key(*, source_type, key):
     return errors
 
 
-def build_source_form(*, source_type, key, name, directory):
+def build_source_form(*, source_type, key, name, directory, defaults_overlay=None):
     '''
         Returns a SourceForm with is_valid() already evaluated (so
         .errors/.cleaned_data are populated either way). Used by
@@ -154,8 +201,22 @@ def build_source_form(*, source_type, key, name, directory):
         and directory, so this always builds a complete, real form; there
         is no directory-less variant of this function (see
         validate_source_type_and_key() for that case).
+
+        `defaults_overlay` (T3): config.source_defaults()'s per-type dict
+        of SourceForm field overrides, applied onto default_form_data()
+        BEFORE source_type/key/name/directory below -- so an overlay can
+        never override what the request itself supplies, even if it
+        somehow named one of those keys (config.source_defaults() already
+        rejects that at parse time; this ordering is a second,
+        structural guarantee of the same thing). Only bridge-created
+        sources go through this overlay -- the HTML UI builds its own
+        SourceForm directly in sync/views/sources.py, untouched by this
+        module.
     '''
     data = default_form_data()
+    if defaults_overlay:
+        data.update(defaults_overlay)
+        _coerce_list_shaped_fields(data)
     data['source_type'] = source_type
     data['key'] = key
     data['name'] = name
@@ -163,6 +224,73 @@ def build_source_form(*, source_type, key, name, directory):
     form = SourceForm(data=data)
     form.is_valid()
     return form
+
+
+def build_synthetic_source_form(*, contract_source_type, overlay):
+    '''
+        Builds a real SourceForm from default_form_data() overlaid with
+        `overlay` (already validated against
+        allowed_source_default_fields() by config.source_defaults() --
+        this function does not re-check that), plus a synthetic-but-safe
+        key/name/directory that is NEVER saved and used for nothing
+        beyond satisfying SourceForm's own required-field/clean()
+        machinery. Used only by config.validate_source_defaults() to run
+        a MEDIANEST_BRIDGE_SOURCE_DEFAULTS overlay through the exact same
+        field-level checks (is_valid()) plus run_edit_source_checks()
+        (media-format-produces-a-filename, directory-traversal) that a
+        real POST /sources create applies via build_source_form() above
+        -- so a broken overlay is caught by readiness/create-time
+        validation instead of only failing every subsequent real create
+        one at a time.
+
+        Why a synthetic key/name/directory is acceptable HERE when
+        validate_source_type_and_key()'s own docstring explicitly
+        rejected the same idea for POST /sources/validate: that rejection
+        was about a caller-supplied *request*, where a placeholder value
+        could fail (or wrongly succeed) for a reason that has nothing to
+        do with what the caller actually asked to validate. Here there is
+        no request being validated -- only server-side configuration that
+        applies identically to every future create of that source type --
+        so a fixed synthetic placeholder cannot mask or misrepresent a
+        caller's own input; there is none.
+
+        Uniqueness is irrelevant to "is this configuration well-formed"
+        and must not depend on what happens to already exist in the
+        database (a real key/name/directory collision here would make
+        configuration validity flap based on unrelated data). Rather than
+        relying on the synthetic values below being merely unlikely to
+        collide, validate_unique() is overridden to a no-op explicitly.
+    '''
+    data = default_form_data()
+    data.update(overlay)
+    _coerce_list_shaped_fields(data)
+    data['source_type'] = contract_source_type_to_tubesync(contract_source_type)
+    placeholder = f'medianest-bridge-config-check-{uuid.uuid4().hex}'
+    data['key'] = placeholder
+    data['name'] = placeholder
+    data['directory'] = placeholder
+    form = SourceForm(data=data)
+    form.validate_unique = lambda: None
+    form.is_valid()
+    return form
+
+
+def extract_form_errors(form):
+    '''
+        Plain-text "field: message" strings from form.errors, via
+        Django's own ErrorDict.get_json_data() -- str(form.errors) would
+        render as Django's own HTML (`<ul class="errorlist">...</ul>`),
+        which a JSON/API consumer must never receive (T4 verifier MEDIUM
+        finding, reproduced live in a POST /sources response). Shared by
+        views_write.py (a real create's errors) and
+        config.validate_source_defaults() (a synthetic overlay-check
+        form's errors), so both flow through one implementation.
+    '''
+    messages = []
+    for field, field_errors in form.errors.get_json_data().items():
+        for error in field_errors:
+            messages.append(f'{field}: {error["message"]}')
+    return messages
 
 
 def run_edit_source_checks(form):
