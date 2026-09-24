@@ -132,8 +132,22 @@ class HealthReadyEndpointTestCase(BridgeTestCase):
         body = json.loads(response.content)
         assert_matches_schema(self, body, 'HealthReady')
 
-        expected_components = set(FIXTURES['health_ready_component_names'])
+        # health_ready_component_names mirrors the contract's `required`
+        # list -- every one of those MUST be present. `sourceDefaults`
+        # (T3) is deliberately NOT in `required` (an older MediaNest
+        # pinned to a pre-T3 fixture must stay conformant against a
+        # bridge that now reports it), so it's asserted as a named,
+        # known-implemented addition on top of the required set rather
+        # than folded into FIXTURES['health_ready_component_names'] --
+        # doing that would make this test unable to distinguish "the
+        # contract's required set changed" (a real drift this test must
+        # catch) from "a new optional component shipped" (expected, and
+        # per-component here instead).
+        required_components = set(FIXTURES['health_ready_component_names'])
+        optional_implemented_components = {'sourceDefaults'}
+        expected_components = required_components | optional_implemented_components
         self.assertEqual(set(body['components'].keys()), expected_components)
+        self.assertTrue(required_components.issubset(body['components'].keys()))
         for name, component in body['components'].items():
             assert_matches_schema(self, component, 'ComponentStatus')
 

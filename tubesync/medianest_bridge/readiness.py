@@ -102,6 +102,22 @@
     out of T1's scope and remains out of T4's (no new endpoints, per the
     T4 brief).
 
+    `sourceDefaults` (T3, OPTIONAL in the contract -- see
+    bridge-openapi.v1.yaml's HealthReady.components.properties, added
+    without joining `required` so an older MediaNest caller pinned to a
+    pre-T3 fixture stays conformant against a bridge that now reports
+    it): reports whether MEDIANEST_BRIDGE_SOURCE_DEFAULTS (config.py's
+    source_defaults()/validate_source_defaults()) currently parses and
+    validates -- "healthy" if so, "unavailable" (with the specific
+    error(s) in `detail`, never the env var's own raw value) otherwise.
+    POST /sources' own pre-check uses the exact same
+    validate_source_defaults() function, so this component and that
+    endpoint's 503 can never disagree about whether the configuration is
+    valid. Unlike `youtube`, this has no dedicated cache -- it shares
+    collect_components()'s ordinary 5s TTL, since it's a local
+    env-var/DB-free check (no network call, no subprocess, nothing that
+    benefits from a longer TTL).
+
     Failure isolation: every check function is called through
     _run_check(), which converts an unexpected exception into "unknown"
     (never lets one check's bug crash the whole /health/ready response)
@@ -546,6 +562,14 @@ def check_cookies():
     return _status('not_configured', detail='no cookies file configured')
 
 
+def check_source_defaults():
+    from . import config
+    errors = config.validate_source_defaults()
+    if not errors:
+        return _status('healthy')
+    return _status('unavailable', detail='; '.join(errors))
+
+
 def check_plex():
     try:
         from sync.choices import MediaServerType, Val
@@ -574,6 +598,7 @@ CHECKS = {
     'youtube': check_youtube,
     'cookies': check_cookies,
     'plex': check_plex,
+    'sourceDefaults': check_source_defaults,
 }
 
 # Components whose degraded/unavailable status affects overall aggregation.

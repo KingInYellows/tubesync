@@ -2,14 +2,17 @@
 #
 # Canonical source: KingInYellows/medianest,
 #   docs/planning/tubesync-integration/bridge-openapi.v1.yaml
-#   @ 35a9c069fe4f1512ff7b606c33c0c2a11c7efa76 (2026-08-21)
-#   (T3 re-vendor was @ 713f9b4ac9efc24e0f285f9af58a50276f29ebb9; this
-#   update is description-only: codifies DECISIONS #27 -- the
-#   /sources/validate slice-1 scope [SourceForm field-level checks +
-#   validate_url() shape cross-check only, no directory-traversal/
-#   media-format checks, no network calls] and ValidatedSource.displayName's
-#   canonicalKey-echo placeholder -- both already implemented exactly this
-#   way since T3. No schema/enum changes; conformance tests are unaffected.)
+#   @ a7689cdc7a87f93f0ddc8a5c8efd9d9ec7c88eda (2026-09-24)
+#   (Previous re-vendor was @ 35a9c069fe4f1512ff7b606c33c0c2a11c7efa76,
+#   2026-08-21, description-only for DECISIONS #27. This update adds one
+#   new OPTIONAL property, `sourceDefaults`, under
+#   components.schemas.HealthReady.properties.components.properties --
+#   NOT added to that object's own `required` list, so
+#   health_ready_component_names in contract_fixtures.json is unchanged;
+#   only this file's own sha256 moved. See DECISIONS #54: it documents a
+#   bridge's own configurable-source-defaults health, reported only by
+#   implementations that have it -- an older/other bridge build omitting
+#   this key stays fully conformant.)
 #   Fork commit d20563a7 (T1 review fix) then added, directly in this file,
 #   the 403/413/503 response entries on the four diagnostics paths and the
 #   ProviderUnavailable / RequestTooLarge response components. The MediaNest
@@ -684,6 +687,20 @@ components:
               $ref: "#/components/schemas/ComponentStatus"
             plex:
               $ref: "#/components/schemas/ComponentStatus"
+            sourceDefaults:
+              $ref: "#/components/schemas/ComponentStatus"
+              description: >-
+                OPTIONAL (DECISIONS #54). Reports whether a bridge
+                implementation's own configurable source-creation defaults
+                (a fork-local environment setting, not itself a contract
+                field) currently parse and validate. Deliberately excluded
+                from `required` above so a caller pinned against a bridge
+                build that predates this component stays conformant: an
+                absent key means "this bridge build does not report this",
+                not "unhealthy". A bridge that DOES implement configurable
+                source defaults and reports them "unavailable" here is
+                expected to also fail POST /sources with a 5xx rather than
+                silently falling back to undocumented defaults.
 
     Meta:
       type: object
