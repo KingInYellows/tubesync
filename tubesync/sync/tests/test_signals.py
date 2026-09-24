@@ -3,7 +3,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 from sync.choices import Val, YouTube_SourceType
 from sync.models import Source, Media
-from sync.tasks import get_model_tasks
+from sync.tasks import get_model_tasks, save_all_media_for_source, save_media
 
 
 def make_source(**overrides):
@@ -45,6 +45,10 @@ def thumbnail_task_exists(media):
     return get_model_tasks(str(media.pk), name='download_media_image').exists()
 
 
+def save_all_media_for_source_task_exists(source):
+    return get_model_tasks(str(source.pk), name='save_all_media_for_source').exists()
+
+
 class IndexOnlySkipMetadataTestCase(TestCase):
     '''
         media_post_save() (sync/signals.py) must not schedule per-item
@@ -79,6 +83,15 @@ class IndexOnlySkipMetadataTestCase(TestCase):
         self.assertTrue(thumbnail_task_exists(media))
 
     def test_turning_download_media_back_on_reschedules_metadata(self):
+        '''
+            Exercises the real production chain rather than calling
+            media.save() directly: source.save() -> source_post_save()
+            unconditionally schedules save_all_media_for_source() ->
+            (run synchronously here) -> save_media.map(...) -> (run
+            synchronously here, matching what huey would eventually do
+            per queued media) -> save_media() -> media.save() ->
+            media_post_save(), now with the index-only gate open.
+        '''
         source = make_source(key='UC_flip', directory='flip', download_media=False)
         media = make_media(source, key='video4')
         self.assertFalse(metadata_task_exists(media))
@@ -86,11 +99,10 @@ class IndexOnlySkipMetadataTestCase(TestCase):
 
         source.download_media = True
         source.save()
-        media.refresh_from_db()
-        # This is exactly what sync.tasks.save_media() (invoked, in
-        # production, by save_all_media_for_source() after a source is
-        # saved) does to re-trigger media_post_save() for existing media.
-        media.save()
+        self.assertTrue(save_all_media_for_source_task_exists(source))
+
+        save_all_media_for_source.call_local(str(source.pk))
+        save_media.call_local(str(media.pk))
 
         self.assertTrue(metadata_task_exists(media))
         self.assertTrue(thumbnail_task_exists(media))

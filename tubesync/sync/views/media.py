@@ -19,7 +19,7 @@ from django import forms
 from ..utils import delete_file
 from ..tasks import (
     get_media_download_task, download_media_image, download_media_file,
-    refresh_formats,
+    download_media_metadata, refresh_formats,
 )
 
 
@@ -229,6 +229,9 @@ class MediaItemView(DetailView):
                 download_media_image,
                 str(media.pk),
                 media.thumbnail,
+                # Explicit, user-initiated request: bypass the index-only
+                # skip guard (see download_media_image()'s docstring).
+                manual=True,
                 priority=1+download_media_image.settings.get('default_priority', 0),
                 vn_fmt=_('Redownload thumbnail for "{}": {}'),
                 vn_args=(
@@ -289,6 +292,23 @@ class MediaRedownloadView(FormView, SingleObjectMixin):
                 retry_delay=600,
                 vn_fmt=_('Downloading media (manually) for "{}"'),
                 vn_args=(media.name,),
+            )
+        elif not media.has_metadata:
+            # No metadata yet -- most commonly an index-only source's
+            # media, which never gets it automatically (see
+            # settings.INDEX_ONLY_SKIP_METADATA). A manual redownload
+            # request is still an explicit, user-initiated action, so
+            # fetch metadata now regardless of that gate; if it succeeds
+            # and makes the media downloadable, download_media_metadata()
+            # itself schedules the actual (override=True) download.
+            TaskHistory.schedule(
+                download_media_metadata,
+                str(media.pk),
+                manual=True,
+                priority=90,
+                remove_duplicates=True,
+                vn_fmt=_('Downloading metadata (manually) for "{}": "{}"'),
+                vn_args=(media.key, media.name,),
             )
         # If the thumbnail file exists on disk, delete it
         if self.object.thumb_file_exists:
