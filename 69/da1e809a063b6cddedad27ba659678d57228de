@@ -1,0 +1,25 @@
+tubesync/sync/views/media.py
+  s_a59b3e45df88ba::t_7ba5fa568b68c3 303-307
+  s_a59b3e45df88ba::t_848ddb6ce18b1c 22
+  s_a59b3e45df88ba::t_0b958512ce6453 335-337,341
+tubesync/sync/tests/test_tasks.py
+  s_a59b3e45df88ba::t_979dfaf2ec8fc5 305,308-322,333-334,344-345,350-352,354-355,357-358,360-361,363-365,368-375
+tubesync/sync/tasks.py
+  s_a59b3e45df88ba::t_f097d4ea23b271 1039,1051-1057
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "69da1e809a063b6cddedad27ba659678d57228de",
+  "prompts": {},
+  "sessions": {
+    "s_a59b3e45df88ba": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "09e5e061-15a4-4404-aff5-572ff0ac1e25",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
