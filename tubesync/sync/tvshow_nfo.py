@@ -457,24 +457,82 @@ def _foreign_nfo_reason(nfo_path, source):
     return None
 
 
-def write_tvshow_nfo(source):
+def _tvshow_nfo_content_to_write(source, assume_directory_exists=False):
     '''
-        Writes `tvshow.nfo` for `source`, only when `write_nfo` is enabled.
-        Idempotent: skips the filesystem write entirely when the bytes on
-        disk already match what would be written, so calling this from
+        Returns the tvshow.nfo text `write_tvshow_nfo()` would write for
+        `source` right now, or `None` when nothing should be written:
+        `write_nfo` is disabled, the source directory does not exist (see
+        `assume_directory_exists`), the bytes on disk already match
+        `build_tvshow_nfo()`'s output, or the file there is not this
+        writer's to replace (`_foreign_nfo_reason`; a refusal is logged as
+        a warning).
+
+        The single place that builds the NFO: `tvshow_nfo_needs_write()`
+        and `write_tvshow_nfo()` both call this instead of each calling
+        `build_tvshow_nfo()` (and so re-deriving the show's title/plot
+        from a fresh query) themselves -- Plex T4's backfill dry-run calls
+        the former and apply calls the latter for the SAME source.
+
+        `assume_directory_exists=True` skips the directory check: Plex T4's
+        dry-run passes this when an overlay change means the corresponding
+        apply run would create a still-missing source directory as a side
+        effect of saving the source (`source_pre_save` ->
+        `check_source_directory_exists`) before it ever gets to
+        `write_tvshow_nfo()`, so the two modes predict the same outcome.
+    '''
+    if not source.write_nfo:
+        return None
+    directory = source.directory_path
+    if not assume_directory_exists and not directory.is_dir():
+        return None
+    nfo_path = directory / 'tvshow.nfo'
+    with transaction.atomic():
+        content = build_tvshow_nfo(source)
+    if nfo_path.exists() and nfo_path.read_bytes() == content.encode('utf-8'):
+        return None
+    reason = _foreign_nfo_reason(nfo_path, source)
+    if reason:
+        log.warning(f'Not writing tvshow.nfo for: {source}: {reason}')
+        return None
+    return content
+
+
+def tvshow_nfo_needs_write(source, assume_directory_exists=False):
+    '''
+        True when `write_tvshow_nfo()` would write: `write_nfo` is enabled,
+        the source directory exists, the bytes on disk differ from
+        `build_tvshow_nfo()`, and the file there is this writer's to replace
+        (`_foreign_nfo_reason`; a refusal is logged as a warning). Shared
+        with Plex T4's backfill dry-run so its preview and the real write
+        use one decision. See `_tvshow_nfo_content_to_write()` for the one
+        place that decision (and the single `build_tvshow_nfo()` call it
+        needs) actually lives, including `assume_directory_exists`.
+    '''
+    return _tvshow_nfo_content_to_write(source, assume_directory_exists) is not None
+
+
+def write_tvshow_nfo(source, raise_errors=False):
+    '''
+        Writes `tvshow.nfo` for `source` when it needs writing (see
+        `_tvshow_nfo_content_to_write()`/`tvshow_nfo_needs_write()`): only
+        with `write_nfo` enabled, never into a missing source directory
+        (creating it is `check_source_directory_exists`'s job), never over
+        a file it did not create or that was edited since, and never when
+        the bytes on disk already match -- so calling this from
         `index_source`, `download_source_images` and
         `download_media_metadata` every run does not churn the file (or
-        its mtime) when nothing has changed. Never deletes anything.
+        its mtime). Never deletes anything. Returns True when it actually
+        wrote the file, False otherwise.
 
-        Best-effort: it runs at the tail of those tasks, after their real
-        work has succeeded, so a database or filesystem error is logged
-        with its traceback instead of failing, and so retrying, the
-        calling task. A missing source directory (not created yet by
-        `check_source_directory_exists`) is skipped -- creating it is not
-        this function's job.
+        Best-effort by default: it runs at the tail of those tasks, after
+        their real work has succeeded, so a database or filesystem error
+        is logged with its traceback instead of failing, and so retrying,
+        the calling task. `raise_errors=True` re-raises instead, for Plex
+        T4's backfill command, which counts failures in its summary and
+        exit status.
 
-        Every call recomputes the show's data from scratch and, having done
-        so, drops this source's `resolve_show_title()` cache entry (see
+        Every call recomputes the show's data from scratch and drops this
+        source's `resolve_show_title()` cache entry (see
         `_invalidate_show_title_cache`) -- this is that cache's one refresh
         point, so a subsequent `resolve_show_title()`/`Media.nfoxml` call in
         this process picks up the fresh value immediately rather than
@@ -483,12 +541,13 @@ def write_tvshow_nfo(source):
         Concurrent-write caveat (accepted limitation): two
         `download_media_metadata` tasks for the same source can finish
         concurrently and, if the resolved show title changes between one
-        worker's `build_tvshow_nfo()` and its `write_text_file()`, a stale
-        snapshot can briefly replace a fresher `tvshow.nfo`. That lost
-        update needs both tasks to overlap on the same source and the title
-        to change between them -- in practice this is a one-time window
-        when the first real channel name appears. `write_text_file()` is
-        atomic (temp file plus replace), so the file is never corrupt.
+        worker's `build_tvshow_nfo()` (by way of
+        `_tvshow_nfo_content_to_write()`) and its `write_text_file()`, a
+        stale snapshot can briefly replace a fresher `tvshow.nfo`. That
+        lost update needs both tasks to overlap on the same source and the
+        title to change between them -- in practice this is a one-time
+        window when the first real channel name appears. `write_text_file()`
+        is atomic (temp file plus replace), so the file is never corrupt.
         Every later `download_media_metadata`, `index_source` or
         `download_source_images` run rebuilds from current data and
         rewrites a stale file when the bytes differ. A per-source lock on
@@ -496,24 +555,18 @@ def write_tvshow_nfo(source):
         just to close that narrow window, so we accept this self-healing
         race instead.
     '''
-    if not source.write_nfo:
-        return
     try:
-        directory = source.directory_path
-        if not directory.is_dir():
-            log.debug(f'Skipping tvshow.nfo, no directory yet for: {source}')
-            return
-        nfo_path = directory / 'tvshow.nfo'
-        with transaction.atomic():
-            content = build_tvshow_nfo(source)
+        # Every call is a refresh point for this process's
+        # resolve_show_title() cache (see the docstring above).
         _invalidate_show_title_cache(source)
-        if nfo_path.exists() and nfo_path.read_bytes() == content.encode('utf-8'):
-            return
-        reason = _foreign_nfo_reason(nfo_path, source)
-        if reason:
-            log.warning(f'Not writing tvshow.nfo for: {source}: {reason}')
-            return
+        content = _tvshow_nfo_content_to_write(source)
+        if content is None:
+            return False
         log.info(f'Writing tvshow.nfo for: {source}')
-        write_text_file(nfo_path, content)
+        write_text_file(source.directory_path / 'tvshow.nfo', content)
+        return True
     except (db.Error, OSError, ValueError):
+        if raise_errors:
+            raise
         log.exception(f'Failed to write tvshow.nfo for: {source}')
+        return False

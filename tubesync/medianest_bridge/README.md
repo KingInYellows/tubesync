@@ -689,6 +689,44 @@ from the YAML rather than hand-edited.
 Run with `cd tubesync && python3 manage.py test medianest_bridge` (or omit
 the app label to run the full suite, upstream included).
 
+## Operator commands
+
+`sync/management/commands/medianest_backfill_plex_sidecars.py` (T4) is a
+new, wholly fork-owned management command -- like `sync/tvshow_nfo.py`
+(T2), a new file rather than an edit to an existing upstream one, so it
+adds no "Fork delta" upstream touch point above. It applies T3's
+per-type `MEDIANEST_BRIDGE_SOURCE_DEFAULTS` profile to one or more
+already-existing sources and backfills the Plex TV-library sidecars
+(renamed video files, per-episode NFOs, thumbnails, `tvshow.nfo`) their
+already-downloaded media would have had if created under that profile
+from the start -- for sources that predate T3, or predate an operator
+changing `MEDIANEST_BRIDGE_SOURCE_DEFAULTS`.
+
+Dry-run by default; `--apply` is required to change anything on disk or
+in the DB. `--source <uuid>` (repeatable) or `--all-bridge-sources`
+(every source whose `directory` AND `name` both start with `acq-src-`)
+selects which sources to process; exactly one of the two is required.
+Never deletes a file. Resumable: a second `--apply` is a no-op (content
+is compared before any write), and per-media failures are counted and
+logged without aborting the rest of the run. See the command's own
+module docstring for the full per-media/per-source decision logic (it is
+long enough that duplicating it here would just drift out of sync), and
+`sync/tests/test_backfill_plex_sidecars.py` (not
+`medianest_bridge/tests/` -- this command lives in the upstream `sync`
+app's own management-command directory, following the existing
+`create-tvshow-nfo`/`import-existing-media`/etc. commands there) for its
+test coverage: dry-run leaves everything unchanged, an exact target-tree
+assertion for both a channel and a playlist source, the N4 fix
+(an NFO gets written even when nothing needed renaming), idempotent
+second `--apply`, non-bridge sources left untouched by
+`--all-bridge-sources`, and a `CommandError` (nothing changed) for an
+invalid `MEDIANEST_BRIDGE_SOURCE_DEFAULTS`.
+
+Run with:
+```
+python3 manage.py medianest_backfill_plex_sidecars --all-bridge-sources --apply
+```
+
 ## License
 
 This app is part of the `KingInYellows/tubesync` fork and is distributed
