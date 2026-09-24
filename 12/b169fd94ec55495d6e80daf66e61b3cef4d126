@@ -1,0 +1,38 @@
+tubesync/sync/views/media.py
+  s_a59b3e45df88ba::t_98798f5a71598f 296-312
+  s_a59b3e45df88ba::t_e93c5c7e746f58 232-234
+  s_a59b3e45df88ba::t_14a951bfd990b2 22
+tubesync/sync/tests/test_signals.py
+  s_a59b3e45df88ba::t_b65ca8df0f854f 48-51
+  s_a59b3e45df88ba::t_a511ba6ece5394 6
+  s_a59b3e45df88ba::t_70cac72019d1a8 86-94,102-105
+tubesync/sync/tests/test_tasks.py
+  s_a59b3e45df88ba::t_738d34cdfb0458 142-237
+  s_a59b3e45df88ba::t_cf657abf205a11 17,22-27
+  s_a59b3e45df88ba::t_0770b3fc63ac4d 238-302
+  s_a59b3e45df88ba::t_8129111f1f5c17 3,9-11,18
+  s_a59b3e45df88ba::t_5e598d987eb307 28
+tubesync/sync/tasks.py
+  s_a59b3e45df88ba::t_2fa88866c00dcf 1031-1036,1043-1047
+  s_a59b3e45df88ba::t_dc3c3d79de6a71 1002-1005,1011-1023,1027
+  s_a59b3e45df88ba::t_22cfb6c8b90a07 659-662,664-685,687-690
+  s_a59b3e45df88ba::t_686e9b040f7fd7 531-539
+  s_a59b3e45df88ba::t_5123506e78be56 996-1001,1006-1010
+  s_a59b3e45df88ba::t_e2dc2daa93210a 865,868-875,888-892,896-897
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "12b169fd94ec55495d6e80daf66e61b3cef4d126",
+  "prompts": {},
+  "sessions": {
+    "s_a59b3e45df88ba": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "09e5e061-15a4-4404-aff5-572ff0ac1e25",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
