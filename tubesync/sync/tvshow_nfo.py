@@ -230,25 +230,32 @@ def write_tvshow_nfo(source):
         the huey DB queue would serialise every metadata task of a source
         just to close that narrow window, so we accept this self-healing
         race instead.
+
+        Returns True when it actually wrote the file, False otherwise
+        (disabled, no directory, already up to date, or an error) -- used
+        by T4's backfill command summary counters; the task call sites
+        ignore it.
     '''
     if not source.write_nfo:
-        return
+        return False
     try:
         directory = Path(source.directory_path)
         if not directory.is_dir():
             log.debug(f'Skipping tvshow.nfo, no directory yet for: {source}')
-            return
+            return False
         nfo_path = directory / 'tvshow.nfo'
         content = build_tvshow_nfo(source)
         if nfo_path.exists() and nfo_path.read_bytes() == content.encode('utf-8'):
-            return
+            return False
         if _holds_another_nfo(nfo_path):
             log.warning(
                 f'Not writing tvshow.nfo for: {source}: {nfo_path} holds another '
                 'NFO (does media_format render a video filename as "tvshow"?)'
             )
-            return
+            return False
         log.info(f'Writing tvshow.nfo for: {source}')
         write_text_file(nfo_path, content)
+        return True
     except Exception:
         log.exception(f'Failed to write tvshow.nfo for: {source}')
+        return False
