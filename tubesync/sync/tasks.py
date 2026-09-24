@@ -196,6 +196,41 @@ def has_incomplete_task(model_pk, /, name=None):
     qs = get_model_tasks(model_pk, name=name)
     return qs.filter(Q(start_at__isnull=True) | Q(start_at=F('end_at'))).exists()
 
+def schedule_manual_media_download(media):
+    '''
+        Schedules a manual (override=True) media download. Both call
+        sites that can trigger a manual download for the same media --
+        MediaRedownloadView.form_valid()'s can_download branch, and
+        download_media_metadata(manual=True)'s own chained download once
+        a manual metadata fetch makes the media downloadable -- MUST call
+        this one function rather than their own TaskHistory.schedule()
+        with independently-chosen parameters.
+
+        Why: common/huey.py's on_executing_remove_duplicates() only
+        revokes a duplicate pending download_media_file task when the
+        already-executing task's priority/retries dominate the pending
+        one's (`a.priority <= b.priority and a.retries >= b.retries`,
+        where `a` is the pending task and `b` the one that started
+        executing). If the two call sites scheduled with different
+        priority/retries, whichever one happened to start executing
+        first could fail that comparison against the other, so huey
+        would leave both to run and download the media twice. Identical
+        parameters on both sides guarantee the comparison holds
+        regardless of which one starts first.
+    '''
+    TaskHistory.schedule(
+        download_media_file,
+        str(media.pk),
+        override=True,
+        priority=90,
+        remove_duplicates=True,
+        delay=10,
+        retries=3,
+        retry_delay=600,
+        vn_fmt=_('Downloading media (manually) for "{}"'),
+        vn_args=(media.name,),
+    )
+
 def get_source_index_task(source_id):
     tqs = get_running_tasks_by_name('index_source', source_id)
     return tqs.first() or False
@@ -1038,19 +1073,18 @@ def download_media_metadata(media_id, manual=False):
         # deliberate: an earlier download_media_file row that already
         # finished -- succeeded, or failed with no retry pending -- is
         # kept for COMPLETED_TASKS_DAYS_TO_KEEP days and must not block
-        # scheduling a fresh manual download.
+        # scheduling a fresh manual download. The has_incomplete_task()
+        # check here and in MediaRedownloadView, plus using the shared
+        # schedule_manual_media_download() helper (not our own
+        # TaskHistory.schedule() call) for identical scheduling
+        # parameters, together prevent a duplicate download getting
+        # scheduled if a user triggers both paths close together -- see
+        # schedule_manual_media_download()'s own docstring.
         log.info(
             f'Manually-fetched metadata for: {media} (UUID: {media.pk}) makes it '
             f'downloadable; scheduling a manual download.'
         )
-        TaskHistory.schedule(
-            download_media_file,
-            str(media.pk),
-            override=True,
-            remove_duplicates=True,
-            vn_fmt=_('Downloading media (manually) for "{}"'),
-            vn_args=(media.name,),
-        )
+        schedule_manual_media_download(media)
 
 
 @db_task(delay=10, priority=90, retries=15, backoff_class=DjangoBackgroundTasksBackoff, task_base=AttemptsTask, queue=Val(TaskQueue.NET))

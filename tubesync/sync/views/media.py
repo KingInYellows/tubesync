@@ -18,8 +18,9 @@ from ..models import Source, Media, Metadata
 from django import forms
 from ..utils import delete_file
 from ..tasks import (
-    get_media_download_task, download_media_image, download_media_file,
-    download_media_metadata, refresh_formats,
+    get_media_download_task, download_media_image,
+    download_media_metadata, has_incomplete_task, refresh_formats,
+    schedule_manual_media_download,
 )
 
 
@@ -281,18 +282,18 @@ class MediaRedownloadView(FormView, SingleObjectMixin):
                 vn_fmt=_('Refreshing formats (manually) for "{}"'),
                 vn_args=(media.key,),
             )
-            TaskHistory.schedule(
-                download_media_file,
-                str(media.pk),
-                override=True,
-                priority=90,
-                remove_duplicates=True,
-                delay=10,
-                retries=3,
-                retry_delay=600,
-                vn_fmt=_('Downloading media (manually) for "{}"'),
-                vn_args=(media.name,),
-            )
+            # schedule_manual_media_download() (not our own
+            # TaskHistory.schedule() call) is deliberate: it must use the
+            # exact same scheduling parameters as
+            # download_media_metadata(manual=True)'s own chained
+            # download, or huey's duplicate-task revocation
+            # (common/huey.py) may not recognize the two as the same
+            # task and both could run. has_incomplete_task() also skips
+            # this entirely if that chain already scheduled (or a prior
+            # attempt is still running) -- see both functions' own
+            # docstrings in sync/tasks.py.
+            if not has_incomplete_task(str(media.pk), name='download_media_file'):
+                schedule_manual_media_download(media)
         elif not media.has_metadata:
             # No metadata yet -- most commonly an index-only source's
             # media, which never gets it automatically (see
