@@ -1,0 +1,43 @@
+tubesync/medianest_bridge/docs/upstream-sync.md
+  s_b051a5e22632b1::t_0544bfc3c87aaa 13,19,21
+tubesync/sync/tests/test_episode_numbering.py
+  s_b051a5e22632b1::t_646610f8bfd6d3 210,213-215
+  s_b051a5e22632b1::t_8bd9f5ba20e218 1-209,211-212,216-260
+tubesync/medianest_bridge/README.md
+  s_b051a5e22632b1::t_63aeec7f319687 37
+  s_b051a5e22632b1::t_e99ee54299db24 59-70
+  s_b051a5e22632b1::t_261f4129fc2dfd 540
+tubesync/sync/models/source.py
+  s_b051a5e22632b1::t_e2bb949695a54a 535,540-541
+tubesync/medianest_bridge/docs/agpl-compliance.md
+  s_b051a5e22632b1::t_01137cdd864316 100
+tubesync/sync/testdata/expected_nfo.xml
+  s_b051a5e22632b1::t_6103ccbe34d427 6
+tubesync/sync/models/media.py
+  s_b051a5e22632b1::t_f38ead96feb67e 988,991,993-994,996-998
+  s_b051a5e22632b1::t_9f605b927d4ad3 1184-1185
+  s_b051a5e22632b1::t_cb6205b8a022f3 770-786
+  s_b051a5e22632b1::t_060b27c0157fdd 810-833
+  s_b051a5e22632b1::t_99d73b575a3bef 769,809,1126-1154,1157-1158,1162-1166,1170-1183,1186-1220
+  s_b051a5e22632b1::t_163aa4710c02d5 572-573
+  s_b051a5e22632b1::t_ea9b6521a10a93 567
+  s_b051a5e22632b1::t_ee6aa7e55c3804 1155-1156,1159-1161,1167-1169
+tubesync/medianest_bridge/docs/compatibility-matrix.md
+  s_b051a5e22632b1::t_9c5aa69b33c924 48-50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "d99aceaf7700b46334b904c5a0be188ae55b4859",
+  "prompts": {},
+  "sessions": {
+    "s_b051a5e22632b1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "496b6026-d50c-4a57-a621-2cef8811ac26",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
