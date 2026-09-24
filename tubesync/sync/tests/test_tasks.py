@@ -334,6 +334,38 @@ class ManualActionBypassesIndexOnlyGuardTestCase(TestCase):
         media.refresh_from_db()
         self.assertTrue(media.thumb_file_exists)
 
+    def test_manual_metadata_fetch_chains_download_despite_completed_history(self):
+        source = Source.objects.create(
+            key='ro-manual-retry', name='ro-manual-retry', directory='/tmp/ro-manual-retry',
+            download_media=False,
+            source_resolution=Val(SourceResolution.VIDEO_1080P),
+            source_vcodec=Val(YouTube_VideoCodec.VP9),
+            source_acodec=Val(YouTube_AudioCodec.OPUS),
+            prefer_60fps=False,
+            prefer_hdr=False,
+            fallback=Val(Fallback.FAIL),
+        )
+        media = Media.objects.create(
+            source=source, key='vid-manual-4', title='Vid Manual 4', published=timezone.now(),
+        )
+        now = timezone.now()
+        TaskHistory.objects.create(
+            name='sync.tasks.download_media_file',
+            task_id=str(uuid.uuid4()),
+            task_params=[[str(media.pk)], "{'override': True}"],
+            start_at=now - timedelta(hours=1),
+            scheduled_at=now - timedelta(hours=1),
+            end_at=now,
+            failed_at=now,
+            last_error='previous attempt failed',
+        )
+
+        fake_response = json.loads(all_test_metadata['minimal'])
+        with patch.object(Media, 'index_metadata', return_value=fake_response):
+            download_media_metadata.call_local(str(media.pk), manual=True)
+
+        self.assertTrue(download_task_has_override(media))
+
 
 class IndexSourceSkipsIndexOnlyFetchTestCase(TestCase):
     '''
