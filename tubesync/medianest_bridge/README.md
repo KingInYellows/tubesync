@@ -34,7 +34,7 @@ signal-driven task scheduling.
 
 ## Fork delta
 
-Eight upstream files are touched at nine points (`settings.py` twice), six of the nine minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
+Nine upstream files are touched at ten points (`settings.py` twice), seven of the ten minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
 
 1. `tubesync/tubesync/settings.py` -- `INSTALLED_APPS += 'medianest_bridge'`.
 2. `tubesync/tubesync/urls.py` -- one `include('medianest_bridge.urls')` at
@@ -56,8 +56,8 @@ Eight upstream files are touched at nine points (`settings.py` twice), six of th
    an existing multi-line `ENV`, no new `ENV` instruction). Empty by
    default, so every image build that doesn't pass the build-arg behaves
    identically to every pre-T5 build. See "Compatibility reporting" below.
-6. `sync/models/media.py` (Plex T1) -- adds module-level `_aware_utc`,
-   `_format_field_names`, `_episode_date_coalesce`,
+6. `sync/models/media.py` (Plex T1, Plex T2) -- Plex T1 adds module-level
+   `_aware_utc`, `_format_field_names`, `_episode_date_coalesce`,
    `_episode_day_index_from_name` and `_parse_episode_token` helpers and
    their constants, and new members `Media.episode_date`,
    `Media.title_full_bounded`, `Media._same_day_index`,
@@ -91,6 +91,12 @@ Eight upstream files are touched at nine points (`settings.py` twice), six of th
    live, so once an earlier same-day row is gone for good (its skipped
    placeholder deleted too) a later one's `<episode>` shifts on its next
    NFO rewrite, as upstream's `calculate_episode_number()` does.
+   Plex T2 additionally
+   changes `nfoxml`'s `<showtitle>` from `source.name` to `sync/tvshow_nfo.py`'s
+   `resolve_show_title()` (a local import inside the method, to avoid a
+   circular import with the new module -- see that module's own
+   docstring), so an episode's `<showtitle>` always agrees with its
+   `tvshow.nfo`'s `<title>`.
 7. `sync/models/source.py` (Plex T1) -- adds the same three keys
    (`episode_yyyy`, `episode_mmddnn`, `title_full_bounded`) to the dict
    `example_media_format_dict` returns, required for
@@ -110,6 +116,15 @@ Eight upstream files are touched at nine points (`settings.py` twice), six of th
    rows in the source form's "Available media name variables" table
    (`{title_full_bounded}`, `{episode_yyyy}`, `{episode_mmddnn}`). No
    existing row changes.
+10. `sync/tasks.py` (Plex T2) -- one new import (`sync/tvshow_nfo.py`'s
+   `write_tvshow_nfo`) and two call sites: the end of `index_source()` and
+   the end of `download_source_images()`, each just `write_tvshow_nfo
+   (source)`. No existing logic in either task is changed, reordered, or
+   made conditional on the new call.
+
+`sync/tvshow_nfo.py` (Plex T2) is a new, wholly fork-owned module (like
+`medianest_bridge/` itself), not an upstream touch point -- it is not
+counted above.
 
 Points 1-5 are tagged with the bridge's own slices (T1-T5); points 6 on
 are tagged with the Plex TV library slices (Plex T1-T4), a separate
@@ -603,7 +618,7 @@ public), satisfying AGPLv3 §13's network-use clause.
 fork; it is not present in upstream `meeb/tubesync` at the pinned
 upstream-base commit (`medianest_bridge/docs/UPSTREAM_SHA`). It is
 licensed identically to the rest of this repository, AGPLv3, under the
-unmodified `LICENSE` at the repository root. The eight upstream files this
+unmodified `LICENSE` at the repository root. The nine upstream files this
 fork's delta touches ("Fork delta" section above) remain licensed as
 upstream TubeSync itself is licensed, modified only as that section
 describes. See `medianest_bridge/docs/agpl-compliance.md` for the full
