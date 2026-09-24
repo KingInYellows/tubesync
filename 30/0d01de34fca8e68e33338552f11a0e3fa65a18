@@ -1,0 +1,33 @@
+tubesync/sync/tasks.py
+  s_a59b3e45df88ba::t_1ad80688a85f2d 208-221
+  s_a59b3e45df88ba::t_fe216960f0265f 180-207,222-226,230-231,245-252
+tubesync/sync/models/media__tasks.py
+  s_a59b3e45df88ba::t_1fe75c0b9de800 25-34
+tubesync/sync/tests/test_tasks.py
+  s_a59b3e45df88ba::t_ce8cdf3e11a539 45-50,52,64-81
+  s_a59b3e45df88ba::t_fd990515380016 357-360
+  s_a59b3e45df88ba::t_248bb53238d902 83-98
+  s_a59b3e45df88ba::t_373815c4de80f9 449
+  s_a59b3e45df88ba::t_ac3cfb86a5ae9d 414-448,450-474
+  s_a59b3e45df88ba::t_06700e2254107d 18,22
+  s_a59b3e45df88ba::t_1eb16df84ec43c 345-346
+  s_a59b3e45df88ba::t_2f8c2bd0f165b1 82
+tubesync/sync/tests/test_media__tasks.py
+  s_a59b3e45df88ba::t_760d18893ec7f1 1-81
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "300d01de34fca8e68e33338552f11a0e3fa65a18",
+  "prompts": {},
+  "sessions": {
+    "s_a59b3e45df88ba": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "09e5e061-15a4-4404-aff5-572ff0ac1e25",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
