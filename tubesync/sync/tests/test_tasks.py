@@ -5,7 +5,8 @@ from collections import deque
 from datetime import timedelta
 from unittest.mock import patch
 from PIL import Image
-from django.test import TestCase, override_settings
+from django.test import TestCase, Client, override_settings
+from django.urls import reverse
 from django.utils import timezone
 from common.models import TaskHistory
 from sync.choices import (
@@ -430,3 +431,98 @@ class IndexSourceSkipsIndexOnlyFetchTestCase(TestCase):
         media = self._run_index_with_one_fake_video(source)
         self.assertTrue(get_model_tasks(str(media.pk), name='download_media_metadata').exists())
         self.assertTrue(get_model_tasks(str(media.pk), name='download_media_image').exists())
+
+
+class ManualDownloadDuplicateRaceTestCase(TestCase):
+    '''
+        Two independent call sites can each end up scheduling a manual
+        (override=True) download_media_file task for the same media:
+        MediaRedownloadView.form_valid()'s can_download branch (the
+        "Begin Downloading" link), and download_media_metadata(manual=
+        True)'s own chained download once a manual metadata fetch makes
+        the media downloadable (the "Fetch Metadata and Download" link).
+        A codex review caught that, before this fix, those two call
+        sites scheduled with different priority/retries, which could
+        make common/huey.py's on_executing_remove_duplicates() fail to
+        revoke whichever one was still pending -- letting both run and
+        download the same media twice. Fixed by (a) both call sites
+        using the shared schedule_manual_media_download() helper for
+        identical scheduling parameters, and (b) both call sites
+        checking has_incomplete_task() first, so the second call site
+        never schedules a second task in the first place regardless of
+        huey's own revocation timing.
+    '''
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+
+    def tearDown(self):
+        logging.disable(logging.NOTSET)
+
+    def _make_index_only_source_and_media(self, key_suffix, **media_overrides):
+        source = Source.objects.create(
+            key=f'ro-race-{key_suffix}', name=f'ro-race-{key_suffix}',
+            directory=f'/tmp/ro-race-{key_suffix}',
+            download_media=False,
+            source_resolution=Val(SourceResolution.VIDEO_1080P),
+            source_vcodec=Val(YouTube_VideoCodec.VP9),
+            source_acodec=Val(YouTube_AudioCodec.OPUS),
+            prefer_60fps=False,
+            prefer_hdr=False,
+            fallback=Val(Fallback.FAIL),
+        )
+        media = Media.objects.create(
+            source=source, key=f'vid-race-{key_suffix}',
+            title=f'Vid Race {key_suffix}', published=timezone.now(),
+            **media_overrides,
+        )
+        return source, media
+
+    def _post_redownload(self, media):
+        return Client().post(reverse('sync:redownload-media', kwargs={'pk': media.pk}))
+
+    def test_view_then_chain_results_in_one_pending_download(self):
+        # Media already downloadable (as if an earlier manual fetch
+        # already succeeded) -- this is what the view's can_download
+        # branch schedules from.
+        source, media = self._make_index_only_source_and_media(
+            'view-then-chain', can_download=True,
+        )
+
+        response = self._post_redownload(media)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            get_model_tasks(str(media.pk), name='download_media_file').count(), 1,
+        )
+
+        # A manual metadata re-fetch afterward (the chain path) must not
+        # add a second download now that one is already pending.
+        fake_response = json.loads(all_test_metadata['minimal'])
+        with patch.object(Media, 'index_metadata', return_value=fake_response):
+            download_media_metadata.call_local(str(media.pk), manual=True)
+
+        self.assertEqual(
+            get_model_tasks(str(media.pk), name='download_media_file').count(), 1,
+        )
+
+    def test_chain_then_view_results_in_one_pending_download(self):
+        source, media = self._make_index_only_source_and_media('chain-then-view')
+
+        # Chain path first: a manual metadata fetch makes it downloadable
+        # and schedules the download itself.
+        fake_response = json.loads(all_test_metadata['minimal'])
+        with patch.object(Media, 'index_metadata', return_value=fake_response):
+            download_media_metadata.call_local(str(media.pk), manual=True)
+        media.refresh_from_db()
+        self.assertTrue(media.can_download)
+        self.assertEqual(
+            get_model_tasks(str(media.pk), name='download_media_file').count(), 1,
+        )
+
+        # View path second: the redownload form must not add a second
+        # download now that one is already pending.
+        response = self._post_redownload(media)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            get_model_tasks(str(media.pk), name='download_media_file').count(), 1,
+        )
