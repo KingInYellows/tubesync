@@ -1,0 +1,38 @@
+tubesync/sync/tests/test_media_item_view.py
+  s_a59b3e45df88ba::t_8dc2b7560c79f0 1-105
+tubesync/sync/tests/test_tasks.py
+  s_a59b3e45df88ba::t_6d07850cd099c9 3,10,31-54
+  s_a59b3e45df88ba::t_5525211f1902da 250-320
+  s_a481c3f49a67b8::t_5569acc4180961 55
+tubesync/sync/tasks.py
+  s_a59b3e45df88ba::t_0127ca0380eaa7 180-198
+  s_a59b3e45df88ba::t_c8e1b1cf1c33d6 1025,1037-1041
+  s_a59b3e45df88ba::t_3920d5c89a618d 20
+tubesync/sync/templates/sync/media-item.html
+  s_a59b3e45df88ba::t_bbca3efc92de2f 25-36
+  s_a59b3e45df88ba::t_8b10cea1b42deb 24,37,43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "62de06b911f4d3927b461f0ac40b75720058c564",
+  "prompts": {},
+  "sessions": {
+    "s_a481c3f49a67b8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eb292ab9-25e7-4864-891a-f7292e15f24d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    },
+    "s_a59b3e45df88ba": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "09e5e061-15a4-4404-aff5-572ff0ac1e25",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
