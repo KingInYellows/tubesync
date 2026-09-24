@@ -193,6 +193,20 @@ class MediaItemView(DetailView):
     def get_context_data(self, *args, **kwargs):
         data = super().get_context_data(*args, **kwargs)
         data['message'] = self.message
+        # Only an index-only source's media (with the fork's skip-fetch
+        # gate actually enabled) ever fails to get metadata/can_download
+        # automatically -- see settings.INDEX_ONLY_SKIP_METADATA and
+        # media_post_save()'s own gate in sync/signals.py. A normal
+        # source's item without metadata yet is just in the ordinary
+        # brief window before its automatic fetch runs, and offering a
+        # manual fetch there would schedule a second, non-deduped
+        # metadata task alongside the automatic one (huey's duplicate
+        # matching includes task kwargs, so manual=True never matches
+        # the automatic, non-manual call).
+        data['media_is_index_only_metadata_skip'] = (
+            getattr(settings, 'INDEX_ONLY_SKIP_METADATA', True) and
+            not self.object.source.download_media
+        )
         combined_exact, combined_format = self.object.get_best_combined_format()
         audio_exact, audio_format = self.object.get_best_audio_format()
         video_exact, video_format = self.object.get_best_video_format()
@@ -315,6 +329,28 @@ class MediaRedownloadView(FormView, SingleObjectMixin):
         if self.object.thumb_file_exists:
             delete_file(self.object.thumb.path)
             self.object.thumb = None
+            # An index-only source's media never gets its thumbnail
+            # re-fetched automatically (media_post_save()'s own
+            # scheduling is skipped for it -- see
+            # settings.INDEX_ONLY_SKIP_METADATA), so without this it
+            # would be lost for good the moment any manual action here
+            # deletes it. manual=True bypasses that same skip guard.
+            # has_incomplete_task() respects the existing dedupe: don't
+            # schedule a second fetch if one is already pending/running.
+            if (
+                getattr(settings, 'INDEX_ONLY_SKIP_METADATA', True) and
+                not self.object.source.download_media and
+                self.object.thumbnail and
+                not has_incomplete_task(str(self.object.pk), name='download_media_image')
+            ):
+                TaskHistory.schedule(
+                    download_media_image,
+                    str(self.object.pk),
+                    self.object.thumbnail,
+                    manual=True,
+                    vn_fmt=_('Redownload thumbnail for "{}": {}'),
+                    vn_args=(self.object.key, self.object.name,),
+                )
         # If the media file exists on disk, delete it
         if self.object.media_file_exists:
             delete_file(self.object.media_file.path)

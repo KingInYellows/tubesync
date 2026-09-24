@@ -21,11 +21,19 @@
     <p class="truncate"><a href="{% url 'sync:media-content' pk=media.pk %}" download="{{ media.filename }}"><strong><i class="fas fa-download"></i> Download</strong></a></p>
     {% elif media.can_download %}
     <p class="truncate"><a href="{% url 'sync:redownload-media' pk=media.pk %}{% querystring manual=True %}"><strong><i class="fas fa-download"></i> Begin Downloading</strong></a> (please be patient)</p>
-    {% elif not media.has_metadata %}
+    {% elif not media.has_metadata and media_is_index_only_metadata_skip %}
     {% comment %}
-      Most commonly an index-only source's item (see
-      settings.INDEX_ONLY_SKIP_METADATA): it never gets metadata
-      automatically, so can_download never becomes true on its own.
+      Only for an index-only source's item (media_is_index_only_metadata_skip,
+      set by MediaItemView.get_context_data() from
+      settings.INDEX_ONLY_SKIP_METADATA and source.download_media): it
+      never gets metadata automatically, so can_download never becomes
+      true on its own. A normal source's item without metadata yet is
+      just in the ordinary brief window before its automatic fetch runs
+      -- offering this action there would schedule a second, non-deduped
+      manual metadata task alongside the automatic one (huey's duplicate
+      matching includes task kwargs, so manual=True never matches the
+      automatic call).
+
       This posts to the same redownload view/form as the "can_download"
       link above -- MediaRedownloadView.form_valid()'s
       `elif not media.has_metadata` branch fetches metadata manually

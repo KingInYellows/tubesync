@@ -8,7 +8,7 @@
     when media.can_download is already true.
 '''
 import logging
-from django.test import TestCase, Client
+from django.test import TestCase, Client, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from sync.choices import Val, YouTube_SourceType
@@ -93,6 +93,32 @@ class MediaItemFetchMetadataActionTestCase(TestCase):
         response = self._get(media)
         html = response.content.decode()
         self.assertIn('Fetch Metadata and Download', html)
+
+    def test_not_shown_for_normal_source_item_without_metadata(self):
+        # A normal source's item without metadata yet is just in the
+        # ordinary brief window before its automatic fetch runs --
+        # offering a manual fetch there would schedule a second,
+        # non-deduped metadata task alongside the automatic one (codex
+        # P2 finding).
+        source = make_source(key='UC_normal_no_meta', directory='/tmp/normal_no_meta', download_media=True)
+        media = make_media(source, key='video6')
+        self.assertFalse(media.has_metadata)
+        response = self._get(media)
+        html = response.content.decode()
+        self.assertNotIn('Fetch Metadata and Download', html)
+        self.assertNotIn('Begin Downloading', html)
+
+    @override_settings(INDEX_ONLY_SKIP_METADATA=False)
+    def test_not_shown_for_index_only_item_when_setting_disabled(self):
+        # With the fork setting off, an index-only source's media is no
+        # different from upstream's own behavior -- it gets metadata
+        # fetched automatically like any other media, so the manual
+        # action has nothing extra to offer.
+        source = make_source(key='UC_legacy_no_meta', directory='/tmp/legacy_no_meta', download_media=False)
+        media = make_media(source, key='video7')
+        response = self._get(media)
+        html = response.content.decode()
+        self.assertNotIn('Fetch Metadata and Download', html)
 
     def test_no_formats_error_hidden_until_metadata_exists(self):
         # media.has_metadata is False here, so it is not yet known
