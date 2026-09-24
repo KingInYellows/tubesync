@@ -1002,7 +1002,7 @@ def download_media_metadata(media_id, manual=False):
         manual and
         media.can_download and
         not source.download_media and
-        not get_model_tasks(str(media.pk), name='download_media_file').exists()
+        not get_running_tasks_by_name('download_media_file', str(media.pk)).exists()
     ):
         # media_post_save() (triggered by media.save() above) recalculated
         # can_download from the metadata we just fetched, but its own
