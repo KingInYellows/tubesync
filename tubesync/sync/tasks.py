@@ -866,6 +866,11 @@ def download_media_metadata(media_id, manual=False):
     '''
         Downloads the metadata for a media item.
 
+        When manual=False (the default) and INDEX_ONLY_SKIP_METADATA is
+        enabled for an index-only source, the task returns immediately
+        without network I/O; Huey records this as a normal successful
+        completion (no retry or failure).
+
         manual=True marks this as an explicit, user-initiated fetch (e.g.
         MediaRedownloadView) rather than the normal automatic scheduling in
         media_post_save()/index_source(). It bypasses the index-only skip
@@ -1028,6 +1033,11 @@ def download_media_image(media_id, url, manual=False):
     '''
         Downloads an image from a URL and save it as a local thumbnail attached to a
         Media instance.
+
+        When manual=False (the default) and INDEX_ONLY_SKIP_METADATA is
+        enabled for an index-only source, the task returns immediately
+        without fetching; Huey records this as a normal successful
+        completion (no retry or failure).
 
         manual=True marks this as an explicit, user-initiated fetch (e.g.
         the "redownload thumbnail" action on a media item's page) and
