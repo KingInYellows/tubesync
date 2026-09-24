@@ -15,9 +15,11 @@ from sync.choices import (
 from sync.models import Source, Media
 from sync.tasks import (
     cleanup_old_media,
+    download_media_file,
     download_media_image,
     download_media_metadata,
     get_model_tasks,
+    has_incomplete_task,
     index_source,
 )
 from .fixtures import all_test_metadata
@@ -36,13 +38,18 @@ def make_download_media_file_task(media, *, start_at, end_at=None, failed_at=Non
         lifecycle state, matching common/models/tasks.py::th_schedule()'s
         and common/huey.py::historical_task()'s own shape:
 
-          pending (never run):  start_at=None
           running:               start_at == end_at
           finished (success or
           failure-without-retry): start_at is set and start_at != end_at
 
-        (see has_incomplete_task()'s docstring in sync/tasks.py).
+        Only valid for start_at values other than None: has_incomplete_task()
+        checks a start_at=NULL row against huey's own live queue state
+        (see _task_row_is_actually_live()'s docstring in sync/tasks.py),
+        which this DB-only fixture has no corresponding entry in. Use
+        schedule_real_pending_download() to build a genuinely pending
+        (start_at=NULL, actually enqueued) row instead.
     '''
+    assert start_at is not None
     now = timezone.now()
     return TaskHistory.objects.create(
         task_id=str(uuid.uuid4()),
@@ -53,6 +60,41 @@ def make_download_media_file_task(media, *, start_at, end_at=None, failed_at=Non
         scheduled_at=now,
         failed_at=failed_at,
     )
+
+
+def schedule_real_pending_download(media):
+    '''
+        Schedules a genuine download_media_file(override=True) task the
+        same way schedule_manual_media_download() does -- a real huey
+        enqueue, not just a TaskHistory row -- so it is actually present
+        in huey.pending()/huey.scheduled() and can be genuinely revoked.
+        Returns the resulting TaskHistory row.
+    '''
+    TaskHistory.schedule(
+        download_media_file,
+        str(media.pk),
+        override=True,
+        remove_duplicates=True,
+        vn_fmt='Downloading media (manually) for "{}"',
+        vn_args=(media.name,),
+    )
+    return get_model_tasks(str(media.pk), name='download_media_file').get()
+
+
+def get_queue_for_task_row(row):
+    '''
+        Mirrors sync.tasks._task_row_is_actually_live()'s own
+        TaskHistory.queue (a huey instance's .name, e.g.
+        'huey_net_limited') -> django_huey.get_queue() key (e.g.
+        'limited') reverse lookup, for tests that need the real huey
+        queue object to set up a task's live state (e.g. revoking it).
+    '''
+    from django_huey import DJANGO_HUEY, get_queue
+    queue_key = next(
+        (k for k, cfg in DJANGO_HUEY.get('queues', {}).items() if cfg.get('name', k) == row.queue),
+        row.queue,
+    )
+    return get_queue(queue_key)
 
 class TasksTestCase(TestCase):
 
@@ -300,8 +342,8 @@ class ManualActionBypassesIndexOnlyGuardTestCase(TestCase):
 
     def test_manual_download_chain_is_blocked_by_a_pending_download_task(self):
         source, media = self._make_index_only_source_and_media(key_suffix='pending')
-        # Pending: never started (start_at is None).
-        make_download_media_file_task(media, start_at=None)
+        # Pending: never started, and genuinely still enqueued in huey.
+        schedule_real_pending_download(media)
         self.assertEqual(
             get_model_tasks(str(media.pk), name='download_media_file').count(), 1,
         )
@@ -312,12 +354,13 @@ class ManualActionBypassesIndexOnlyGuardTestCase(TestCase):
 
         media.refresh_from_db()
         self.assertTrue(media.can_download)
-        # No second, override=True task was added on top of the existing
-        # pending one.
+        # No second download_media_file task was added on top of the
+        # existing pending one (which is itself already override=True,
+        # from schedule_real_pending_download() -- a plain download,
+        # override or not, already counts as "incomplete").
         self.assertEqual(
             get_model_tasks(str(media.pk), name='download_media_file').count(), 1,
         )
-        self.assertFalse(download_task_has_override(media))
 
     def test_manual_thumbnail_fetch_bypasses_guard(self):
         source = Source.objects.create(
@@ -366,6 +409,67 @@ class ManualActionBypassesIndexOnlyGuardTestCase(TestCase):
             download_media_metadata.call_local(str(media.pk), manual=True)
 
         self.assertTrue(download_task_has_override(media))
+
+
+class HasIncompleteTaskRevocationTestCase(TestCase):
+    '''
+        A codex review caught that has_incomplete_task() treated ANY
+        start_at=NULL row as still pending -- but common/huey.py's
+        on_executing_remove_duplicates() revokes a lower-priority/
+        fewer-retries duplicate before it ever executes, and a revoked
+        (or expired) row never gets start_at set either, so it looked
+        identical to a genuinely still-queued task at the Django-model
+        level. That permanently blocked scheduling a real replacement
+        for up to COMPLETED_TASKS_DAYS_TO_KEEP days. Fixed by asking
+        huey directly (_task_row_is_actually_live()) for any start_at=
+        NULL candidate.
+    '''
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+
+    def tearDown(self):
+        logging.disable(logging.NOTSET)
+
+    def _make_source_and_media(self, key_suffix):
+        source = Source.objects.create(
+            key=f'ro-revoke-{key_suffix}', name=f'ro-revoke-{key_suffix}',
+            directory=f'/tmp/ro-revoke-{key_suffix}',
+            download_media=False,
+        )
+        media = Media.objects.create(
+            source=source, key=f'vid-revoke-{key_suffix}',
+            title=f'Vid Revoke {key_suffix}', published=timezone.now(),
+        )
+        return source, media
+
+    def test_revoked_never_started_task_does_not_block(self):
+        _, media = self._make_source_and_media('revoked')
+        row = schedule_real_pending_download(media)
+        queue = get_queue_for_task_row(row)
+        queue.revoke_by_id(row.task_id, revoke_once=True)
+
+        self.assertFalse(has_incomplete_task(str(media.pk), name='download_media_file'))
+
+    def test_genuinely_pending_task_still_blocks(self):
+        _, media = self._make_source_and_media('pending')
+        schedule_real_pending_download(media)
+
+        self.assertTrue(has_incomplete_task(str(media.pk), name='download_media_file'))
+
+    def test_running_task_still_blocks(self):
+        _, media = self._make_source_and_media('running')
+        now = timezone.now()
+        make_download_media_file_task(media, start_at=now, end_at=now)
+
+        self.assertTrue(has_incomplete_task(str(media.pk), name='download_media_file'))
+
+    def test_completed_task_does_not_block(self):
+        _, media = self._make_source_and_media('completed')
+        past = timezone.now() - timedelta(days=1)
+        make_download_media_file_task(media, start_at=past, end_at=past + timedelta(minutes=5))
+
+        self.assertFalse(has_incomplete_task(str(media.pk), name='download_media_file'))
 
 
 class IndexSourceSkipsIndexOnlyFetchTestCase(TestCase):

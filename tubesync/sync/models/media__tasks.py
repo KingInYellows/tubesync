@@ -22,7 +22,16 @@ def copy_thumbnail(self):
         args = ( str(self.pk), self.thumbnail, )
         if not args[1]:
             return
-        if download_media_image.call_local(*args):
+        # manual=True bypasses the index-only skip guard. This is always
+        # correct here: copy_thumbnail() only ever runs right after a
+        # successful download_media_file() (sync/tasks.py), and for an
+        # index-only source that only ever happens via a manual
+        # override=True download in the first place (automatic
+        # scheduling never runs one). For a normal source the guard
+        # never triggers regardless of manual's value (it only applies
+        # when source.download_media is False), so this is a no-op
+        # change there.
+        if download_media_image.call_local(*args, manual=True):
             self.refresh_from_db()
     if not self.thumb_file_exists:
         return

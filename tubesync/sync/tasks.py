@@ -177,10 +177,58 @@ def get_media_thumbnail_task(media_id):
     tqs = get_running_tasks_by_name('download_media_image', media_id)
     return tqs.first() or False
 
+def _task_row_is_actually_live(row):
+    '''
+        For a TaskHistory row that never started (start_at is NULL): is it
+        genuinely still pending/scheduled in huey, or did huey revoke or
+        expire it before it ever ran?
+
+        common/huey.py's historical_task() has no TaskHistory field for
+        this -- SIGNAL_REVOKED and SIGNAL_EXPIRED touch only its own
+        in-huey-storage per-task signal history (never read back here)
+        and th.end_at (touched by every signal unconditionally), never
+        th.start_at or th.failed_at. So a revoked-before-executing row
+        (e.g. common/huey.py's own on_executing_remove_duplicates(),
+        which revokes a lower-priority/fewer-retries duplicate) looks
+        identical, at the Django-model level, to a row that is still
+        genuinely queued -- both have start_at=NULL forever.
+
+        huey itself is the only reliable source of truth for this, so we
+        ask it directly: huey.is_revoked() checks its own revoke-flag
+        storage (the same mechanism on_executing_remove_duplicates()
+        writes to), and a task that is neither revoked nor still present
+        in huey.pending()/huey.scheduled() must have expired or otherwise
+        been dropped -- either way, terminal.
+    '''
+    if not row.queue:
+        # No recorded queue (shouldn't normally happen) -- be
+        # conservative and treat it as still live rather than risk a
+        # false negative that lets a duplicate task through.
+        return True
+    from django_huey import DJANGO_HUEY, get_queue
+    # TaskHistory.queue stores the underlying huey instance's own .name
+    # (th_schedule() -> task_wrapper.huey.name, e.g. 'huey_net_limited'
+    # -- see common/huey.py's sqlite_tasks()), but django_huey.get_queue()
+    # is keyed by the DJANGO_HUEY['queues'] config dict key instead (e.g.
+    # 'limited', matching sync.choices.TaskQueue) -- these differ
+    # whenever a queue config sets an explicit 'name' distinct from its
+    # key, as this fork's 'limited' queue does. Reverse-map by that
+    # 'name' field to find the right key.
+    queue_key = next(
+        (k for k, cfg in DJANGO_HUEY.get('queues', {}).items() if cfg.get('name', k) == row.queue),
+        row.queue,
+    )
+    queue = get_queue(queue_key)
+    if queue.is_revoked(row.task_id):
+        return False
+    live_ids = {str(t.id) for t in queue.pending()} | {str(t.id) for t in queue.scheduled()}
+    return row.task_id in live_ids
+
 def has_incomplete_task(model_pk, /, name=None):
     '''
         True when a TaskHistory row for this model/name is still pending
-        (never run: start_at is NULL) or currently running (start_at ==
+        (never run, and not revoked/expired by huey -- see
+        _task_row_is_actually_live()) or currently running (start_at ==
         end_at, per TaskHistoryQuerySet.running()'s own definition).
 
         Unlike get_model_tasks(model_pk, name=name).exists(), this does
@@ -194,7 +242,14 @@ def has_incomplete_task(model_pk, /, name=None):
         such an old, finished row as "still in progress".
     '''
     qs = get_model_tasks(model_pk, name=name)
-    return qs.filter(Q(start_at__isnull=True) | Q(start_at=F('end_at'))).exists()
+    candidates = qs.filter(Q(start_at__isnull=True) | Q(start_at=F('end_at')))
+    for row in candidates:
+        if row.start_at is not None:
+            # Running (start_at == end_at): genuinely in progress.
+            return True
+        if _task_row_is_actually_live(row):
+            return True
+    return False
 
 def schedule_manual_media_download(media):
     '''
