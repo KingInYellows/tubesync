@@ -646,3 +646,87 @@ class YoutubeProbeTestCase(ReadinessCacheResetMixin, SimpleTestCase):
         components = {name: readiness._status('healthy') for name in readiness.CHECKS}
         components['youtube'] = youtube_component
         self.assertEqual(readiness.aggregate_status(components), 'degraded')
+
+
+class SourceDefaultsCheckTestCase(SimpleTestCase):
+    '''
+        readiness.check_source_defaults() -- the sourceDefaults readiness
+        component (T3). Uses env_override() directly, like
+        YoutubeProbeTestCase/StorageThresholdTestCase above: this class is
+        a SimpleTestCase, not BridgeTestCase, so BridgeTestMixin's own env
+        clearing doesn't apply here. See test_config.py for
+        config.source_defaults()/validate_source_defaults()'s own
+        parsing/merge/field-level coverage -- this class only checks the
+        component wiring: does a valid/invalid config map to
+        healthy/unavailable, and does it flow into overall aggregation
+        like any other component.
+
+        No DB access happens on either path: build_synthetic_source_form()
+        (source_forms.py) overrides SourceForm.validate_unique() to a
+        no-op before calling is_valid(), so even the "valid config" case
+        below never queries the database -- safe under SimpleTestCase.
+    '''
+
+    def test_healthy_when_unset(self):
+        from .base import env_override
+        with env_override(MEDIANEST_BRIDGE_SOURCE_DEFAULTS=None):
+            component = readiness.check_source_defaults()
+        self.assertEqual(component['status'], 'healthy')
+
+    def test_healthy_when_valid_overlay_configured(self):
+        from .base import env_override
+        with env_override(
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS='{"*": {}, "channel": {"write_nfo": true}}',
+        ):
+            component = readiness.check_source_defaults()
+        self.assertEqual(component['status'], 'healthy')
+
+    def test_unavailable_when_json_is_malformed(self):
+        from .base import env_override
+        with env_override(MEDIANEST_BRIDGE_SOURCE_DEFAULTS='{not json'):
+            component = readiness.check_source_defaults()
+        self.assertEqual(component['status'], 'unavailable')
+        self.assertIn('not valid JSON', component['detail'])
+
+    def test_unavailable_when_media_format_cannot_produce_a_filename(self):
+        from .base import env_override
+        # "*": {} covers playlist so this test isolates the media_format
+        # check itself, not the type-coverage requirement (see
+        # test_uncovered_type_is_unavailable below).
+        with env_override(
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS='{"*": {}, "channel": {"media_format": "{not_a_real_format_key}"}}',
+        ):
+            component = readiness.check_source_defaults()
+        self.assertEqual(component['status'], 'unavailable')
+
+    def test_uncovered_type_is_unavailable(self):
+        '''
+            A type named by neither its own key nor "*" is a
+            configuration error, not a silent "no overrides" -- see
+            config.source_defaults()'s docstring.
+        '''
+        from .base import env_override
+        with env_override(
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS='{"channel": {"write_nfo": true}}',
+        ):
+            component = readiness.check_source_defaults()
+        self.assertEqual(component['status'], 'unavailable')
+        self.assertIn('playlist', component['detail'])
+
+    def test_never_echoes_the_raw_env_value_in_detail(self):
+        from .base import env_override
+        secret_marker = 'super-secret-path-marker-should-not-leak'
+        with env_override(
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=(
+                '{"*": {}, "channel": {"media_format": "' + secret_marker + '-{not_a_real_format_key}"}}'
+            ),
+        ):
+            component = readiness.check_source_defaults()
+        self.assertEqual(component['status'], 'unavailable')
+        self.assertNotIn(secret_marker, component['detail'])
+
+    def test_registered_in_checks_and_degrades_overall_status(self):
+        self.assertIn('sourceDefaults', readiness.CHECKS)
+        components = {name: readiness._status('healthy') for name in readiness.CHECKS}
+        components['sourceDefaults'] = readiness._status('unavailable', detail='bad config')
+        self.assertEqual(readiness.aggregate_status(components), 'degraded')

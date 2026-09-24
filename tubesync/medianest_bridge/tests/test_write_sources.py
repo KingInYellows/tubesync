@@ -13,6 +13,7 @@ from django.utils import timezone
 from common.models import TaskHistory
 from sync.models import Media, Source
 
+from .. import config
 from .base import BridgeTestCase, BridgeTransactionTestCase
 from .test_endpoints import assert_matches_schema
 
@@ -548,7 +549,7 @@ class CreateSourceRaceConditionTestCase(BridgeTransactionTestCase):
         original_build_source_form = views_write.build_source_form
         created = {}
 
-        def build_source_form_with_injected_race(*, source_type, key, name, directory):
+        def build_source_form_with_injected_race(*, source_type, key, name, directory, defaults_overlay=None):
             if 'concurrent' not in created:
                 created['concurrent'] = Source.objects.create(
                     source_type='i', key=key,
@@ -556,6 +557,7 @@ class CreateSourceRaceConditionTestCase(BridgeTransactionTestCase):
                 )
             return original_build_source_form(
                 source_type=source_type, key=key, name=name, directory=directory,
+                defaults_overlay=defaults_overlay,
             )
 
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
@@ -1032,3 +1034,171 @@ class BodySizeHardeningOnWriteRoutesTestCase(BridgeTestCase):
         }
         response = post_json(self.client, VALIDATE_URL, big_body, **self.auth_header())
         self.assertEqual(response.status_code, 413)
+
+
+class SourceDefaultsCreateTestCase(BridgeTestCase):
+    '''
+        T3: MEDIANEST_BRIDGE_SOURCE_DEFAULTS applied at create time. See
+        test_config.py for source_defaults()/validate_source_defaults()
+        unit tests and test_readiness.py for the sourceDefaults
+        component -- this class only checks the end-to-end wiring through
+        POST /sources.
+    '''
+
+    def _valid_channel_body(self, **overrides):
+        body = {
+            'sourceType': 'channel',
+            'canonicalKey': 'UCabcdefghijklmnopqrstuv',
+            'canonicalUrl': 'https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv',
+            'name': 'Test Channel',
+            'directory': 'test_channel',
+        }
+        body.update(overrides)
+        return body
+
+    def _valid_playlist_body(self, **overrides):
+        body = {
+            'sourceType': 'playlist',
+            'canonicalKey': 'PLabcdefghij',
+            'canonicalUrl': 'https://www.youtube.com/playlist?list=PLabcdefghij',
+            'name': 'Test Playlist',
+            'directory': 'test_playlist',
+        }
+        body.update(overrides)
+        return body
+
+    def test_unset_env_applies_builtin_profile_to_channel(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        response = post_json(self.client, SOURCES_URL, self._valid_channel_body(), **self.auth_header())
+        self.assertEqual(response.status_code, 201)
+        source = Source.objects.get()
+        self.assertTrue(source.write_nfo)
+        self.assertTrue(source.copy_thumbnails)
+        self.assertTrue(source.copy_channel_images)
+        self.assertFalse(source.index_streams)
+        self.assertEqual(source.media_format, config._BUILTIN_SOURCE_DEFAULTS_PROFILE['media_format'])
+
+    def test_unset_env_applies_builtin_profile_to_playlist(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        response = post_json(self.client, SOURCES_URL, self._valid_playlist_body(), **self.auth_header())
+        self.assertEqual(response.status_code, 201)
+        source = Source.objects.get()
+        self.assertTrue(source.write_nfo)
+        self.assertTrue(source.copy_thumbnails)
+        self.assertTrue(source.copy_channel_images)
+        self.assertFalse(source.index_streams)
+        self.assertEqual(source.media_format, config._BUILTIN_SOURCE_DEFAULTS_PROFILE['media_format'])
+
+    def test_empty_object_escape_hatch_uses_plain_model_defaults(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false', MEDIANEST_BRIDGE_SOURCE_DEFAULTS='{}')
+        response = post_json(self.client, SOURCES_URL, self._valid_channel_body(), **self.auth_header())
+        self.assertEqual(response.status_code, 201)
+        source = Source.objects.get()
+        blank = Source()
+        self.assertEqual(source.write_nfo, blank.write_nfo)
+        self.assertEqual(source.copy_thumbnails, blank.copy_thumbnails)
+        self.assertEqual(source.copy_channel_images, blank.copy_channel_images)
+        self.assertEqual(source.media_format, blank.media_format)
+
+    def test_per_type_overlay_only_affects_that_type(self):
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_READ_ONLY='false',
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps({
+                'channel': {'write_nfo': True},
+                'playlist': {},
+            }),
+        )
+        channel_response = post_json(self.client, SOURCES_URL, self._valid_channel_body(), **self.auth_header())
+        playlist_response = post_json(self.client, SOURCES_URL, self._valid_playlist_body(), **self.auth_header())
+        self.assertEqual(channel_response.status_code, 201)
+        self.assertEqual(playlist_response.status_code, 201)
+        channel = Source.objects.get(source_type='i')
+        playlist = Source.objects.get(source_type='p')
+        self.assertTrue(channel.write_nfo)
+        blank = Source()
+        self.assertEqual(playlist.write_nfo, blank.write_nfo)
+
+    def test_star_block_merges_under_both_types(self):
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_READ_ONLY='false',
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps({'*': {'write_nfo': True}}),
+        )
+        channel_response = post_json(self.client, SOURCES_URL, self._valid_channel_body(), **self.auth_header())
+        playlist_response = post_json(self.client, SOURCES_URL, self._valid_playlist_body(), **self.auth_header())
+        self.assertEqual(channel_response.status_code, 201)
+        self.assertEqual(playlist_response.status_code, 201)
+        self.assertTrue(Source.objects.get(source_type='i').write_nfo)
+        self.assertTrue(Source.objects.get(source_type='p').write_nfo)
+
+    def test_invalid_json_config_returns_503_and_persists_nothing(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false', MEDIANEST_BRIDGE_SOURCE_DEFAULTS='{not json')
+        response = post_json(self.client, SOURCES_URL, self._valid_channel_body(), **self.auth_header())
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(json.loads(response.content)['code'], 'PROVIDER_UNAVAILABLE')
+        self.assertEqual(Source.objects.count(), 0)
+
+    def test_unknown_field_config_returns_503_and_persists_nothing(self):
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_READ_ONLY='false',
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps({'channel': {'not_a_real_field': True}}),
+        )
+        response = post_json(self.client, SOURCES_URL, self._valid_channel_body(), **self.auth_header())
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(json.loads(response.content)['code'], 'PROVIDER_UNAVAILABLE')
+        self.assertEqual(Source.objects.count(), 0)
+
+    def test_forbidden_field_config_returns_503_and_persists_nothing(self):
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_READ_ONLY='false',
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps({'channel': {'directory': 'nope'}}),
+        )
+        response = post_json(self.client, SOURCES_URL, self._valid_channel_body(), **self.auth_header())
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(json.loads(response.content)['code'], 'PROVIDER_UNAVAILABLE')
+        self.assertEqual(Source.objects.count(), 0)
+
+    def test_invalid_media_format_in_config_returns_503_and_persists_nothing(self):
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_READ_ONLY='false',
+            # "*": {} covers playlist so this isolates the media_format
+            # check itself, not the type-coverage requirement (see
+            # test_uncovered_type_config_returns_503_and_persists_nothing
+            # below).
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps(
+                {'*': {}, 'channel': {'media_format': '{not_a_real_format_key}'}},
+            ),
+        )
+        response = post_json(self.client, SOURCES_URL, self._valid_channel_body(), **self.auth_header())
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(json.loads(response.content)['code'], 'PROVIDER_UNAVAILABLE')
+        self.assertEqual(Source.objects.count(), 0)
+
+    def test_uncovered_type_config_returns_503_and_persists_nothing(self):
+        '''
+            A MEDIANEST_BRIDGE_SOURCE_DEFAULTS object that configures
+            `channel` but leaves `playlist` covered by neither its own
+            key nor "*" must fail loudly -- an operator who configures
+            only `channel` must not have `playlist` sources silently
+            created on plain model defaults with no signal that anything
+            is different for that type.
+        '''
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_READ_ONLY='false',
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps({'channel': {'write_nfo': True}}),
+        )
+        response = post_json(self.client, SOURCES_URL, self._valid_playlist_body(), **self.auth_header())
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(json.loads(response.content)['code'], 'PROVIDER_UNAVAILABLE')
+        self.assertEqual(Source.objects.count(), 0)
+
+    def test_invalid_config_error_never_leaks_env_value(self):
+        secret_marker = 'super-secret-path-marker-should-not-leak'
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_READ_ONLY='false',
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps(
+                {'*': {}, 'channel': {'media_format': secret_marker + '-{not_a_real_format_key}'}},
+            ),
+        )
+        response = post_json(self.client, SOURCES_URL, self._valid_channel_body(), **self.auth_header())
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn(secret_marker, response.content.decode('utf-8'))

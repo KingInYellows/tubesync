@@ -12,14 +12,16 @@ import json
 from django.db import IntegrityError, transaction
 from django.http import JsonResponse
 
+from common.logger import log
 from sync.models import Source
 
-from . import mapping
+from . import config, mapping
 from .errors import error_response
 from .request_schemas import validate_create_source_request, validate_validate_source_request
 from .source_forms import (
     build_source_form,
     contract_source_type_to_tubesync,
+    extract_form_errors,
     run_edit_source_checks,
     validate_canonical_url,
     validate_source_type_and_key,
@@ -65,27 +67,6 @@ def _invalid(request_id, errors):
         request_id=request_id,
         retryable=False,
     )
-
-
-def _clean_form_errors(form):
-    '''
-        T4 verifier MEDIUM fix: str(form.errors) renders as Django's own
-        HTML (`<ul class="errorlist">...</ul>`) -- the verifier
-        reproduced this live in a POST /sources response. This extracts
-        plain-text "field: message" strings instead, via
-        ErrorDict.get_json_data() (Django's own API for exactly this --
-        JSON/API consumers, not HTML rendering). The messages themselves
-        still flow through error_response()'s universal
-        sanitize_error_message() call at the envelope construction
-        point, same as any other detail string -- this function's job is
-        only to stop emitting markup, not to sanitize (that happens once,
-        downstream, for every error response, not per call site).
-    '''
-    messages = []
-    for field, field_errors in form.errors.get_json_data().items():
-        for error in field_errors:
-            messages.append(f'{field}: {error["message"]}')
-    return messages
 
 
 class ValidateSourceView(BridgeView):
@@ -174,6 +155,15 @@ class CreateSourceView(SourceLookupView):
         This is deliberate (ADR-0006 Sec.4: "created source uses TubeSync's
         own model defaults/media-profile behavior") -- validate never
         triggers any of this; create always does.
+
+        Fields not supplied by the request (media format, write_nfo,
+        copy_thumbnails/copy_channel_images, index_streams, etc.) use
+        TubeSync's own Source model defaults overlaid with this bridge's
+        own configured profile (T3: config.source_defaults(), env var
+        MEDIANEST_BRIDGE_SOURCE_DEFAULTS) -- see build_source_form()'s
+        `defaults_overlay` parameter. A broken profile fails this whole
+        endpoint with 503 PROVIDER_UNAVAILABLE (_source_defaults_unavailable()
+        below) rather than silently reverting to plain model defaults.
     '''
 
     def post(self, request, *args, **kwargs):
@@ -198,6 +188,26 @@ class CreateSourceView(SourceLookupView):
         if url_errors:
             return _invalid(request_id, url_errors)
 
+        # T3: MEDIANEST_BRIDGE_SOURCE_DEFAULTS is this bridge's own
+        # configuration, not something the caller can fix by changing
+        # their request -- checked before any DB query below, and
+        # returned as a distinct 5xx (never the caller-error 400 the
+        # checks above use) so "my request is malformed" and "the bridge
+        # is misconfigured" are never conflated. Never falls back to
+        # plain model defaults silently: a broken overlay blocks every
+        # create until an operator fixes it, matching the
+        # `sourceDefaults` readiness component reporting the same
+        # failure (config.py's validate_source_defaults() is the single
+        # implementation both call).
+        defaults_errors = config.validate_source_defaults()
+        if defaults_errors:
+            log.error(
+                'medianest_bridge: refusing POST /sources -- '
+                'MEDIANEST_BRIDGE_SOURCE_DEFAULTS is invalid: %s',
+                '; '.join(defaults_errors),
+            )
+            return _source_defaults_unavailable(request_id)
+
         existing = Source.objects.filter(key=canonical_key).first()
         if existing:
             return _conflict(request_id, existing)
@@ -209,9 +219,10 @@ class CreateSourceView(SourceLookupView):
         if namespace_conflict:
             return _namespace_conflict(request_id)
 
+        defaults_overlay = config.source_defaults()[contract_source_type]
         form = build_source_form(
             source_type=tubesync_source_type, key=canonical_key,
-            name=name, directory=directory,
+            name=name, directory=directory, defaults_overlay=defaults_overlay,
         )
         if not form.is_valid():
             # A concurrent create may have won the actual DB-level
@@ -240,11 +251,11 @@ class CreateSourceView(SourceLookupView):
                 or Source.objects.filter(directory=directory).exists()
             ):
                 return _namespace_conflict(request_id)
-            return _invalid(request_id, _clean_form_errors(form))
+            return _invalid(request_id, extract_form_errors(form))
 
         run_edit_source_checks(form)
         if not form.is_valid():
-            return _invalid(request_id, _clean_form_errors(form))
+            return _invalid(request_id, extract_form_errors(form))
 
         try:
             source = form.save()
@@ -278,6 +289,40 @@ def _conflict(request_id, existing_source):
         request_id=request_id,
         retryable=False,
         extra={'existingSourceUuid': str(existing_source.pk)},
+    )
+
+
+def _source_defaults_unavailable(request_id):
+    '''
+        The contract's Error.code enum (bridge-openapi.v1.yaml) has no
+        code that specifically means "the bridge's own server-side
+        configuration is broken" -- PROVIDER_UNAVAILABLE is the closest
+        honest fit: it already covers the structurally identical
+        "the bridge cannot safely serve this request because of its own
+        configuration state" case for a missing/unreadable
+        MEDIANEST_BRIDGE_TOKEN_FILE (BridgeView._run_gates()'s 503, same
+        code). INTERNAL_PROVIDER_ERROR was considered and rejected: its
+        contract description and this app's own use of it (views.py's
+        catch-all) are for genuinely unexpected/unhandled failures, not a
+        known, named, operator-fixable configuration problem this app
+        detected and can describe precisely. Adding a new enum value was
+        also considered and rejected for this slice -- it would require a
+        contract change for a condition an existing code already
+        describes honestly; see this PR's own description for the fuller
+        reasoning.
+    '''
+    return error_response(
+        status=503,
+        code='PROVIDER_UNAVAILABLE',
+        title='Bridge source defaults misconfigured',
+        detail=(
+            'The bridge cannot create sources until its own '
+            'MEDIANEST_BRIDGE_SOURCE_DEFAULTS configuration is fixed; see '
+            "this bridge's GET /health/ready sourceDefaults component "
+            'for the specific error(s).'
+        ),
+        request_id=request_id,
+        retryable=True,
     )
 
 
