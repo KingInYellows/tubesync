@@ -34,7 +34,7 @@ signal-driven task scheduling.
 
 ## Fork delta
 
-Six upstream files are touched at seven points (`settings.py` twice), five of the seven minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
+Seven upstream files are touched at eight points (`settings.py` twice), six of the eight minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
 
 1. `tubesync/tubesync/settings.py` -- `INSTALLED_APPS += 'medianest_bridge'`.
 2. `tubesync/tubesync/urls.py` -- one `include('medianest_bridge.urls')` at
@@ -56,24 +56,38 @@ Six upstream files are touched at seven points (`settings.py` twice), five of th
    an existing multi-line `ENV`, no new `ENV` instruction). Empty by
    default, so every image build that doesn't pass the build-arg behaves
    identically to every pre-T5 build. See "Compatibility reporting" below.
-6. `sync/models/media.py` (T1) -- adds a module-level `_aware_utc`
-   helper and new members `Media.episode_date`, `Media.title_full_bounded`,
-   `Media._same_day_index`, `Media._episode_mmdd_and_index`,
-   `Media.episode_yyyy`, `Media.episode_mmddnn` and
-   `Media.nfo_episode_number`. Two existing method bodies change:
-   `format_dict` gains three new keys, and `nfoxml` computes
-   `<season>`/`<episode>` from the episode date (previously
+6. `sync/models/media.py` (T1, T2) -- T1 adds a module-level
+   `_aware_utc` helper and new members `Media.episode_date`,
+   `Media.title_full_bounded`, `Media._same_day_index`,
+   `Media._episode_mmdd_and_index`, `Media.episode_yyyy`,
+   `Media.episode_mmddnn` and `Media.nfo_episode_number`. Two existing
+   method bodies change: `format_dict` gains three new keys, and `nfoxml`
+   computes `<season>`/`<episode>` from the episode date (previously
    `upload_date.year` / `calculate_episode_number()`) for channels and for
    playlists whose `media_format` uses `{episode_mmddnn}` (every
    bridge-created playlist), so the NFO matches the filename. Other
    playlists keep the pre-T1 values: season `1`, episode
-   `calculate_episode_number()`.
+   `calculate_episode_number()`. T2 additionally changes `nfoxml`'s
+   `<showtitle>` from `source.name` to `sync/tvshow_nfo.py`'s
+   `resolve_show_title()` (a local import inside the method, to avoid a
+   circular import with the new module -- see that module's own
+   docstring), so an episode's `<showtitle>` always agrees with its
+   `tvshow.nfo`'s `<title>`.
 7. `sync/models/source.py` (T1) -- adds the same three keys
    (`episode_yyyy`, `episode_mmddnn`, `title_full_bounded`) to the dict
    `example_media_format_dict` returns, required for
    `get_example_media_format()` (and so `run_edit_source_checks`) to accept
    a `media_format` that uses them. That is the only change to its body;
    no existing keys change.
+8. `sync/tasks.py` (T2) -- one new import (`sync/tvshow_nfo.py`'s
+   `write_tvshow_nfo`) and two call sites: the end of `index_source()` and
+   the end of `download_source_images()`, each just `write_tvshow_nfo
+   (source)`. No existing logic in either task is changed, reordered, or
+   made conditional on the new call.
+
+`sync/tvshow_nfo.py` (T2) is a new, wholly fork-owned module (like
+`medianest_bridge/` itself), not an upstream touch point -- it is not
+counted above.
 
 Everything else the bridge needs is imported (models,
 `common.utils.getenv`, `common.logger.log`, `sync.tasks` helpers), never
@@ -543,7 +557,7 @@ public), satisfying AGPLv3 §13's network-use clause.
 fork; it is not present in upstream `meeb/tubesync` at the pinned
 upstream-base commit (`medianest_bridge/docs/UPSTREAM_SHA`). It is
 licensed identically to the rest of this repository, AGPLv3, under the
-unmodified `LICENSE` at the repository root. The six upstream files this
+unmodified `LICENSE` at the repository root. The seven upstream files this
 fork's delta touches ("Fork delta" section above) remain licensed as
 upstream TubeSync itself is licensed, modified only as that section
 describes. See `medianest_bridge/docs/agpl-compliance.md` for the full
