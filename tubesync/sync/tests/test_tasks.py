@@ -1,11 +1,13 @@
 import json
 import logging
+import uuid
 from collections import deque
 from datetime import timedelta
 from unittest.mock import patch
 from PIL import Image
 from django.test import TestCase, override_settings
 from django.utils import timezone
+from common.models import TaskHistory
 from sync.choices import (
     Fallback, SourceResolution, Val, YouTube_AudioCodec, YouTube_SourceType, YouTube_VideoCodec,
 )
@@ -25,6 +27,31 @@ def download_task_has_override(media):
     # is repr(task_obj.kwargs), a string, not a real dict.
     tasks = get_model_tasks(str(media.pk), name='download_media_file')
     return any("'override': True" in (t.task_params[1] or '') for t in tasks)
+
+
+def make_download_media_file_task(media, *, start_at, end_at=None, failed_at=None):
+    '''
+        Builds a raw download_media_file TaskHistory row with a chosen
+        lifecycle state, matching common/models/tasks.py::th_schedule()'s
+        and common/huey.py::historical_task()'s own shape:
+
+          pending (never run):  start_at=None
+          running:               start_at == end_at
+          finished (success or
+          failure-without-retry): start_at is set and start_at != end_at
+
+        (see has_incomplete_task()'s docstring in sync/tasks.py).
+    '''
+    now = timezone.now()
+    return TaskHistory.objects.create(
+        task_id=str(uuid.uuid4()),
+        name='sync.tasks.download_media_file',
+        task_params=[[str(media.pk)], '{}'],
+        start_at=start_at,
+        end_at=end_at if end_at is not None else now,
+        scheduled_at=now,
+        failed_at=failed_at,
+    )
 
 class TasksTestCase(TestCase):
 
@@ -219,6 +246,77 @@ class ManualActionBypassesIndexOnlyGuardTestCase(TestCase):
         # only the plain automatic one.
         self.assertFalse(download_task_has_override(media))
         self.assertTrue(get_model_tasks(str(media.pk), name='download_media_file').exists())
+
+    def _make_index_only_source_and_media(self, *, key_suffix):
+        source = Source.objects.create(
+            key=f'ro-manual-chain-{key_suffix}', name=f'ro-manual-chain-{key_suffix}',
+            directory=f'/tmp/ro-manual-chain-{key_suffix}',
+            download_media=False,
+            source_resolution=Val(SourceResolution.VIDEO_1080P),
+            source_vcodec=Val(YouTube_VideoCodec.VP9),
+            source_acodec=Val(YouTube_AudioCodec.OPUS),
+            prefer_60fps=False,
+            prefer_hdr=False,
+            fallback=Val(Fallback.FAIL),
+        )
+        media = Media.objects.create(
+            source=source, key=f'vid-manual-chain-{key_suffix}',
+            title=f'Vid Manual Chain {key_suffix}', published=timezone.now(),
+        )
+        return source, media
+
+    def test_manual_download_chain_ignores_a_finished_download_task(self):
+        # A download_media_file row from an earlier, now-finished attempt
+        # (succeeded, or failed with no retry pending: start_at is set
+        # and no longer equal to end_at) is kept for
+        # COMPLETED_TASKS_DAYS_TO_KEEP days and must not block scheduling
+        # a fresh manual download.
+        source, media = self._make_index_only_source_and_media(key_suffix='finished')
+        past = timezone.now() - timedelta(days=1)
+        make_download_media_file_task(media, start_at=past, end_at=past + timedelta(minutes=5))
+
+        fake_response = json.loads(all_test_metadata['minimal'])
+        with patch.object(Media, 'index_metadata', return_value=fake_response):
+            download_media_metadata.call_local(str(media.pk), manual=True)
+
+        media.refresh_from_db()
+        self.assertTrue(media.can_download)
+        self.assertTrue(download_task_has_override(media))
+
+    def test_manual_download_chain_ignores_a_failed_download_task(self):
+        source, media = self._make_index_only_source_and_media(key_suffix='failed')
+        past = timezone.now() - timedelta(days=1)
+        failed_at = past + timedelta(minutes=5)
+        make_download_media_file_task(media, start_at=past, end_at=failed_at, failed_at=failed_at)
+
+        fake_response = json.loads(all_test_metadata['minimal'])
+        with patch.object(Media, 'index_metadata', return_value=fake_response):
+            download_media_metadata.call_local(str(media.pk), manual=True)
+
+        media.refresh_from_db()
+        self.assertTrue(media.can_download)
+        self.assertTrue(download_task_has_override(media))
+
+    def test_manual_download_chain_is_blocked_by_a_pending_download_task(self):
+        source, media = self._make_index_only_source_and_media(key_suffix='pending')
+        # Pending: never started (start_at is None).
+        make_download_media_file_task(media, start_at=None)
+        self.assertEqual(
+            get_model_tasks(str(media.pk), name='download_media_file').count(), 1,
+        )
+
+        fake_response = json.loads(all_test_metadata['minimal'])
+        with patch.object(Media, 'index_metadata', return_value=fake_response):
+            download_media_metadata.call_local(str(media.pk), manual=True)
+
+        media.refresh_from_db()
+        self.assertTrue(media.can_download)
+        # No second, override=True task was added on top of the existing
+        # pending one.
+        self.assertEqual(
+            get_model_tasks(str(media.pk), name='download_media_file').count(), 1,
+        )
+        self.assertFalse(download_task_has_override(media))
 
     def test_manual_thumbnail_fetch_bypasses_guard(self):
         source = Source.objects.create(

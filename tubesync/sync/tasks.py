@@ -17,6 +17,7 @@ from datetime import timedelta
 from shutil import copyfile, rmtree
 from django import db
 from django.conf import settings
+from django.db.models import F, Q
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
@@ -175,6 +176,25 @@ def get_media_download_task(media_id):
 def get_media_thumbnail_task(media_id):
     tqs = get_running_tasks_by_name('download_media_image', media_id)
     return tqs.first() or False
+
+def has_incomplete_task(model_pk, /, name=None):
+    '''
+        True when a TaskHistory row for this model/name is still pending
+        (never run: start_at is NULL) or currently running (start_at ==
+        end_at, per TaskHistoryQuerySet.running()'s own definition).
+
+        Unlike get_model_tasks(model_pk, name=name).exists(), this does
+        NOT match a row that has moved past its own execution start --
+        common/huey.py's historical_task() touches end_at unconditionally
+        on every signal, so a row that finished (succeeded, or failed
+        with no further retry pending) permanently has start_at != end_at
+        from that point on, yet still matches get_model_tasks() for as
+        long as it is kept (COMPLETED_TASKS_DAYS_TO_KEEP, default 7 days).
+        Callers deciding whether to schedule a fresh task must not treat
+        such an old, finished row as "still in progress".
+    '''
+    qs = get_model_tasks(model_pk, name=name)
+    return qs.filter(Q(start_at__isnull=True) | Q(start_at=F('end_at'))).exists()
 
 def get_source_index_task(source_id):
     tqs = get_running_tasks_by_name('index_source', source_id)
@@ -1002,7 +1022,7 @@ def download_media_metadata(media_id, manual=False):
         manual and
         media.can_download and
         not source.download_media and
-        not get_model_tasks(str(media.pk), name='download_media_file').exists()
+        not has_incomplete_task(str(media.pk), name='download_media_file')
     ):
         # media_post_save() (triggered by media.save() above) recalculated
         # can_download from the metadata we just fetched, but its own
@@ -1014,6 +1034,11 @@ def download_media_metadata(media_id, manual=False):
         # the same way MediaRedownloadView does for media that already
         # had metadata (override=True bypasses
         # Media.download_checklist()'s own source.download_media check).
+        # has_incomplete_task() (not get_model_tasks().exists()) is
+        # deliberate: an earlier download_media_file row that already
+        # finished -- succeeded, or failed with no retry pending -- is
+        # kept for COMPLETED_TASKS_DAYS_TO_KEEP days and must not block
+        # scheduling a fresh manual download.
         log.info(
             f'Manually-fetched metadata for: {media} (UUID: {media.pk}) makes it '
             f'downloadable; scheduling a manual download.'
