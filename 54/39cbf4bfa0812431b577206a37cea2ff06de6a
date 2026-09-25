@@ -1,0 +1,34 @@
+tubesync/sync/tvshow_nfo.py
+  s_f159128495b6f4::t_72dc6d995cce12 244,252-258,263
+tubesync/sync/tests/test_backfill_plex_sidecars.py
+  s_f159128495b6f4::t_aa766abe1495f4 457-541
+  s_f159128495b6f4::t_c578469bf34d3c 134-152
+  s_f159128495b6f4::t_e3081a23a5243d 23
+  s_f159128495b6f4::t_d694b6d56c0717 712-727
+tubesync/sync/management/commands/medianest_backfill_plex_sidecars.py
+  s_f159128495b6f4::t_398af66eea53e8 516-526,528
+  s_f159128495b6f4::t_d08b31035f2ddb 256
+  s_f159128495b6f4::t_9bcf0e27fbac74 303
+  s_f159128495b6f4::t_a088e65fd7a39b 275,277-278
+  s_f159128495b6f4::t_81eda4e579771b 417-421,426,428-431,443-461,476-477
+  s_f159128495b6f4::t_abe0f4e6544095 31-34
+  s_f159128495b6f4::t_ced14cfbcf8a89 510-511,514-515,527,529-535
+  s_f159128495b6f4::t_d5f567e2ebf27d 592,604-615,618,620-632
+  s_f159128495b6f4::t_fabaf7079c2791 536
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "5439cbf4bfa0812431b577206a37cea2ff06de6a",
+  "prompts": {},
+  "sessions": {
+    "s_f159128495b6f4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c35119a3-8856-4de8-ac32-3299b4a1c9e4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}

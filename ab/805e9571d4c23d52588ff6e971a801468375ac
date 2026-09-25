@@ -1,0 +1,21 @@
+tubesync/sync/management/commands/medianest_backfill_plex_sidecars.py
+  s_237fbbbabfe3a4::t_d3c881e28865e8 33-40,82,85-86,327-328,331-345,367-372,409,414-417,432-449
+tubesync/sync/tests/test_backfill_plex_sidecars.py
+  s_237fbbbabfe3a4::t_2eb184daefbed6 387-421,509-529
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "ab805e9571d4c23d52588ff6e971a801468375ac",
+  "prompts": {},
+  "sessions": {
+    "s_237fbbbabfe3a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2373b7aa-381c-4fe7-83a0-be4487388411",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
