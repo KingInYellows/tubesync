@@ -265,6 +265,14 @@ class WriteTvshowNfoTestCase(TestCase):
                 self._nfo_path().read_text(encoding='utf-8'), episode,
             )
 
+    def test_a_tvshow_nfo_it_did_not_write_is_left_alone(self):
+        manual = '<tvshow><title>Hand written</title></tvshow>'
+        with temp_download_root():
+            self.source.make_directory()
+            self._nfo_path().write_text(manual, encoding='utf-8')
+            write_tvshow_nfo(self.source)
+            self.assertEqual(self._nfo_path().read_text(encoding='utf-8'), manual)
+
     def test_missing_directory_is_skipped_without_raising(self):
         with temp_download_root():
             self.assertFalse(self.source.directory_path.exists())

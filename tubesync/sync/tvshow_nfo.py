@@ -181,22 +181,34 @@ def build_tvshow_nfo(source):
     return ElementTree.tostring(nfo, encoding='utf8', method='xml').decode('utf8')
 
 
-def _holds_another_nfo(nfo_path):
+def _foreign_nfo_reason(nfo_path, source):
     '''
-        True when `nfo_path` holds a well-formed NFO whose root is not
-        `<tvshow>`. A `media_format` whose filename renders to `tvshow`
-        makes a video's own `<episodedetails>` sidecar land on this path;
-        overwriting it would leave the two writers replacing each other's
-        file on every run, so the episode's sidecar wins and the show NFO
-        is skipped.
+        Why the well-formed file at `nfo_path` is not this writer's to
+        replace, or None when it is (absent, unparseable, or a `<tvshow>`
+        carrying this source's `<uniqueid type="youtube">`, which only this
+        writer emits):
+          - another root, such as a video's own `<episodedetails>` from a
+            `media_format` that renders a filename as `tvshow`; overwriting
+            it would leave the two writers replacing each other's file;
+          - any other `<tvshow>`, such as one written by hand or by the
+            upstream `create-tvshow-nfo` command, which never overwrites.
     '''
     if not nfo_path.exists():
-        return False
+        return None
     try:
         root = ElementTree.fromstring(nfo_path.read_bytes())
     except ElementTree.ParseError:
-        return False
-    return root.tag != 'tvshow'
+        return None
+    if root.tag != 'tvshow':
+        return (
+            'it holds another NFO (does media_format render a video '
+            'filename as "tvshow"?)'
+        )
+    key = str(source.key).strip()
+    for uniqueid in root.iter('uniqueid'):
+        if uniqueid.get('type') == 'youtube' and (uniqueid.text or '').strip() == key:
+            return None
+    return 'it is a tvshow.nfo this writer did not create'
 
 
 def write_tvshow_nfo(source):
@@ -242,11 +254,9 @@ def write_tvshow_nfo(source):
         content = build_tvshow_nfo(source)
         if nfo_path.exists() and nfo_path.read_bytes() == content.encode('utf-8'):
             return
-        if _holds_another_nfo(nfo_path):
-            log.warning(
-                f'Not writing tvshow.nfo for: {source}: {nfo_path} holds another '
-                'NFO (does media_format render a video filename as "tvshow"?)'
-            )
+        reason = _foreign_nfo_reason(nfo_path, source)
+        if reason:
+            log.warning(f'Not writing tvshow.nfo for: {source}: {reason}')
             return
         log.info(f'Writing tvshow.nfo for: {source}')
         write_text_file(nfo_path, content)
