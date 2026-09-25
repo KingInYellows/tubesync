@@ -108,8 +108,8 @@ SOURCE_DEFAULTS_FORBIDDEN_FIELDS = frozenset({
 def allowed_source_default_fields():
     '''
         Every SourceForm field a MEDIANEST_BRIDGE_SOURCE_DEFAULTS overlay
-        may set: SourceForm.base_fields minus the four the create contract
-        owns (SOURCE_DEFAULTS_FORBIDDEN_FIELDS). Kept here rather than in
+        may set: SourceForm.base_fields minus
+        SOURCE_DEFAULTS_FORBIDDEN_FIELDS. Kept here rather than in
         config.py because SourceForm's field set is this module's own
         concern (default_form_data() already reads it the same way).
     '''
