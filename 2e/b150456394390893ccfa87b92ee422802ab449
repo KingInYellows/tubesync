@@ -1,0 +1,35 @@
+tubesync/sync/models/media.py
+  s_6790353d565094::t_e5435df090784e 52-61,74-75,79-138
+  s_6790353d565094::t_aec24c3b5decc5 691-701
+  s_6790353d565094::t_a69ef303bdce93 1369-1405,1412-1413,1416,1419,1421,1424,1426-1429,1431-1504,1541
+  s_6790353d565094::t_45dc2bb90aa688 169-171
+  s_6790353d565094::t_6165247718bbbd 4,139-140,916-917,925,929-931,985,1347-1348,1517-1518,1536,1538-1540,1542,1565,1705-1707
+tubesync/sync/templates/sync/_mediaformatvars.html
+  s_6790353d565094::t_d87d7b62f3a763 86-100
+tubesync/medianest_bridge/README.md
+  s_6790353d565094::t_afefe98beceace 37,59-73,86-91,97,106-131,601
+tubesync/medianest_bridge/docs/agpl-compliance.md
+  s_6790353d565094::t_1cb88f747cfd89 100
+tubesync/medianest_bridge/docs/compatibility-matrix.md
+  s_6790353d565094::t_538e042fb44719 48-50
+tubesync/medianest_bridge/docs/upstream-sync.md
+  s_6790353d565094::t_26e63ddff87686 13,19,21
+tubesync/sync/tests/test_episode_numbering.py
+  s_6790353d565094::t_def2c8a9bcd60f 5-6,18-19,21,28,38-42,122-124,615-998
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "2eb150456394390893ccfa87b92ee422802ab449",
+  "prompts": {},
+  "sessions": {
+    "s_6790353d565094": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d88f8383-3f7d-42ae-80fd-a2f5940fe795",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
