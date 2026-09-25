@@ -197,9 +197,12 @@ class CreateSourceView(SourceLookupView):
         # plain model defaults silently: a broken overlay blocks every
         # create until an operator fixes it, matching the
         # `sourceDefaults` readiness component reporting the same
-        # failure (config.py's validate_source_defaults() is the single
-        # implementation both call).
-        defaults_errors = config.validate_source_defaults()
+        # failure (config.py's load_validated_source_defaults() is the
+        # single implementation both call; its parsed overlays are reused
+        # below, so the env var is read once per request).
+        defaults_by_type, defaults_errors = (
+            config.load_validated_source_defaults()
+        )
         if defaults_errors:
             log.error(
                 'medianest_bridge: refusing POST /sources -- '
@@ -219,7 +222,7 @@ class CreateSourceView(SourceLookupView):
         if namespace_conflict:
             return _namespace_conflict(request_id)
 
-        defaults_overlay = config.source_defaults()[contract_source_type]
+        defaults_overlay = defaults_by_type[contract_source_type]
         form = build_source_form(
             source_type=tubesync_source_type, key=canonical_key,
             name=name, directory=directory, defaults_overlay=defaults_overlay,

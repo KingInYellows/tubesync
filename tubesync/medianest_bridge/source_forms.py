@@ -93,12 +93,16 @@ _ERRORS = {
 # ad hoc at each call site.
 _LIST_SHAPED_FIELDS = {'sponsorblock_categories'}
 
-# T3: fields a MEDIANEST_BRIDGE_SOURCE_DEFAULTS overlay may never set --
-# these are the four fields the create contract itself always supplies
+# T3: fields a MEDIANEST_BRIDGE_SOURCE_DEFAULTS overlay may never set, and
+# that config.source_defaults() rejects outright if named in an overlay:
+# the four fields the create contract itself always supplies
 # (CreateSourceRequest's sourceType/canonicalKey/name/directory, mapped by
-# build_source_form() below) and that config.source_defaults() rejects
-# outright if named in an overlay.
-SOURCE_DEFAULTS_FORBIDDEN_FIELDS = frozenset({'source_type', 'key', 'name', 'directory'})
+# build_source_form() below), plus target_schedule -- one fixed timestamp
+# is meaningless as a default for every source, and a null/"" value passes
+# the never-saved synthetic form check yet fails every create's INSERT.
+SOURCE_DEFAULTS_FORBIDDEN_FIELDS = frozenset({
+    'source_type', 'key', 'name', 'directory', 'target_schedule',
+})
 
 
 def allowed_source_default_fields():
@@ -110,6 +114,19 @@ def allowed_source_default_fields():
         concern (default_form_data() already reads it the same way).
     '''
     return frozenset(SourceForm.base_fields.keys()) - SOURCE_DEFAULTS_FORBIDDEN_FIELDS
+
+
+def boolean_source_default_fields():
+    '''
+        The allowed overlay fields backed by a model BooleanField. A form
+        checkbox treats any non-empty string other than "false" as True,
+        so an overlay value like "0" or "off" would silently become True;
+        config.source_defaults() requires a JSON true/false for these.
+    '''
+    return frozenset(
+        name for name in allowed_source_default_fields()
+        if 'BooleanField' == Source._meta.get_field(name).get_internal_type()
+    )
 
 
 def contract_source_type_to_tubesync(contract_source_type):
@@ -290,6 +307,27 @@ def extract_form_errors(form):
     for field, field_errors in form.errors.get_json_data().items():
         for error in field_errors:
             messages.append(f'{field}: {error["message"]}')
+    return messages
+
+
+def extract_form_error_codes(form):
+    '''
+        Value-free "field: code" strings from form.errors, for surfacing
+        MEDIANEST_BRIDGE_SOURCE_DEFAULTS problems in readiness detail and
+        logs. Django's built-in messages can interpolate the rejected value
+        (a ChoiceField's invalid_choice is "Select a valid choice. %(value)s
+        is not one of the available choices."), so a built-in error is
+        reported by its code. The bridge's own messages (_ERRORS) carry no
+        code and are fixed strings, so they are kept. A real create's
+        errors, returned to the caller that sent the values, still use
+        extract_form_errors().
+    '''
+    messages = []
+    for field, field_errors in form.errors.get_json_data().items():
+        for error in field_errors:
+            code = error.get('code')
+            detail = code or error['message']
+            messages.append(f'{field}: {detail}')
     return messages
 
 
