@@ -13,12 +13,16 @@
     `index_source`, `download_source_images` and `download_media_metadata`
     (`sync/tasks.py`).
 '''
+import hashlib
+import re
+import threading
 import time
 from collections import OrderedDict
-from pathlib import Path
 from xml.etree import ElementTree
 
-from django.db import DatabaseError
+from django import db
+from django.core.exceptions import ObjectDoesNotExist
+from django.db import transaction
 from django.db.models import F
 
 from common.logger import log
@@ -33,6 +37,23 @@ from .utils import write_text_file
 # for the caching rationale.
 _SHOW_TITLE_CACHE_TTL_SECONDS = 60
 _show_title_cache = {}
+# source.pk -> how many times write_tvshow_nfo() invalidated it. A lookup
+# that started before an invalidation must not store its (older) result.
+_show_title_generations = {}
+_show_title_lock = threading.Lock()
+
+# How many of a source's most recently published media (with metadata) the
+# title lookup reads before giving up on the per-media tier. A freshly
+# indexed stub row can carry metadata without a channel/uploader name.
+_TITLE_MEDIA_SCAN_LIMIT = 5
+
+# The writer's own marker: `<uniqueid type="tubesync" checksum="sha256:...">`
+# holding the source's immutable uuid. The checksum covers the whole file
+# with the checksum value itself blanked, so a hand edit is detectable.
+_CHECKSUM_RE = re.compile(
+    r'(<uniqueid type="tubesync" checksum=")sha256:([0-9a-f]{64})(")',
+)
+_CHECKSUM_PLACEHOLDER = '<uniqueid type="tubesync" checksum=""'
 
 
 def _clear_show_title_cache():
@@ -41,19 +62,45 @@ def _clear_show_title_cache():
         tests (in `setUp`) so a cached entry from one test/source.pk cannot
         leak into another and make results depend on run order.
     '''
-    _show_title_cache.clear()
+    with _show_title_lock:
+        _show_title_cache.clear()
+        _show_title_generations.clear()
 
 
 def _invalidate_show_title_cache(source):
     '''
-        Drops `source`'s cached resolve_show_title() entry, if any. Called
-        by `write_tvshow_nfo()` whenever it recomputes the show's data from
-        scratch, so a stale cached title cannot outlive the fresher one
-        `write_tvshow_nfo()` just derived. A no-op for an unsaved source
-        (`pk` is `None`), which `resolve_show_title()` never caches.
+        Drops `source`'s cached resolve_show_title() entry, if any, and
+        bumps its generation so a lookup already in flight does not store
+        its older result. Called by `write_tvshow_nfo()` whenever it
+        recomputes the show's data from scratch. A no-op for an unsaved
+        source (`pk` is `None`), which `resolve_show_title()` never caches.
     '''
-    if source.pk is not None:
+    if source.pk is None:
+        return
+    with _show_title_lock:
         _show_title_cache.pop(source.pk, None)
+        _show_title_generations[source.pk] = (
+            _show_title_generations.get(source.pk, 0) + 1
+        )
+
+
+def _store_show_title(source, generation, title):
+    '''
+        Caches `title` for `source` unless it was invalidated since the
+        lookup read `generation`. Expired entries are dropped on the way,
+        so the cache never holds more than the sources used in the last
+        TTL.
+    '''
+    now = time.monotonic()
+    with _show_title_lock:
+        if _show_title_generations.get(source.pk, 0) != generation:
+            return
+        for key, (expires_at, _) in list(_show_title_cache.items()):
+            if expires_at <= now:
+                del _show_title_cache[key]
+        _show_title_cache[source.pk] = (
+            now + _SHOW_TITLE_CACHE_TTL_SECONDS, title,
+        )
 
 
 def _cached_channel_metadata(source):
@@ -63,16 +110,19 @@ def _cached_channel_metadata(source):
         NULL, keyed by the extractor's own id for that entity) via
         `Source.get_image_url` (F6), or `None` if nothing is cached yet --
         that cache is only populated once `download_source_images` has run
-        at least once for this source.
+        at least once for this source. `get_image_info` is the only writer
+        of rows with both `source` and `media` NULL, so the key alone
+        identifies it; `site` (the extractor key, `YoutubeTab`) is not
+        filtered on.
 
         This only matches directly for PLAYLIST and CHANNEL_ID sources,
         whose `Source.key` already IS that extractor id. For a handle-based
         CHANNEL source (`key` is the handle, e.g. "@somechannel"), the
         cached row's key is the resolved "UC..." id yt-dlp returns for the
         channel, which this function has no cheap (no extra network call)
-        way to learn. `resolve_show_title()`/`resolve_show_studio()` simply
-        fall through to their next tier in that case -- an accepted,
-        documented limitation, not a bug.
+        way to learn. `resolve_show_title()` simply falls through to its
+        next tier in that case -- an accepted, documented limitation, not
+        a bug.
     '''
     # Deferred import: `sync.models` is mid-import when `sync.models.media`
     # (which calls into this module) is first loaded -- see
@@ -85,22 +135,64 @@ def _cached_channel_metadata(source):
     ).order_by('-retrieved').first()
 
 
+def _clean_text(value):
+    '''`value` as text with emoji removed and whitespace stripped.'''
+    return clean_emoji(str(value or '')).strip()
+
+
+def _media_title(source):
+    '''
+        (title, retrieved) from the most recently published media that
+        carries one: its `playlist_title` for a playlist source, else its
+        `channel`/`uploader`. Reads up to `_TITLE_MEDIA_SCAN_LIMIT` rows
+        with metadata (in either the legacy `metadata` column or the
+        related `new_metadata` row), newest `published` first (NULL last,
+        then `-created`), so a stub row without the value does not hide
+        one a slightly older row has. `retrieved` is that media's
+        `new_metadata.retrieved`, or `None` when unknown. `(None, None)`
+        when none of them has one.
+    '''
+    candidates = source.media_source.exclude(
+        metadata__isnull=True, new_metadata__isnull=True,
+    ).order_by(
+        F('published').desc(nulls_last=True), '-created',
+    )[:_TITLE_MEDIA_SCAN_LIMIT]
+    for media in candidates:
+        if source.is_playlist:
+            title = _clean_text(media.playlist_title)
+        else:
+            title = _clean_text(
+                media.get_metadata_first_value(('channel', 'uploader')),
+            )
+        if title:
+            try:
+                retrieved = media.new_metadata.retrieved
+            except ObjectDoesNotExist:
+                retrieved = None
+            return title, retrieved
+    return None, None
+
+
 def _resolve_show_title_from_data(source, cached):
     '''
         Resolves a show title/studio from real channel/media data only (no
-        `source.name` fallback) -- shared by `resolve_show_title()` and
-        `resolve_show_studio()`, which should not just repeat `source.name`
-        when nothing more informative is available. `cached` is
+        `source.name` fallback), emoji removed and stripped -- used by
+        `resolve_show_title()` and `build_tvshow_nfo()`, which should not
+        just repeat `source.name` as <studio> when nothing more
+        informative is available. `cached` is
         `_cached_channel_metadata(source)`, passed in so a caller that
         needs it for several fields queries it once. Returns `None` when
-        nothing was found. Tries, in order:
-        1. The cached channel/playlist `Metadata` row's own `title`.
-        2. The media with metadata and the most recent `published` date
-           (NULL `published` sorts last, tie-broken by `-created`): its
-           `playlist_title` (for a playlist source) or `channel`/`uploader`
-           (for a channel source). Media without metadata (in neither the
-           legacy `metadata` column nor the related `new_metadata` row)
-           are skipped -- they cannot supply either value.
+        nothing was found. Two tiers:
+        1. The cached channel/playlist `Metadata` row: for a channel its
+           `channel`/`uploader` (yt-dlp's channel-page `title` carries the
+           tab, e.g. "Name - Videos", so it is only the last resort); for
+           a playlist its `title`.
+        2. `_media_title()`: the newest media's `playlist_title` (for a
+           playlist source) or `channel`/`uploader` (for a channel).
+
+        Tier 1 wins, except for a channel whose tier-2 value was retrieved
+        after the cached row: a renamed channel's new videos carry the new
+        name before `download_source_images` next refreshes the cache.
 
         Playlist tier-2 caveat (accepted limitation): per-media metadata is
         fetched from standalone `watch?v=` URLs, so `playlist_title` is
@@ -113,115 +205,150 @@ def _resolve_show_title_from_data(source, cached):
         `resolve_show_title()` falls back to `source.name` (MediaNest sets
         that from the playlist title at creation).
 
-        Not cached here: this helper is also called directly by
-        `build_tvshow_nfo()`, which always wants a fresh read. The caching
-        lives one layer up, in `resolve_show_title()` -- see its docstring.
-        Both queries here are either a unique-key lookup or an
-        already-indexed, `LIMIT 1` query -- cheap enough for that caller's
-        one-per-write cost.
+        Not cached here: `build_tvshow_nfo()` always wants a fresh read.
+        The caching lives one layer up, in `resolve_show_title()`.
     '''
+    cached_title = None
     if cached is not None:
-        title = str(cached.value.get('title', '') or '').strip()
-        if title:
-            return title
-    latest_media = source.media_source.exclude(
-        metadata__isnull=True, new_metadata__isnull=True,
-    ).order_by(F('published').desc(nulls_last=True), '-created').first()
-    if latest_media is not None:
-        if source.is_playlist:
-            title = str(latest_media.playlist_title or '').strip()
-        else:
-            title = str(
-                latest_media.get_metadata_first_value(('channel', 'uploader')) or ''
-            ).strip()
-        if title:
-            return title
-    return None
+        fields = ('title',) if source.is_playlist else (
+            'channel', 'uploader', 'title',
+        )
+        for field in fields:
+            cached_title = _clean_text(cached.value.get(field))
+            if cached_title:
+                break
+    if cached_title and source.is_playlist:
+        return cached_title
+    media_title, media_retrieved = _media_title(source)
+    if cached_title and media_title and media_retrieved is not None:
+        if media_retrieved > cached.retrieved:
+            return media_title
+    return cached_title or media_title or None
+
+
+def _display_title(source, data_title):
+    '''
+        The <title>/<showtitle> text: `data_title`, else `source.name` with
+        emoji removed, else `source.name` as is (a name made only of emoji
+        would otherwise leave an empty title).
+    '''
+    return data_title or _clean_text(source.name) or str(source.name).strip()
 
 
 def _plot_from(cached):
     if cached is not None:
-        return str(cached.value.get('description', '') or '').strip()
+        return _clean_text(cached.value.get('description'))
     return ''
+
+
+def _preserved_show_title(source):
+    '''
+        The `<title>` of a `tvshow.nfo` this writer leaves alone (see
+        `_foreign_nfo_reason`), or `None`. Episode NFOs then name the same
+        show as the file Plex/Kodi actually read, such as one the upstream
+        `create-tvshow-nfo` command wrote with `source.name`.
+    '''
+    nfo_path = source.directory_path / 'tvshow.nfo'
+    if _foreign_nfo_reason(nfo_path, source) is None:
+        return None
+    try:
+        root = ElementTree.fromstring(nfo_path.read_bytes())
+    except ElementTree.ParseError:
+        return None
+    if root.tag != 'tvshow':
+        return None
+    return _clean_text(root.findtext('title')) or None
 
 
 def resolve_show_title(source):
     '''
-        Best available display title for a source's tvshow.nfo <title> (and
-        the episode NFO's <showtitle>): `_resolve_show_title_from_data`,
-        falling back to `source.name` (TubeSync's own local, always-present
-        name) when nothing more informative is known yet.
+        Best available display title for an episode NFO's <showtitle>: the
+        `<title>` of a `tvshow.nfo` this writer does not own (so episodes
+        name the show that file names), else `build_tvshow_nfo()`'s own
+        `<title>` (`_resolve_show_title_from_data`, falling back to
+        `source.name`). Emoji removed and stripped, like that `<title>`.
 
         Cached for `_SHOW_TITLE_CACHE_TTL_SECONDS` (60s), process-locally,
         keyed by `source.pk`. `Media.nfoxml` calls this once per episode,
         including from inside `rename_all_media_for_source`'s loop over
-        every downloaded item of a source -- uncached, that is 1-3 extra
-        queries (`_cached_channel_metadata` plus the "latest media" lookup)
-        per item. TubeSync's tasks run via huey, potentially across more
-        than one worker process, so this cache is not shared or invalidated
-        across processes -- a stale title can survive up to the TTL in a
-        worker that is not the one `write_tvshow_nfo()` last ran in. That
-        bounded staleness (one channel-name change, one worker, 60 seconds)
-        is judged an acceptable trade for avoiding a shared cache's
-        complexity; `write_tvshow_nfo()` invalidates its own process's entry
-        immediately whenever it recomputes (see
-        `_invalidate_show_title_cache`), so the common case -- one worker,
-        one source, indexed then downloaded -- always sees a fresh value.
+        every downloaded item of a source -- uncached, that is a few extra
+        queries per item. TubeSync's tasks run via huey, potentially across
+        more than one worker process, so this cache is not shared or
+        invalidated across processes -- a stale title can survive up to the
+        TTL in a worker that is not the one `write_tvshow_nfo()` last ran
+        in, so an episode's <showtitle> can briefly lag the show's
+        `tvshow.nfo`. That bounded staleness (one channel-name change, one
+        worker, 60 seconds) is judged an acceptable trade for avoiding a
+        shared cache's complexity. Within a process, `write_tvshow_nfo()`
+        invalidates the entry whenever it recomputes, and a lookup that was
+        already running at that point does not store its older result (see
+        `_invalidate_show_title_cache`).
 
         An unsaved source (`pk` is `None`) bypasses the cache entirely: it
         has no stable key to cache under, and resolving it twice is rare
         (nothing calls this before a source is saved in normal operation).
 
-        Never raises on a database error: `DatabaseError` is caught, logged
-        with a traceback, and `source.name` is returned instead -- a lookup
-        failure here must not fail the caller. `Media.nfoxml` is invoked
-        from `write_nfo_file` (`sync/models/media__tasks.py`), which upstream
-        only guards against `PermissionError`, and `download_media_file`
-        calls it after the video has already downloaded; letting a DB error
-        propagate from here would fail an otherwise-complete download task.
-        A fallback produced by an error is deliberately not cached, so the
-        next call retries the real lookup rather than pinning the fallback
-        for the TTL.
+        Never raises on a database or filesystem error: `django.db.Error`
+        (which covers `InterfaceError` as well as `DatabaseError`) and
+        `OSError` are caught, logged with a traceback, and the source's
+        name is returned instead -- a lookup failure here must not fail
+        the caller. `Media.nfoxml` is invoked from `write_nfo_file`
+        (`sync/models/media__tasks.py`), which upstream only guards against
+        `PermissionError`, and `download_media_file` calls it after the
+        video has already downloaded. The queries run in a savepoint, so a
+        database error does not leave an enclosing transaction (such as
+        `rename_media`'s) unusable on PostgreSQL. A fallback produced by
+        an error is deliberately not cached, so the next call retries the
+        real lookup rather than pinning the fallback for the TTL.
     '''
+    generation = None
     if source.pk is not None:
-        cached_entry = _show_title_cache.get(source.pk)
+        with _show_title_lock:
+            cached_entry = _show_title_cache.get(source.pk)
+            generation = _show_title_generations.get(source.pk, 0)
         if cached_entry is not None:
             expires_at, title = cached_entry
             if time.monotonic() < expires_at:
                 return title
     try:
-        cached = _cached_channel_metadata(source)
-        title = _resolve_show_title_from_data(source, cached) or source.name
-    except DatabaseError:
+        title = _preserved_show_title(source)
+        if title is None:
+            with transaction.atomic():
+                cached = _cached_channel_metadata(source)
+                data_title = _resolve_show_title_from_data(source, cached)
+            title = _display_title(source, data_title)
+    except (db.Error, OSError):
         log.exception(f'Failed to resolve show title for: {source}')
-        return source.name
+        return _display_title(source, None)
     if source.pk is not None:
-        _show_title_cache[source.pk] = (
-            time.monotonic() + _SHOW_TITLE_CACHE_TTL_SECONDS, title,
-        )
+        _store_show_title(source, generation, title)
     return title
 
 
-def resolve_show_studio(source):
+def _with_checksum(content):
     '''
-        <studio> is only set when `_resolve_show_title_from_data` finds a
-        real name -- for a channel that is the channel/uploader name, for
-        a playlist it is the playlist's own title (the same value as
-        <title>). Studio duplicating `source.name` with no more
-        information than <title> already carries is not worth adding.
+        `content` (serialized with `_CHECKSUM_PLACEHOLDER`) with the
+        placeholder filled in: the sha256 of `content` itself.
     '''
-    return _resolve_show_title_from_data(source, _cached_channel_metadata(source))
+    digest = hashlib.sha256(content.encode('utf-8')).hexdigest()
+    return content.replace(
+        _CHECKSUM_PLACEHOLDER,
+        f'{_CHECKSUM_PLACEHOLDER[:-1]}sha256:{digest}"',
+        1,
+    )
 
 
-def resolve_show_plot(source):
+def _checksum_state(text):
     '''
-        Best available <plot> for tvshow.nfo: the cached channel/playlist
-        Metadata row's own `description`, when known (see
-        `_cached_channel_metadata`'s caveats); `''` otherwise. There is no
-        per-media fallback for this one, unlike title -- a single video's
-        description is not a meaningful stand-in for a whole channel's.
+        `None` when `text` carries no writer checksum, else whether the
+        checksum still matches its content (`False` after a hand edit).
     '''
-    return _plot_from(_cached_channel_metadata(source))
+    match = _CHECKSUM_RE.search(text)
+    if match is None:
+        return None
+    blanked = text[:match.start(2) - len('sha256:')] + text[match.end(2):]
+    digest = hashlib.sha256(blanked.encode('utf-8')).hexdigest()
+    return digest == match.group(2)
 
 
 def build_tvshow_nfo(source):
@@ -229,22 +356,24 @@ def build_tvshow_nfo(source):
         Returns a Kodi/Plex "tvshow.nfo" formatted (prettified) XML string
         for `source`. Looks the channel cache and latest media up once and
         derives <title>, <studio> and <plot> from that one snapshot.
+        <title> is the same text `resolve_show_title()` gives episode NFOs
+        while this writer owns the file.
 
         Carries two `<uniqueid>` elements: `type="youtube"` (the source's
         current, user-editable `key` -- the one Kodi/Plex/Jellyfin actually
         scrape against) and a second, non-`default` `type="tubesync"` (the
-        source's immutable `uuid` primary key). Extra `<uniqueid>` elements
-        are ignored by those scrapers as long as none but the intended one
-        is `default="true"`. The second one lets `_foreign_nfo_reason`
-        keep recognising a file this writer created even after the user
-        edits the source's `key` through the source-update form, which
-        would otherwise leave a file with a stale youtube id (and its
-        stale title/plot) permanently un-owned and un-refreshed.
+        source's immutable `uuid` primary key, with a `checksum` of the
+        file). Extra `<uniqueid>` elements and attributes are ignored by
+        those scrapers as long as none but the intended one is
+        `default="true"`. The second one is what `_foreign_nfo_reason`
+        recognises as this writer's own file, even after the user edits
+        the source's `key`, and its checksum tells a hand-edited copy
+        apart from an untouched one.
     '''
     cached = _cached_channel_metadata(source)
     studio = _resolve_show_title_from_data(source, cached)
-    title = clean_emoji(studio or source.name)
-    plot = clean_emoji(_plot_from(cached))
+    title = _display_title(source, studio)
+    plot = _plot_from(cached)
     nfo = ElementTree.Element('tvshow')
     nfo.text = '\n  '
     nfo.append(_nfo_element(nfo, 'title', title))
@@ -259,27 +388,35 @@ def build_tvshow_nfo(source):
     ))
     ownership_attrs = OrderedDict()
     ownership_attrs['type'] = 'tubesync'
+    ownership_attrs['checksum'] = ''
     nfo.append(_nfo_element(
         nfo, 'uniqueid', str(source.uuid), attrs=ownership_attrs,
     ))
     if studio:
-        nfo.append(_nfo_element(nfo, 'studio', clean_emoji(studio)))
+        nfo.append(_nfo_element(nfo, 'studio', studio))
     nfo[-1].tail = '\n'
-    return ElementTree.tostring(nfo, encoding='utf8', method='xml').decode('utf8')
+    content = ElementTree.tostring(
+        nfo, encoding='utf8', method='xml',
+    ).decode('utf8')
+    return _with_checksum(content)
 
 
 def _foreign_nfo_reason(nfo_path, source):
     '''
         Why the file at `nfo_path` is not this writer's to replace, or None
-        when it is (absent, empty, or a `<tvshow>` carrying either this
-        source's `<uniqueid type="youtube">` (current `key`) or its
-        `<uniqueid type="tubesync">` (immutable `uuid` primary key) --
-        only this writer emits either):
+        when it is: absent, empty, or a `<tvshow>` carrying this source's
+        `<uniqueid type="tubesync">` (its immutable `uuid` primary key;
+        only this writer emits that type) whose checksum still matches, or
+        that predates the checksum. Otherwise:
           - another root, such as a video's own `<episodedetails>` from a
             `media_format` that renders a filename as `tvshow`; overwriting
             it would leave the two writers replacing each other's file;
+          - this writer's file, edited by hand since (its checksum no
+            longer matches); delete it to have it regenerated;
           - any other `<tvshow>`, such as one written by hand or by the
-            upstream `create-tvshow-nfo` command, which never overwrites;
+            upstream `create-tvshow-nfo` command, which never overwrites.
+            A `<uniqueid type="youtube">` with this source's key is not
+            enough: any tool or person can write that one;
           - a non-empty file that does not parse as XML at all, such as a
             Kodi URL-only/combination NFO (a bare channel URL, no markup)
             or upstream `create-tvshow-nfo`'s own output when a channel
@@ -289,14 +426,6 @@ def _foreign_nfo_reason(nfo_path, source):
             A zero-byte file is not treated this way: it carries no
             content to protect, so it is still replaceable, same as an
             absent one.
-
-        The `tubesync` id is checked so that editing a source's `key`
-        through the source-update form does not orphan the file this
-        writer already created for it: matching by key alone would treat
-        it as foreign forever after, freezing its title/plot stale. A file
-        written before the `tubesync` id existed only carries the youtube
-        one, which still matches as long as `key` has not since changed --
-        that older/unedited case is unaffected.
     '''
     if not nfo_path.exists():
         return None
@@ -312,16 +441,20 @@ def _foreign_nfo_reason(nfo_path, source):
             'it holds another NFO (does media_format render a video '
             'filename as "tvshow"?)'
         )
-    key = str(source.key).strip()
     tubesync_id = str(source.uuid)
-    for uniqueid in root.iter('uniqueid'):
-        uid_type = uniqueid.get('type')
-        uid_text = (uniqueid.text or '').strip()
-        if uid_type == 'youtube' and uid_text == key:
-            return None
-        if uid_type == 'tubesync' and uid_text == tubesync_id:
-            return None
-    return 'it is a tvshow.nfo this writer did not create'
+    owned = any(
+        uniqueid.get('type') == 'tubesync'
+        and (uniqueid.text or '').strip() == tubesync_id
+        for uniqueid in root.iter('uniqueid')
+    )
+    if not owned:
+        return 'it is a tvshow.nfo this writer did not create'
+    if _checksum_state(raw.decode('utf-8', errors='replace')) is False:
+        return (
+            'it was edited after this writer created it; delete it to '
+            'have it regenerated'
+        )
+    return None
 
 
 def write_tvshow_nfo(source):
@@ -334,11 +467,11 @@ def write_tvshow_nfo(source):
         its mtime) when nothing has changed. Never deletes anything.
 
         Best-effort: it runs at the tail of those tasks, after their real
-        work has succeeded, so it never raises. A missing source directory
-        (not created yet by `check_source_directory_exists`) is skipped --
-        creating it is not this function's job -- and any other error is
-        logged with its traceback instead of failing, and so retrying, the
-        calling task.
+        work has succeeded, so a database or filesystem error is logged
+        with its traceback instead of failing, and so retrying, the
+        calling task. A missing source directory (not created yet by
+        `check_source_directory_exists`) is skipped -- creating it is not
+        this function's job.
 
         Every call recomputes the show's data from scratch and, having done
         so, drops this source's `resolve_show_title()` cache entry (see
@@ -366,12 +499,13 @@ def write_tvshow_nfo(source):
     if not source.write_nfo:
         return
     try:
-        directory = Path(source.directory_path)
+        directory = source.directory_path
         if not directory.is_dir():
             log.debug(f'Skipping tvshow.nfo, no directory yet for: {source}')
             return
         nfo_path = directory / 'tvshow.nfo'
-        content = build_tvshow_nfo(source)
+        with transaction.atomic():
+            content = build_tvshow_nfo(source)
         _invalidate_show_title_cache(source)
         if nfo_path.exists() and nfo_path.read_bytes() == content.encode('utf-8'):
             return
@@ -381,5 +515,5 @@ def write_tvshow_nfo(source):
             return
         log.info(f'Writing tvshow.nfo for: {source}')
         write_text_file(nfo_path, content)
-    except Exception:
+    except (db.Error, OSError, ValueError):
         log.exception(f'Failed to write tvshow.nfo for: {source}')
