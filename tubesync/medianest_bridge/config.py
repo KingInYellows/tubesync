@@ -17,18 +17,16 @@
 '''
 import ipaddress
 import json
+import re
 from pathlib import Path
 
+from common.logger import log
 from common.utils import getenv
 
 
 # Contract version this app implements. Matches
 # medianest_bridge/contract/bridge-openapi.v1.yaml's info.version.
 BRIDGE_VERSION = '1.0.0'
-
-# T3: the two contract source types this profile can be keyed by, plus the
-# optional shared "*" block MEDIANEST_BRIDGE_SOURCE_DEFAULTS may use.
-_SOURCE_DEFAULTS_TYPES = ('channel', 'playlist')
 
 # Built-in profile applied when MEDIANEST_BRIDGE_SOURCE_DEFAULTS is unset
 # (distinct from an explicit `{}`, which means "no overrides" -- see
@@ -53,9 +51,10 @@ class SourceDefaultsConfigError(Exception):
         Raised by source_defaults() for any invalid
         MEDIANEST_BRIDGE_SOURCE_DEFAULTS shape or content: malformed JSON,
         a non-object value, an unknown top-level key, a non-object
-        per-type/`*` block, or a per-type block that names a field
-        POST /sources' contract already owns (sourceType/canonicalKey/
-        name/directory) or that SourceForm does not have at all.
+        per-type/`*` block, a block that names a forbidden field
+        (source_forms.SOURCE_DEFAULTS_FORBIDDEN_FIELDS: source_type, key,
+        name, directory, target_schedule) or one SourceForm does not have
+        at all, or a non-boolean value for a boolean field.
 
         str(exc) is safe to surface directly (after
         errors.error_response()'s own sanitize_error_message() pass, for
@@ -180,10 +179,12 @@ def source_defaults():
         which has nothing to check) is validated against the same field
         allowlist POST /sources's own create path is built from
         (source_forms.allowed_source_default_fields(): every SourceForm
-        field except source_type/key/name/directory, which the create
-        contract itself owns) -- an unknown or forbidden field raises
-        SourceDefaultsConfigError rather than being silently dropped or
-        silently applied.
+        field except source_forms.SOURCE_DEFAULTS_FORBIDDEN_FIELDS) -- an
+        unknown or forbidden field raises SourceDefaultsConfigError rather
+        than being silently dropped or silently applied. The `*` block is
+        checked the same way even when both types opt out of it, and a
+        boolean field must be a JSON true/false (a form checkbox would read
+        "0" or "off" as True).
 
         Raises SourceDefaultsConfigError for anything else: malformed
         JSON, a non-object top-level value, an unknown top-level key, an
@@ -198,7 +199,10 @@ def source_defaults():
     # read on every request, including before the app registry may be
     # fully ready in some import orders (see readiness.py's own deferred
     # Django imports for the same reasoning).
-    from .source_forms import allowed_source_default_fields
+    from .source_forms import (
+        CONTRACT_SOURCE_TYPES, allowed_source_default_fields,
+        boolean_source_default_fields,
+    )
 
     raw = getenv('MEDIANEST_BRIDGE_SOURCE_DEFAULTS', '').strip()
     if not raw:
@@ -220,7 +224,7 @@ def source_defaults():
         # Explicit escape hatch -- see docstring.
         return {'channel': {}, 'playlist': {}}
 
-    allowed_top_level = set(_SOURCE_DEFAULTS_TYPES) | {'*'}
+    allowed_top_level = set(CONTRACT_SOURCE_TYPES) | {'*'}
     unknown_top_level = set(parsed.keys()) - allowed_top_level
     if unknown_top_level:
         raise SourceDefaultsConfigError(
@@ -236,8 +240,30 @@ def source_defaults():
         )
 
     allowed_fields = allowed_source_default_fields()
+    boolean_fields = boolean_source_default_fields()
+
+    def check_fields(label, block):
+        unknown_fields = set(block.keys()) - allowed_fields
+        if unknown_fields:
+            raise SourceDefaultsConfigError(
+                f'MEDIANEST_BRIDGE_SOURCE_DEFAULTS[{label!r}] has '
+                f'unknown or forbidden field(s): {sorted(unknown_fields)!r}.',
+            )
+        non_boolean = sorted(
+            name for name in set(block.keys()) & boolean_fields
+            if not isinstance(block[name], bool)
+        )
+        if non_boolean:
+            raise SourceDefaultsConfigError(
+                f'MEDIANEST_BRIDGE_SOURCE_DEFAULTS[{label!r}] field(s) '
+                f'{non_boolean!r} must be JSON true or false.',
+            )
+
+    # Checked even when both types opt out of "*", so a typo there is
+    # never silently accepted.
+    check_fields('*', shared)
     result = {}
-    for source_type in _SOURCE_DEFAULTS_TYPES:
+    for source_type in CONTRACT_SOURCE_TYPES:
         type_present = source_type in parsed
         if not type_present and not has_star:
             # Silent-failure guard -- see docstring. A type covered by
@@ -268,32 +294,78 @@ def source_defaults():
             result[source_type] = {}
             continue
 
-        merged = {**shared, **overlay}
-        unknown_fields = set(merged.keys()) - allowed_fields
-        if unknown_fields:
-            raise SourceDefaultsConfigError(
-                f'MEDIANEST_BRIDGE_SOURCE_DEFAULTS[{source_type!r}] has '
-                f'unknown or forbidden field(s): {sorted(unknown_fields)!r}.',
-            )
-        result[source_type] = merged
+        check_fields(source_type, overlay)
+        result[source_type] = {**shared, **overlay}
     return result
 
 
-def validate_source_defaults():
+def _overlay_value_errors(overlay):
     '''
-        Runs MEDIANEST_BRIDGE_SOURCE_DEFAULTS through the same path
-        source_defaults() plus a real create's field-level SourceForm
-        checks and run_edit_source_checks() (media-format-produces-a-
-        filename, directory-traversal) would apply, for both source
-        types, so a broken configuration surfaces once here -- the
-        `sourceDefaults` readiness component, and POST /sources' own
-        pre-check below -- rather than only as every subsequent create
-        failing one at a time with no diagnosis.
+        Value-free errors for overlay values SourceForm accepts but that
+        would break every source created with them: a media_format with a
+        ".." path segment (it would write outside the source directory;
+        the edit checks only verify the directory, which an overlay can't
+        set) and a filter_text that is not a valid regular expression
+        (Source.is_regex_match() would raise on every media save).
+    '''
+    errors = []
+    media_format = overlay.get('media_format')
+    if isinstance(media_format, str) and any(
+        '..' == part.strip() for part in re.split(r'[\\/]', media_format)
+    ):
+        errors.append('media_format: must not contain ".." path segments')
+    filter_text = overlay.get('filter_text')
+    if isinstance(filter_text, str) and filter_text:
+        try:
+            re.compile(filter_text)
+        except re.error:
+            errors.append('filter_text: not a valid regular expression')
+    return errors
 
-        Returns a list of plain-text error strings (empty = valid). Each
-        string is safe to surface directly: source_defaults() and
-        source_forms.extract_form_errors() only ever name failing
-        keys/fields, never echo the env var's own raw value.
+
+def _source_type_errors(source_type, overlay):
+    '''Value-free SourceForm/edit-check errors for one type's overlay.'''
+    from .source_forms import (
+        build_synthetic_source_form, extract_form_error_codes,
+        run_edit_source_checks,
+    )
+
+    form = build_synthetic_source_form(
+        contract_source_type=source_type, overlay=overlay,
+    )
+    if form.is_valid():
+        # Only safe to call once the form is already valid -- see
+        # CreateSourceView.post's identical guard in views_write.py for
+        # why (form.save(commit=False) raises unconditionally otherwise).
+        run_edit_source_checks(form)
+    messages = extract_form_error_codes(form)
+    if not messages:
+        messages = _overlay_value_errors(overlay)
+    return [f'{source_type}: {message}' for message in messages]
+
+
+def load_validated_source_defaults():
+    '''
+        Runs MEDIANEST_BRIDGE_SOURCE_DEFAULTS through source_defaults()
+        plus the field-level SourceForm checks and run_edit_source_checks()
+        (media-format-produces-a-filename, directory-traversal) a real
+        create would apply, and _overlay_value_errors(), for both source
+        types. A broken configuration therefore surfaces once here -- the
+        `sourceDefaults` readiness component, and POST /sources' own
+        pre-check -- rather than only as every subsequent create failing
+        one at a time with no diagnosis.
+
+        Returns (defaults_by_type, errors): the parsed per-type overlays
+        (None when source_defaults() itself raised) and a list of
+        plain-text error strings (empty = valid). POST /sources applies
+        the returned overlays directly, so it reads the env var once per
+        request. Every error string is safe to surface directly: they name
+        failing keys/fields and error codes, never the env var's own raw
+        values (see source_forms.extract_form_error_codes()). An
+        unexpected exception while checking a type is logged with its
+        traceback and reported as an error, so readiness says
+        `unavailable` and creates get the documented 503, not `unknown`
+        and a 500.
 
         An explicitly empty overlay for a type ({} -- from the top-level
         escape hatch, an explicit per-type {} opt-out, or a type covered
@@ -301,25 +373,29 @@ def validate_source_defaults():
         default_form_data() alone is already known-valid (it's TubeSync's
         own Source model defaults), so there's nothing to check.
     '''
-    from .source_forms import build_synthetic_source_form, extract_form_errors, run_edit_source_checks
-
     try:
         defaults_by_type = source_defaults()
     except SourceDefaultsConfigError as exc:
-        return [str(exc)]
+        return None, [str(exc)]
 
     errors = []
     for source_type, overlay in defaults_by_type.items():
         if not overlay:
             continue
-        form = build_synthetic_source_form(contract_source_type=source_type, overlay=overlay)
-        if not form.is_valid():
-            errors.extend(f'{source_type}: {message}' for message in extract_form_errors(form))
-            continue
-        # Only safe to call once the form is already valid -- see
-        # CreateSourceView.post's identical guard in views_write.py for
-        # why (form.save(commit=False) raises unconditionally otherwise).
-        run_edit_source_checks(form)
-        if not form.is_valid():
-            errors.extend(f'{source_type}: {message}' for message in extract_form_errors(form))
-    return errors
+        try:
+            errors.extend(_source_type_errors(source_type, overlay))
+        except Exception:
+            log.exception(
+                'medianest_bridge: unexpected error validating '
+                f'MEDIANEST_BRIDGE_SOURCE_DEFAULTS for {source_type!r}',
+            )
+            errors.append(
+                f'{source_type}: unexpected validation failure '
+                '(see the bridge log)',
+            )
+    return defaults_by_type, errors
+
+
+def validate_source_defaults():
+    '''The error list from load_validated_source_defaults().'''
+    return load_validated_source_defaults()[1]
