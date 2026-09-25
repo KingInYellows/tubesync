@@ -196,6 +196,22 @@ def write_tvshow_nfo(source):
         creating it is not this function's job -- and any other error is
         logged with its traceback instead of failing, and so retrying, the
         calling task.
+
+        Concurrent-write caveat (accepted limitation): two
+        `download_media_metadata` tasks for the same source can finish
+        concurrently and, if the resolved show title changes between one
+        worker's `build_tvshow_nfo()` and its `write_text_file()`, a stale
+        snapshot can briefly replace a fresher `tvshow.nfo`. That lost
+        update needs both tasks to overlap on the same source and the title
+        to change between them -- in practice this is a one-time window
+        when the first real channel name appears. `write_text_file()` is
+        atomic (temp file plus replace), so the file is never corrupt.
+        Every later `download_media_metadata`, `index_source` or
+        `download_source_images` run rebuilds from current data and
+        rewrites a stale file when the bytes differ. A per-source lock on
+        the huey DB queue would serialise every metadata task of a source
+        just to close that narrow window, so we accept this self-healing
+        race instead.
     '''
     if not source.write_nfo:
         return
