@@ -181,6 +181,24 @@ def build_tvshow_nfo(source):
     return ElementTree.tostring(nfo, encoding='utf8', method='xml').decode('utf8')
 
 
+def _holds_another_nfo(nfo_path):
+    '''
+        True when `nfo_path` holds a well-formed NFO whose root is not
+        `<tvshow>`. A `media_format` whose filename renders to `tvshow`
+        makes a video's own `<episodedetails>` sidecar land on this path;
+        overwriting it would leave the two writers replacing each other's
+        file on every run, so the episode's sidecar wins and the show NFO
+        is skipped.
+    '''
+    if not nfo_path.exists():
+        return False
+    try:
+        root = ElementTree.fromstring(nfo_path.read_bytes())
+    except ElementTree.ParseError:
+        return False
+    return root.tag != 'tvshow'
+
+
 def write_tvshow_nfo(source):
     '''
         Writes `tvshow.nfo` for `source`, only when `write_nfo` is enabled.
@@ -223,6 +241,12 @@ def write_tvshow_nfo(source):
         nfo_path = directory / 'tvshow.nfo'
         content = build_tvshow_nfo(source)
         if nfo_path.exists() and nfo_path.read_bytes() == content.encode('utf-8'):
+            return
+        if _holds_another_nfo(nfo_path):
+            log.warning(
+                f'Not writing tvshow.nfo for: {source}: {nfo_path} holds another '
+                'NFO (does media_format render a video filename as "tvshow"?)'
+            )
             return
         log.info(f'Writing tvshow.nfo for: {source}')
         write_text_file(nfo_path, content)
