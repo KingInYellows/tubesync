@@ -34,7 +34,7 @@ signal-driven task scheduling.
 
 ## Fork delta
 
-Six upstream files are touched at seven points (`settings.py` twice), five of the seven minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
+Seven upstream files are touched at eight points (`settings.py` twice), five of the eight minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
 
 1. `tubesync/tubesync/settings.py` -- `INSTALLED_APPS += 'medianest_bridge'`.
 2. `tubesync/tubesync/urls.py` -- one `include('medianest_bridge.urls')` at
@@ -56,8 +56,9 @@ Six upstream files are touched at seven points (`settings.py` twice), five of th
    an existing multi-line `ENV`, no new `ENV` instruction). Empty by
    default, so every image build that doesn't pass the build-arg behaves
    identically to every pre-T5 build. See "Compatibility reporting" below.
-6. `sync/models/media.py` (T1) -- adds a module-level `_aware_utc`
-   helper and new members `Media.episode_date`, `Media.title_full_bounded`,
+6. `sync/models/media.py` (T1) -- adds module-level `_aware_utc`,
+   `_format_field_names` and `_episode_date_coalesce` helpers and new
+   members `Media.episode_date`, `Media.title_full_bounded`,
    `Media._same_day_index`, `Media._episode_mmdd_and_index`,
    `Media.episode_yyyy`, `Media.episode_mmddnn` and
    `Media.nfo_episode_number`. Two existing method bodies change:
@@ -67,13 +68,29 @@ Six upstream files are touched at seven points (`settings.py` twice), five of th
    playlists whose `media_format` uses `{episode_mmddnn}` (every
    bridge-created playlist), so the NFO matches the filename. Other
    playlists keep the pre-T1 values: season `1`, episode
-   `calculate_episode_number()`.
+   `calculate_episode_number()`. `episode_date` prefers the related
+   `Metadata` row's `published` (see point 8) over `Media.published`
+   because the latter is rewritten with approximate data on every
+   re-index; `_same_day_index` is a single annotated `COUNT` (via
+   `_episode_date_coalesce`) instead of an O(n) Python scan; and
+   `episode_mmddnn` returns `nfo_episode_number`'s overflow value past 99
+   same-day items so the filename and the NFO's `<episode>` never
+   disagree once parsed as an int.
 7. `sync/models/source.py` (T1) -- adds the same three keys
    (`episode_yyyy`, `episode_mmddnn`, `title_full_bounded`) to the dict
    `example_media_format_dict` returns, required for
    `get_example_media_format()` (and so `run_edit_source_checks`) to accept
    a `media_format` that uses them. That is the only change to its body;
    no existing keys change.
+8. `sync/models/metadata.py` (T1) -- `Metadata.ingest_metadata`'s
+   `published` fallback (when the ingested data has neither
+   `release_timestamp` nor `timestamp`) now tries `upload_date` (parsed
+   the same way `Media.upload_date` does) before falling back to
+   `media.published` or `retrieved`. This makes `new_metadata.published`
+   a stable, date-accurate value point 6's `episode_date` and
+   `_episode_date_coalesce` can rely on, including for metadata ingested
+   without an epoch timestamp (e.g. `import-existing-media`). No other
+   change to this file.
 
 Everything else the bridge needs is imported (models,
 `common.utils.getenv`, `common.logger.log`, `sync.tasks` helpers), never

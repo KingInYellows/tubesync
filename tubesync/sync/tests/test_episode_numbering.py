@@ -14,11 +14,13 @@
 '''
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 from unittest.mock import patch
 from xml.etree import ElementTree
 
 from django.conf import settings
+from django.core.exceptions import ObjectDoesNotExist
+from django.db.models.functions import Coalesce
 from django.test import TestCase
 from django.utils import timezone
 
@@ -38,7 +40,14 @@ metadata_hdr = all_test_metadata['hdr']  # upload_date 2016-11-09
 
 
 def aware(*args, **kwargs):
-    return timezone.make_aware(datetime(*args, **kwargs))
+    '''
+        Builds an aware UTC datetime explicitly, rather than via
+        `timezone.make_aware(datetime(...))` (which uses Django's active
+        or `settings.TIME_ZONE` timezone) -- these tests assert on UTC
+        calendar days and MMDD strings, so they must not depend on the
+        environment's `TZ`.
+    '''
+    return datetime(*args, **kwargs, tzinfo=dt_timezone.utc)
 
 
 class EpisodeNumberingTestCase(TestCase):
@@ -125,6 +134,11 @@ class EpisodeNumberingTestCase(TestCase):
     def test_published_none_groups_by_the_upload_date_it_encodes(self):
         # Two items with published=NULL, different metadata (different
         # upload_date), forced onto the same `created` UTC calendar day.
+        # Metadata is set on the legacy `Media.metadata` column directly
+        # (no `ingest_metadata` call, so no `new_metadata` row), which is
+        # exactly the narrow case `episode_date`'s `upload_date` fallback
+        # step and `_same_day_index`'s residual Python group still exist
+        # for -- see both docstrings in sync/models/media.py.
         first = Media.objects.create(
             key='nullpub-1', source=self.source, metadata=metadata,
         )
@@ -150,7 +164,8 @@ class EpisodeNumberingTestCase(TestCase):
 
     def test_same_encoded_date_never_shares_an_index(self):
         # Same upload_date (2017-09-11), published=NULL, created on
-        # different days: must not both be '01'.
+        # different days: must not both be '01'. Metadata is set on the
+        # legacy column directly (see comment in the previous test).
         early = Media.objects.create(
             key='samedate-1', source=self.source, metadata=metadata,
         )
@@ -195,6 +210,112 @@ class EpisodeNumberingTestCase(TestCase):
         self.assertEqual(early.episode_mmddnn, '091101')
         self.assertEqual(late.episode_mmddnn, '091102')
 
+    def test_reindex_style_published_change_does_not_shift_numbers_once_metadata_is_ingested(self):
+        '''
+            sync.tasks.index_source rewrites `Media.published` on every
+            re-index (its `db_fields_media` bulk `save_db_batch` includes
+            `'published'`) from yt-dlp's forced
+            `youtubetab:approximate_date=true` tab listing, which can
+            change between crawls (yt-dlp derives it from relative text
+            like "3 weeks ago"). Once `new_metadata.published` is set --
+            which happens for essentially every indexed item, via
+            sync.tasks.migrate_to_metadata / download_media_metadata --
+            `episode_date` must keep using that stable value instead of
+            drifting with `published`. This directly simulates that
+            re-index bulk update.
+        '''
+        media = Media.objects.create(key='reindex-stable', source=self.source)
+        media.ingest_metadata(json.loads(metadata))  # upload_date 2017-09-11
+        before_mmddnn = media.episode_mmddnn
+        before_nfo = media.nfo_episode_number
+        self.assertEqual(before_mmddnn, '091101')
+        # Simulate index_source's re-index bulk update overwriting
+        # Media.published with a fresh (and here, deliberately different
+        # and wrong) approximate date.
+        Media.objects.filter(pk=media.pk).update(
+            published=aware(2030, 1, 1, 0, 0, 0),
+        )
+        media.refresh_from_db()
+        self.assertEqual(media.published, aware(2030, 1, 1, 0, 0, 0))
+        self.assertEqual(media.episode_mmddnn, before_mmddnn)
+        self.assertEqual(media.nfo_episode_number, before_nfo)
+
+    def test_no_published_no_metadata_same_day_numbered_by_created_then_key(self):
+        '''
+            The one `_same_day_index` group `test_metadata_only_in_...`
+            and `test_identical_published_ties_break_...` don't cover:
+            no `published`, no metadata at all (so `episode_date` falls
+            all the way to `created`), two items on the same UTC day.
+        '''
+        day = aware(2026, 11, 3, 0, 0, 0)
+        b_item = Media.objects.create(key='nometa-b', source=self.source)
+        a_item = Media.objects.create(key='nometa-a', source=self.source)
+        Media.objects.filter(pk=b_item.pk).update(created=day + timedelta(hours=2))
+        Media.objects.filter(pk=a_item.pk).update(created=day + timedelta(hours=10))
+        b_item.refresh_from_db()
+        a_item.refresh_from_db()
+        self.assertIsNone(b_item.published)
+        self.assertIsNone(a_item.published)
+        with self.assertRaises(ObjectDoesNotExist):
+            b_item.new_metadata
+        # Earlier `created` wins.
+        self.assertEqual(b_item.episode_mmddnn, '110301')
+        self.assertEqual(a_item.episode_mmddnn, '110302')
+        # Same `created` too: `key` decides.
+        Media.objects.filter(pk=a_item.pk).update(created=b_item.created)
+        a_item.refresh_from_db()
+        b_item.refresh_from_db()
+        self.assertEqual(a_item.episode_mmddnn, '110301')
+        self.assertEqual(b_item.episode_mmddnn, '110302')
+
+    def test_sql_coalesce_matches_python_episode_date_for_mixed_sources(self):
+        '''
+            `_same_day_index`'s SQL `COUNT` and `episode_date`'s Python
+            computation must use the exact same precedence
+            (`_episode_date_coalesce()` / `episode_date`'s docstring), or
+            the two can disagree about which UTC day, and therefore which
+            same-day index, an item belongs to. Directly compares the two
+            for one item of each kind on the same day: `published` set,
+            metadata-only (`new_metadata.published` set), and neither.
+        '''
+        day = aware(2026, 12, 5, 0, 0, 0)
+        published_item = Media.objects.create(
+            key='mixed-published', source=self.source,
+            published=day + timedelta(hours=8),
+        )
+        metadata_item = Media.objects.create(key='mixed-metadata', source=self.source)
+        metadata_item.ingest_metadata(json.loads(metadata))
+        metadata_item.new_metadata.published = day + timedelta(hours=4)
+        metadata_item.new_metadata.save(update_fields=['published'])
+        neither_item = Media.objects.create(key='mixed-neither', source=self.source)
+        Media.objects.filter(pk=neither_item.pk).update(
+            created=day + timedelta(hours=12),
+        )
+
+        items = (published_item, metadata_item, neither_item)
+        for item in items:
+            item.refresh_from_db()
+        annotated_by_key = {
+            m.key: m
+            for m in Media.objects.filter(source=self.source).annotate(
+                episode_date_sql=Coalesce(
+                    'new_metadata__published', 'published', 'created',
+                ),
+            )
+        }
+        for item in items:
+            with self.subTest(item=item.key):
+                self.assertEqual(
+                    annotated_by_key[item.key].episode_date_sql,
+                    item.episode_date,
+                )
+
+        # And the resulting same-day ordering matches the manually forced
+        # dates: metadata (4h) < published (8h) < neither (12h).
+        self.assertEqual(metadata_item.episode_mmddnn, '120501')
+        self.assertEqual(published_item.episode_mmddnn, '120502')
+        self.assertEqual(neither_item.episode_mmddnn, '120503')
+
     def test_identical_published_ties_break_by_created_then_key(self):
         when = aware(2026, 6, 2, 12, 0, 0)
         b_item = Media.objects.create(
@@ -236,7 +357,7 @@ class EpisodeNumberingTestCase(TestCase):
         )
         self.assertEqual(mine.episode_mmddnn, '070301')
 
-    def test_more_than_99_same_day_items_logs_a_warning_and_uses_3_digits(self):
+    def test_more_than_99_same_day_items_logs_a_warning_and_matches_nfo_number(self):
         base = aware(2026, 8, 1, 0, 0, 0)
         fillers = [
             Media(
@@ -252,14 +373,24 @@ class EpisodeNumberingTestCase(TestCase):
         )
         with patch('sync.models.media.log') as mock_log:
             mmddnn = hundredth.episode_mmddnn
-        self.assertEqual(mmddnn, '0801100')
+        # Past 99 same-day items, episode_mmddnn is nfo_episode_number's
+        # string (not "mmdd" + the unpadded index concatenated), so the
+        # two never disagree once parsed back with int() -- see
+        # test_nfo_episode_numbers_never_collide_past_99_same_day_items
+        # for why the naive concatenation was unsafe.
+        self.assertEqual(mmddnn, str(hundredth.nfo_episode_number))
+        self.assertEqual(int(mmddnn), hundredth.nfo_episode_number)
         mock_log.warning.assert_called_once()
         warning_args = mock_log.warning.call_args[0][0]
         self.assertIn('filler-099', warning_args)
         self.assertIn(str(self.source), warning_args)
 
     def test_nfo_episode_numbers_never_collide_past_99_same_day_items(self):
-        # '0101' + '110' and '1011' + '10' would both be int() 101110.
+        # '0101' + '110' and '1011' + '10' would both int() to 101110.
+        # episode_mmddnn now returns nfo_episode_number's overflow string
+        # once the same-day index exceeds 99, so int(episode_mmddnn) and
+        # nfo_episode_number can never collide with a different day's
+        # <=99-index value either.
         jan_first = aware(2026, 1, 1, 0, 0, 0)
         Media.objects.bulk_create([
             Media(
@@ -278,11 +409,46 @@ class EpisodeNumberingTestCase(TestCase):
         ])
         jan_110 = Media.objects.get(key='jan-109')
         oct_10 = Media.objects.get(key='oct-009')
-        self.assertEqual(jan_110.episode_mmddnn, '0101110')
         self.assertEqual(oct_10.episode_mmddnn, '101110')
         self.assertEqual(oct_10.nfo_episode_number, 101110)
         self.assertEqual(jan_110.nfo_episode_number, 10_000_000 + 101 * 10_000 + 110)
+        self.assertEqual(jan_110.episode_mmddnn, str(jan_110.nfo_episode_number))
         self.assertNotEqual(jan_110.nfo_episode_number, oct_10.nfo_episode_number)
+        self.assertEqual(int(jan_110.episode_mmddnn), jan_110.nfo_episode_number)
+        self.assertNotEqual(int(jan_110.episode_mmddnn), int(oct_10.episode_mmddnn))
+
+    def test_int_episode_mmddnn_matches_nfo_episode_number_across_the_99_boundary(self):
+        '''
+            Exercises the exact boundary `_episode_mmdd_and_index`/
+            `episode_mmddnn` switch on: day_index 99 (still the plain
+            2-digit form), 100 and 110 (both overflowed). At every one of
+            them, `int(episode_mmddnn) == nfo_episode_number`, and every
+            overflowed value sits above the highest possible <=99-index
+            value (mmdd=1231, index=99 -> 123199), so it can never be
+            confused with one.
+        '''
+        day = aware(2027, 2, 2, 0, 0, 0)
+        Media.objects.bulk_create([
+            Media(
+                key=f'boundary-{i:03}', source=self.source,
+                published=day + timedelta(minutes=i),
+            )
+            for i in range(110)
+        ])
+        ninety_nine = Media.objects.get(key='boundary-098')  # 99th item
+        one_hundred = Media.objects.get(key='boundary-099')  # 100th item
+        one_hundred_ten = Media.objects.get(key='boundary-109')  # 110th item
+        self.assertEqual(ninety_nine.episode_mmddnn, '020299')
+        self.assertEqual(ninety_nine.nfo_episode_number, 202 * 100 + 99)
+        self.assertEqual(int(ninety_nine.episode_mmddnn), ninety_nine.nfo_episode_number)
+        for item, day_index in ((one_hundred, 100), (one_hundred_ten, 110)):
+            with self.subTest(day_index=day_index):
+                expected_nfo_number = 10_000_000 + 202 * 10_000 + day_index
+                self.assertEqual(item.nfo_episode_number, expected_nfo_number)
+                self.assertEqual(item.episode_mmddnn, str(expected_nfo_number))
+                self.assertEqual(int(item.episode_mmddnn), item.nfo_episode_number)
+                # Above the highest possible <=99-index value from any day.
+                self.assertGreater(item.nfo_episode_number, 123199)
 
     def test_title_full_bounded_respects_byte_limit_and_strips_slash(self):
         title = 'café🎉/' * 40

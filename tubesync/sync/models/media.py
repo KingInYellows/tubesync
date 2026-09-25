@@ -9,6 +9,7 @@ from string import Formatter
 from xml.etree import ElementTree
 from django.conf import settings
 from django.db import models
+from django.db.models.functions import Coalesce
 from django.core.exceptions import ObjectDoesNotExist
 from django.db.transaction import atomic
 from django.utils.text import slugify
@@ -68,6 +69,41 @@ def _aware_utc(value):
     if timezone.is_naive(value):
         value = timezone.make_aware(value, tz.utc)
     return value.astimezone(tz.utc)
+
+
+def _episode_date_coalesce():
+    '''
+        The SQL-side mirror of `Media.episode_date`'s precedence, used to
+        annotate every other row in `Media._same_day_index` with the same
+        value `episode_date` would compute for each of them in Python:
+        `new_metadata__published` (stable once ingested -- see
+        `sync.models.metadata.Metadata.ingest_metadata`), else
+        `published` (can be rewritten with approximate data on every
+        `index_source` re-index -- see sync/tasks.py `db_fields_media`
+        and sync/youtube.py's forced `youtubetab:approximate_date=true`),
+        else `created` (always set once a row is saved).
+
+        `upload_date` never needs its own branch in this SQL expression,
+        unlike in `episode_date`'s full Python order (`new_metadata.
+        published` -> `published` -> `upload_date` -> `created`): it
+        isn't a database column -- it's derived from JSON metadata in
+        Python -- so it can't appear in a SQL expression at all.
+        `Metadata.ingest_metadata` now folds it into `new_metadata.
+        published` at ingest time whenever no real release/upload
+        timestamp exists, so its value is reachable through the first
+        branch for every row that has a `new_metadata` row at all. The
+        one remaining case -- a `Media` whose legacy `metadata` column
+        was set directly, with no `new_metadata` row -- still can't be
+        expressed here; `_same_day_index` filters those out of the query
+        that uses this function and evaluates them separately in Python.
+
+        Keep this and `episode_date` in exact agreement -- if they
+        disagree about which UTC day an item falls on, `_same_day_index`
+        (SQL, via this function) and `episode_mmddnn`/`nfo_episode_number`
+        (Python, via `episode_date`) can disagree about that item's
+        same-day index.
+    '''
+    return Coalesce('new_metadata__published', 'published', 'created')
 
 
 class Media(models.Model):
@@ -835,8 +871,43 @@ class Media(models.Model):
         '''
             The single date source for date-based episode numbering
             (`episode_yyyy`, `episode_mmddnn`, and the non-playlist NFO
-            <season>/<episode>): `published` when set, else `upload_date`,
-            else `created` -- always returned as an aware UTC datetime.
+            <season>/<episode>): `new_metadata.published` when set, else
+            `published`, else `upload_date`, else `created` -- always
+            returned as an aware UTC datetime.
+
+            `new_metadata.published` (the reverse `OneToOne` from
+            `sync.models.metadata.Metadata.media`, `related_name=
+            'new_metadata'`) is checked first because it is *stable*,
+            unlike `published`: `Metadata.ingest_metadata` sets it once,
+            from the full metadata's `release_timestamp`/`timestamp`
+            (falling back to `upload_date`, then to `media.published` or
+            `retrieved` -- see sync/models/metadata.py), and nothing
+            afterwards rewrites it with approximate data --
+            `sync.tasks.migrate_to_metadata` only ever merges the
+            `epoch`/`availability`/`extractor_key` keys into it, never
+            `timestamp`. `Media.published`, by contrast, is rewritten on
+            every `index_source` re-index (sync/tasks.py's
+            `db_fields_media` includes `'published'`) from yt-dlp's
+            `youtubetab:approximate_date=true` tab listing (forced on in
+            sync/youtube.py), which yt-dlp can derive from relative text
+            like "3 weeks ago" and so can drift call to call -- silently
+            reshuffling MMDD/index/filenames/NFOs for already-downloaded
+            media.
+
+            The `upload_date` step only still matters for a `Media` whose
+            legacy `metadata` column was set directly (bypassing
+            `ingest_metadata`, so no `new_metadata` row exists at all --
+            not reachable through this codebase's own indexing/ingest
+            code paths, but a supported direct field assignment, e.g. in
+            tests): `_same_day_index`'s SQL `COUNT` can't see it either,
+            since `upload_date` is derived from JSON metadata in Python,
+            not a database column, so `_same_day_index` evaluates that
+            narrow case in Python too (see its docstring). Every row
+            produced by the normal indexing pipeline gets a
+            `new_metadata` row (via `migrate_to_metadata`/
+            `download_media_metadata`), whose `.published` already
+            covers `upload_date` (see `Metadata.ingest_metadata`), so
+            this step is not reached for those.
 
             This is deliberately its own date source rather than reusing
             `calculate_episode_number` (which only ever looks at
@@ -849,6 +920,12 @@ class Media(models.Model):
             `auto_now_add=True`, populated on save) -- that case falls back
             to the current time rather than `None`.
         '''
+        try:
+            new_metadata_published = self.new_metadata.published
+        except ObjectDoesNotExist:
+            new_metadata_published = None
+        if new_metadata_published:
+            return _aware_utc(new_metadata_published)
         if self.published:
             return _aware_utc(self.published)
         upload_date = self.upload_date
@@ -1165,30 +1242,37 @@ class Media(models.Model):
             tie-break `calculate_episode_number` uses. Membership is never
             filtered by `skip` or download state.
 
-            Membership and ordering use `episode_date` itself, so the MMDD
-            that `episode_mmddnn` encodes and the day an item is counted in
-            can never disagree (two items with the same encoded date always
-            get distinct indexes). The rows are counted in three groups:
+            Membership and ordering use `episode_date` itself (mirrored in
+            SQL by `_episode_date_coalesce()`), so the MMDD that
+            `episode_mmddnn` encodes and the day an item is counted in can
+            never disagree (two items with the same encoded date always
+            get distinct indexes). The rows are counted in two parts:
 
-            - `published` set: `episode_date` is `published`, one COUNT.
-            - `published` unset, no metadata in either the legacy
-              `metadata` column or the related `new_metadata` row:
-              `upload_date` is unknown, so `episode_date` is `created`, one
-              COUNT.
-            - `published` unset, metadata present in either place:
-              `episode_date` may come from metadata's `upload_date`, which is
-              not a column, so these are evaluated in Python. Fetching
-              metadata sets `published` whenever it has an `upload_date`, so
-              this group is normally empty or tiny.
-
-            Each COUNT matches the items that sort strictly before this one
-            (unique per source by `key`, so a strict "less than" on the full
-            tuple never includes this item itself). This replaces
-            `calculate_episode_number`'s approach of iterating every
-            candidate row in Python, which is an O(n) query cost paid on
-            every call -- `format_dict` calls the equivalent of this once
-            per filename evaluation, so that cost is effectively O(n^2) per
-            source rename.
+            - Every other row *except* the one below: a single annotated
+              `COUNT` -- one query, regardless of source size -- of the
+              rows that sort strictly before this one (unique per source
+              by `key`, so a strict "less than" on the full tuple never
+              includes this item itself). This is what replaces
+              `calculate_episode_number`'s approach of iterating every
+              candidate row in Python, which is an O(n) query cost paid
+              on every call -- `format_dict` calls the equivalent of this
+              once per filename evaluation, so that cost was effectively
+              O(n^2) per source rename.
+            - `published` unset, no `new_metadata` row, but a legacy
+              `metadata` column set directly (bypassing
+              `ingest_metadata` -- not reachable through this codebase's
+              own indexing/ingest code paths, but a supported direct
+              field assignment, e.g. in tests or a not-yet-migrated
+              import): `episode_date` falls back to `upload_date` for
+              these, which -- unlike `new_metadata.published` -- is
+              derived from JSON metadata in Python and so can't appear
+              in the `COUNT` above (`_episode_date_coalesce()`'s
+              docstring). Evaluated in Python; every row produced by the
+              normal indexing pipeline gets a `new_metadata` row (via
+              `sync.tasks.migrate_to_metadata`/`download_media_metadata`,
+              whose `.published` already covers `upload_date` -- see
+              `Metadata.ingest_metadata`), so this group is expected to
+              be empty or tiny.
 
             `created` is only `None` for an unsaved instance (it has
             `auto_now_add=True`, populated on save); that case falls back
@@ -1202,34 +1286,34 @@ class Media(models.Model):
         day_start = date.replace(hour=0, minute=0, second=0, microsecond=0)
         day_end = day_start + timedelta(days=1)
 
-        def sorts_before(field):
-            return (
-                models.Q(**{f'{field}__lt': date}) |
-                models.Q(**{field: date, 'created__lt': created}) |
-                models.Q(**{field: date, 'created': created, 'key__lt': self.key})
-            )
-
         others = Media.objects.filter(source_id=self.source_id)
         if self.pk is not None:
             others = others.exclude(pk=self.pk)
-        before = others.filter(
-            published__gte=day_start,
-            published__lt=day_end,
-        ).filter(sorts_before('published')).count()
-        unpublished = others.filter(published__isnull=True)
-        no_metadata = models.Q(metadata__isnull=True, new_metadata__isnull=True)
-        before += unpublished.filter(
-            no_metadata,
-            created__gte=day_start,
-            created__lt=day_end,
-        ).filter(sorts_before('created')).count()
+        legacy_metadata_only = models.Q(
+            published__isnull=True,
+            new_metadata__isnull=True,
+            metadata__isnull=False,
+        )
+        sql_others = others.exclude(legacy_metadata_only).annotate(
+            episode_date_sort=_episode_date_coalesce(),
+        )
+        before = sql_others.filter(
+            episode_date_sort__gte=day_start,
+            episode_date_sort__lt=day_end,
+        ).filter(
+            models.Q(episode_date_sort__lt=date) |
+            models.Q(episode_date_sort=date, created__lt=created) |
+            models.Q(episode_date_sort=date, created=created, key__lt=self.key)
+        ).count()
+
         this_item = (date, created, self.key)
-        for other in unpublished.exclude(no_metadata):
+        for other in others.filter(legacy_metadata_only):
             other_date = other.episode_date
             if day_start <= other_date < day_end and (
                 (other_date, _aware_utc(other.created), other.key) < this_item
             ):
                 before += 1
+
         return before + 1
 
     @property
@@ -1252,36 +1336,65 @@ class Media(models.Model):
             )
         return self.episode_date.strftime('%m%d'), day_index
 
+    @staticmethod
+    def _nfo_episode_number_for(mmdd, day_index):
+        '''
+            The single formula for the disjoint NFO/overflow episode
+            number for a given (MMDD, day_index) pair -- shared by
+            `nfo_episode_number` and, for `day_index > 99`,
+            `episode_mmddnn`, so the two can never drift from each
+            other. See `nfo_episode_number`'s docstring for the two
+            ranges this produces.
+        '''
+        if day_index <= 99:
+            return int(mmdd) * 100 + day_index
+        return 10_000_000 + int(mmdd) * 10_000 + day_index
+
     @property
     def episode_mmddnn(self):
         '''
             "MMDD" (from `episode_date`) plus the same-day index from
             `_same_day_index`, zero-padded to two digits, e.g. '091401' for
-            the first item on September 14th. More than 99 same-day items
-            logs a warning and uses the unpadded (3+ digit) index instead
-            of silently wrapping or truncating.
+            the first item on September 14th.
+
+            More than 99 same-day items logs a warning and, instead of
+            naively concatenating the unpadded (3+ digit) index (which,
+            for a variable-width MMDD + index string, can produce the
+            same digits as a *different* (MMDD, index) pair once parsed
+            back with `int()` -- e.g. '0101' + '110' and '1011' + '10'
+            both give 101110), returns `str(nfo_episode_number)`: the
+            same disjoint, overflow-range number `nfo_episode_number`
+            uses for the NFO `<episode>` value (both go through
+            `_nfo_episode_number_for`). This keeps
+            `int(episode_mmddnn) == nfo_episode_number` true in every
+            case, so the filename and the NFO always agree on this
+            item's number.
         '''
         mmdd, day_index = self._episode_mmdd_and_index()
+        if day_index > 99:
+            return str(self._nfo_episode_number_for(mmdd, day_index))
         return f'{mmdd}{day_index:02}'
 
     @property
     def nfo_episode_number(self):
         '''
-            The non-playlist NFO <episode> value, derived from
-            `episode_mmddnn` without ever giving two (day, index) pairs the
-            same number:
+            The non-playlist NFO <episode> value, computed from the same
+            (MMDD, day_index) pair as `episode_mmddnn` without ever giving
+            two such pairs the same number:
 
-            - index <= 99: `int(episode_mmddnn)`, e.g. 91401 for '091401'
-              (at most 123199).
+            - index <= 99: `int(mmdd) * 100 + day_index`, e.g. 91401 for
+              ('0914', 1) (at most 123199) -- equal to `int(episode_mmddnn)`
+              for that range, since `episode_mmddnn` is `f'{mmdd}{day_index:02}'`.
             - index > 99: 10_000_000 + MMDD * 10_000 + index, a range that
               cannot overlap the first one. `int()` of a variable-width
               '0101' + '110' would otherwise equal '1011' + '10'. These
               items sort after the regular episodes of their season.
+              `episode_mmddnn` returns `str()` of this same value for
+              index > 99, so `int(episode_mmddnn) == nfo_episode_number`
+              always holds.
         '''
         mmdd, day_index = self._episode_mmdd_and_index()
-        if day_index <= 99:
-            return int(mmdd) * 100 + day_index
-        return 10_000_000 + int(mmdd) * 10_000 + day_index
+        return self._nfo_episode_number_for(mmdd, day_index)
 
     def calculate_episode_number(self):
         if self.source.is_playlist:
