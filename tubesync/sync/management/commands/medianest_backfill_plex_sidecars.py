@@ -392,10 +392,13 @@ class Command(BaseCommand):
             Moves the video to its profile path (apply) or reports whether
             it would (dry-run). Returns True when the media is (or would
             be) at its profile path, so its sidecars can be written there.
-            A missing current file, or a target already occupied by
-            another file, is counted as an error and returns False:
-            rename_files() silently declines to move in both cases, and
-            writing sidecars would then name them after the wrong file.
+            A missing current file, a target video already occupied by
+            another file, or any sidecar destination that
+            `_occupied_sidecar_targets()` finds already present, is
+            counted as an error and returns False: rename_files()
+            silently declines to move the video in the first two cases
+            and would overwrite existing sidecars in the third; writing
+            sidecars would then name them after the wrong file.
         '''
         if not (media.downloaded and media.media_file):
             summary['already_in_place'] += 1
