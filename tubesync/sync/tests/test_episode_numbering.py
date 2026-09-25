@@ -11,6 +11,7 @@
     `prefer_hdr=False`) so the checked-in metadata fixtures format
     successfully -- deterministic, no network, no `/downloads` dependence.
 '''
+import json
 import logging
 from datetime import datetime, timedelta
 from unittest.mock import patch
@@ -176,6 +177,22 @@ class EpisodeNumberingTestCase(TestCase):
         self.assertEqual(early.episode_mmddnn, '091101')
         self.assertEqual(late.episode_mmddnn, '091102')
         self.assertEqual(published.episode_mmddnn, '091103')
+
+    def test_metadata_only_in_the_related_table_is_grouped_by_upload_date(self):
+        # import-existing-media style: Media.metadata stays NULL and the
+        # metadata lives only in the related `new_metadata` row.
+        early = Media.objects.create(key='related-1', source=self.source)
+        late = Media.objects.create(key='related-2', source=self.source)
+        for item in (early, late):
+            item.ingest_metadata(json.loads(metadata))
+        Media.objects.filter(pk=early.pk).update(created=aware(2026, 4, 1))
+        Media.objects.filter(pk=late.pk).update(created=aware(2026, 5, 1))
+        early.refresh_from_db()
+        late.refresh_from_db()
+        self.assertIsNone(early.metadata)
+        self.assertIsNone(early.published)
+        self.assertEqual(early.episode_mmddnn, '091101')
+        self.assertEqual(late.episode_mmddnn, '091102')
 
     def test_identical_published_ties_break_by_created_then_key(self):
         when = aware(2026, 6, 2, 12, 0, 0)
