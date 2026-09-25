@@ -251,8 +251,7 @@ class Command(BaseCommand):
         working_source = source
         images_already_queued = False
         if overlay:
-            changes = self._overlay_changes(source, overlay)
-            self._describe_overlay_diff(source, changes)
+            original = {field: getattr(source, field, None) for field in overlay}
             # Dry-run validates against a copy, so it reports exactly the
             # failures --apply would hit without touching `source`.
             form = self._overlay_form(
@@ -267,6 +266,8 @@ class Command(BaseCommand):
                 )
                 self.stdout.write(self.style.ERROR(f'  SKIPPED: {messages}'))
                 return
+            changes = self._overlay_changes(original, form.cleaned_data, overlay)
+            self._describe_overlay_diff(original, changes)
             # Turning copy_channel_images on makes source_pre_save enqueue
             # download_source_images itself.
             images_already_queued = bool(changes.get('copy_channel_images'))
@@ -320,13 +321,20 @@ class Command(BaseCommand):
             run_edit_source_checks(form)
         return form
 
-    def _overlay_changes(self, source, overlay):
-        '''The overlay fields whose value differs from `source`'s.'''
-        return {
-            field: value for field, value in overlay.items()
-            if self._comparable(field, getattr(source, field, None))
-            != self._comparable(field, value)
-        }
+    def _overlay_changes(self, original, cleaned, overlay):
+        '''
+            The overlay fields whose validated value differs from the
+            source's `original` one. Comparing the form's cleaned value, not
+            the raw JSON, keeps a re-run a no-op when the form normalizes it
+            (`"3600"` to 3600, a stripped media_format).
+        '''
+        changes = {}
+        for field in overlay:
+            value = cleaned.get(field, overlay[field])
+            before = self._comparable(field, original[field])
+            if before != self._comparable(field, value):
+                changes[field] = value
+        return changes
 
     def _comparable(self, field, value):
         '''
@@ -343,14 +351,14 @@ class Command(BaseCommand):
             choice for item in value for choice in str(item).split(',') if choice
         )
 
-    def _describe_overlay_diff(self, source, changes):
+    def _describe_overlay_diff(self, original, changes):
         if not changes:
             self.stdout.write('  T3 profile already applied (no field changes).')
             return
         self.stdout.write('  T3 profile field changes:')
         for field in sorted(changes):
             self.stdout.write(
-                f'    {field}: {getattr(source, field, None)!r} -> {changes[field]!r}'
+                f'    {field}: {original[field]!r} -> {changes[field]!r}'
             )
 
     def _process_media(self, media, apply_changes, summary):

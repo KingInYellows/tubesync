@@ -507,6 +507,23 @@ class BackfillFailureHandlingTestCase(TestCase):
                 run_backfill('--source', str(source.uuid), '--apply')
             mock_save.assert_not_called()
 
+    def test_a_value_the_form_normalizes_does_not_resave_the_source(self):
+        overlay = (
+            '{"*": {"write_nfo": true, "index_schedule": "3600", '
+            '"media_format": " {key}.{ext} "}}'
+        )
+        with (
+            temp_download_root(),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, media, old_path = self.make_downloaded()
+            run_backfill('--source', str(source.uuid), '--apply')
+            source.refresh_from_db()
+            self.assertEqual(source.media_format, '{key}.{ext}')
+            with patch.object(Source, 'save') as mock_save:
+                run_backfill('--source', str(source.uuid), '--apply')
+            mock_save.assert_not_called()
+
     def test_configured_list_field_does_not_resave_the_source(self):
         overlay = (
             '{"*": {"write_nfo": true, "copy_thumbnails": true, '
