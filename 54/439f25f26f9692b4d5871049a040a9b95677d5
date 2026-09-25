@@ -1,0 +1,25 @@
+tubesync/medianest_bridge/README.md
+  s_237fbbbabfe3a4::t_6778c864472349 484-485
+tubesync/medianest_bridge/contract/bridge-openapi.v1.yaml
+  s_237fbbbabfe3a4::t_9314b9ce1b0380 5-9,340-341,557-560,699-715
+tubesync/medianest_bridge/contract/contract_fixtures.json
+  s_237fbbbabfe3a4::t_940500e49cf710 5
+tubesync/medianest_bridge/source_forms.py
+  s_237fbbbabfe3a4::t_6ce1de55a9b291 111-112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "54439f25f26f9692b4d5871049a040a9b95677d5",
+  "prompts": {},
+  "sessions": {
+    "s_237fbbbabfe3a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2373b7aa-381c-4fe7-83a0-be4487388411",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
