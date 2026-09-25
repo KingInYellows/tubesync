@@ -97,7 +97,7 @@ implied into an explicit fork-delta notice:
 > `meeb/tubesync` at the pinned upstream-base commit
 > (`medianest_bridge/docs/UPSTREAM_SHA`). It is licensed identically to
 > the rest of this repository, AGPLv3, under the unmodified `LICENSE` at
-> the repository root. The seven upstream files this fork's delta touches
+> the repository root. The eight upstream files this fork's delta touches
 > (`medianest_bridge/README.md`'s "Fork delta" section lists them exactly)
 > remain licensed as upstream TubeSync itself is licensed, modified only
 > as that section describes.

@@ -45,9 +45,9 @@ guarantee (`medianest_bridge/docs/migration-upgrade-proof.md`); every
 slice's fork delta stays inside `medianest_bridge/` plus the small,
 explicitly enumerated set of upstream touch points documented in this
 app's `README.md` ("Fork delta" section) -- five files as of T5, four of
-them a few lines each (seven files as of the later date-based-episode-numbering
-slice, which added `sync/models/media.py`, `sync/models/source.py` and
-`sync/models/metadata.py`;
+them a few lines each (eight files as of the later date-based-episode-numbering
+slice, which added `sync/models/media.py`, `sync/models/source.py`,
+`sync/models/metadata.py` and `sync/templates/sync/_mediaformatvars.html`;
 see that section for the current, authoritative list and line counts).
 
 ## 3. Bridge contract version

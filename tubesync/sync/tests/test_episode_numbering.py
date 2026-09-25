@@ -2,7 +2,8 @@
     T1: stable date-based episode numbering.
 
     Covers `Media.episode_date`, `Media.episode_yyyy`/`episode_mmddnn`
-    (and their shared `_same_day_index` helper), `Media.title_full_bounded`,
+    (and their shared `_same_day_index` helper), the numbers a downloaded
+    file keeps, `Media.title_full_bounded`,
     the new `nfoxml` season/episode behaviour for non-playlist sources and
     for playlists filed by the date scheme, and that other playlists keep
     the legacy `calculate_episode_number` numbering.
@@ -14,14 +15,17 @@
 '''
 import json
 import logging
+import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone as dt_timezone
+from pathlib import Path
 from unittest.mock import patch
 from xml.etree import ElementTree
 
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.db.models.functions import Coalesce
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from medianest_bridge.source_forms import default_form_data, run_edit_source_checks
@@ -31,7 +35,11 @@ from sync.choices import (
     YouTube_SourceType,
 )
 from sync.forms import SourceForm
-from sync.models import Media, Source
+from sync.models import Media, Metadata, Source
+from sync.models._migrations import media_file_storage
+from sync.models.media import (
+    _episode_day_index_from_name, _parse_episode_token,
+)
 
 from .fixtures import all_test_metadata
 
@@ -111,7 +119,9 @@ class EpisodeNumberingTestCase(TestCase):
             live position (not a number frozen at creation time), inserting
             an earlier-published item into an *already-numbered* day shifts
             every later same-day item's number. Only cross-day isolation
-            (the previous test) is guaranteed.
+            (the previous test) is guaranteed. A downloaded file of a
+            source filed by `{episode_mmddnn}` keeps its number instead
+            (`FrozenEpisodeNumberTestCase`).
         '''
         morning = Media.objects.create(
             key='same-day-morning', source=self.source, metadata=metadata,
@@ -602,3 +612,387 @@ class EpisodeNumberingTestCase(TestCase):
                 media.source.media_format = media_format
                 nfo_tree = ElementTree.fromstring(media.nfoxml)
                 self.assertEqual(nfo_tree.find('season').text, expected_season)
+
+
+PLEX_FORMAT = (
+    'Season {episode_yyyy}/s{episode_yyyy}e{episode_mmddnn} - '
+    '{title_full_bounded} [{key}].{ext}'
+)
+
+
+@contextmanager
+def temp_download_root():
+    '''
+        Points both the media storage and `settings.DOWNLOAD_ROOT` (which
+        `write_text_file`'s callers are checked against) at one temporary
+        directory, never the real downloads directory.
+    '''
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        with (
+            override_settings(DOWNLOAD_ROOT=tmp_dir),
+            patch.object(media_file_storage, 'location', tmp_dir),
+        ):
+            yield tmp_dir
+
+
+class FrozenEpisodeNumberTestCase(TestCase):
+    '''
+        A downloaded file of a source filed by `{episode_mmddnn}` keeps the
+        number its name carries; other same-day items number around it.
+    '''
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+        self.source = Source.objects.create(
+            source_type=Val(YouTube_SourceType.CHANNEL),
+            key='frozenkey',
+            name='frozenname',
+            directory='frozendirectory',
+            media_format=PLEX_FORMAT,
+            index_schedule=3600,
+            delete_old_media=False,
+            days_to_keep=14,
+            source_resolution=Val(SourceResolution.VIDEO_1080P),
+            source_vcodec=Val(YouTube_VideoCodec.VP9),
+            source_acodec=Val(YouTube_AudioCodec.OPUS),
+            prefer_60fps=False,
+            prefer_hdr=False,
+            fallback=Val(Fallback.FAIL),
+        )
+
+    def make_media(self, key, published):
+        return Media.objects.create(
+            key=key, source=self.source, metadata=metadata,
+            published=published,
+        )
+
+    def mark_downloaded(self, media, name=None):
+        '''
+            Marks `media` downloaded at `name` (default: its current
+            filename) without saving through signals, and reloads it.
+        '''
+        if name is None:
+            name = str(Path(self.source.directory) / media.filename)
+        Media.objects.filter(pk=media.pk).update(
+            downloaded=True, media_file=name,
+        )
+        return Media.objects.get(pk=media.pk)
+
+    def test_downloaded_file_keeps_its_number_when_an_earlier_item_arrives(self):
+        later = self.mark_downloaded(
+            self.make_media('later', aware(2026, 3, 5, 10, 0, 0)),
+        )
+        self.assertEqual(later.episode_mmddnn, '030501')
+        earlier = self.make_media('earlier', aware(2026, 3, 5, 9, 0, 0))
+        # Live order would put `earlier` first and give it 030501, the
+        # number `later`'s file already has.
+        self.assertEqual(earlier._same_day_index(), 1)
+        self.assertEqual(later.episode_mmddnn, '030501')
+        self.assertEqual(earlier.episode_mmddnn, '030502')
+        self.assertNotEqual(earlier.filepath, later.filepath)
+        self.assertEqual(later.nfo_episode_number, 30501)
+        self.assertEqual(earlier.nfo_episode_number, 30502)
+
+    def test_other_items_take_the_free_numbers_in_same_day_order(self):
+        noon = self.mark_downloaded(
+            self.make_media('noon', aware(2026, 3, 5, 12, 0, 0)),
+        )
+        morning = self.make_media('morning', aware(2026, 3, 5, 9, 0, 0))
+        afternoon = self.make_media('afternoon', aware(2026, 3, 5, 13, 0, 0))
+        self.assertEqual(noon.episode_mmddnn, '030501')
+        self.assertEqual(morning.episode_mmddnn, '030502')
+        self.assertEqual(afternoon.episode_mmddnn, '030503')
+        # Downloading in any order keeps every number where it was.
+        afternoon = self.mark_downloaded(afternoon)
+        self.assertEqual(morning.episode_mmddnn, '030502')
+        morning = self.mark_downloaded(morning)
+        self.assertEqual(
+            [noon.episode_mmddnn, morning.episode_mmddnn, afternoon.episode_mmddnn],
+            ['030501', '030502', '030503'],
+        )
+        dawn = self.make_media('dawn', aware(2026, 3, 5, 6, 0, 0))
+        self.assertEqual(dawn.episode_mmddnn, '030504')
+
+    def test_title_change_keeps_the_frozen_number(self):
+        media = self.make_media('retitled', aware(2026, 3, 5, 10, 0, 0))
+        media = self.mark_downloaded(
+            media,
+            'frozendirectory/Season 2026/s2026e030507 - Old Title [retitled].webm',
+        )
+        media.title = 'New Title'
+        self.assertEqual(media.episode_mmddnn, '030507')
+        self.assertEqual(
+            media.filename, 'Season 2026/s2026e030507 - New Title [retitled].mkv',
+        )
+
+    def test_legacy_named_download_is_numbered_live(self):
+        media = self.mark_downloaded(
+            self.make_media('legacy', aware(2026, 3, 5, 10, 0, 0)),
+            'frozendirectory/20260305_frozenname_legacy_title_legacy.mkv',
+        )
+        earlier = self.make_media('legacy-earlier', aware(2026, 3, 5, 9, 0, 0))
+        self.assertEqual(earlier.episode_mmddnn, '030501')
+        self.assertEqual(media.episode_mmddnn, '030502')
+
+    def test_file_numbered_for_another_day_is_renumbered(self):
+        media = self.mark_downloaded(
+            self.make_media('moved-day', aware(2026, 3, 5, 10, 0, 0)),
+            'frozendirectory/Season 2026/s2026e030403 - T [moved-day].mkv',
+        )
+        self.assertIsNone(
+            media._frozen_day_index(PLEX_FORMAT, '0305'),
+        )
+        self.assertEqual(media.episode_mmddnn, '030501')
+
+    def test_overflow_number_is_read_back(self):
+        overflow = str(Media._nfo_episode_number_for('0305', 100))
+        media = self.mark_downloaded(
+            self.make_media('overflow', aware(2026, 3, 5, 10, 0, 0)),
+            f'frozendirectory/Season 2026/s2026e{overflow} - T [overflow].mkv',
+        )
+        self.assertEqual(media.episode_mmddnn, overflow)
+        self.assertEqual(media.nfo_episode_number, int(overflow))
+
+    def test_a_downloaded_item_without_a_frozen_number_skips_taken_ones(self):
+        self.mark_downloaded(
+            self.make_media('taken', aware(2026, 3, 5, 12, 0, 0)),
+            'frozendirectory/Season 2026/s2026e030501 - T [taken].mkv',
+        )
+        legacy = self.mark_downloaded(
+            self.make_media('legacy-first', aware(2026, 3, 5, 9, 0, 0)),
+            'frozendirectory/legacy-first.mkv',
+        )
+        self.assertEqual(legacy.episode_mmddnn, '030502')
+
+    def test_format_without_episode_mmddnn_stays_live(self):
+        self.source.media_format = settings.MEDIA_FORMATSTR_DEFAULT
+        self.source.save()
+        later = self.mark_downloaded(
+            self.make_media('plain-later', aware(2026, 3, 5, 10, 0, 0)),
+            'frozendirectory/Season 2026/s2026e030501 - T [plain-later].mkv',
+        )
+        self.make_media('plain-earlier', aware(2026, 3, 5, 9, 0, 0))
+        self.assertEqual(later.episode_mmddnn, '030502')
+
+
+class EpisodeTokenParsingTestCase(TestCase):
+
+    def test_parse_episode_token(self):
+        for token, mmdd, expected in (
+            ('030501', '0305', 1),
+            ('030599', '0305', 99),
+            ('030500', '0305', None),
+            ('030401', '0305', None),
+            (str(Media._nfo_episode_number_for('0305', 100)), '0305', 100),
+            (str(Media._nfo_episode_number_for('0304', 100)), '0305', None),
+            ('09999999', '0305', None),
+        ):
+            with self.subTest(token=token, mmdd=mmdd):
+                self.assertEqual(_parse_episode_token(token, mmdd), expected)
+
+    def test_name_parsing_rules(self):
+        for name, media_format, expected in (
+            ('S/s2026e030502 - T [k].mkv', PLEX_FORMAT, 2),
+            # Every occurrence must agree.
+            ('030502-030503.mkv', '{episode_mmddnn}-{episode_mmddnn}.{ext}', None),
+            ('030502-030502.mkv', '{episode_mmddnn}-{episode_mmddnn}.{ext}', 2),
+            # No literal next to the field: digit boundaries anchor it.
+            ('k1030502.mkv', '{key}{episode_mmddnn}.{ext}', None),
+            ('key-030502.mkv', '{key}-{episode_mmddnn}.{ext}', 2),
+            # A format spec changes the rendering, so it is not parsed.
+            ('s  030502.mkv', 's{episode_mmddnn:>8}.{ext}', None),
+            ('s030502.mkv', 's{episode_mmddnn!s}.{ext}', 2),
+            ('s030502.mkv', 's{episode_mmddnn!r}.{ext}', None),
+            ('s030502.mkv', 's{episode_mmddnn.{ext}', None),
+        ):
+            with self.subTest(name=name, media_format=media_format):
+                self.assertEqual(
+                    _episode_day_index_from_name(name, media_format, '0305'),
+                    expected,
+                )
+
+
+class LazyEpisodeFormatKeysTestCase(TestCase):
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+        self.source = Source.objects.create(
+            source_type=Val(YouTube_SourceType.CHANNEL),
+            key='lazykey',
+            name='lazyname',
+            directory='lazydirectory',
+            media_format=settings.MEDIA_FORMATSTR_DEFAULT,
+            index_schedule=3600,
+            delete_old_media=False,
+            days_to_keep=14,
+            source_resolution=Val(SourceResolution.VIDEO_1080P),
+            source_vcodec=Val(YouTube_VideoCodec.VP9),
+            source_acodec=Val(YouTube_AudioCodec.OPUS),
+            prefer_60fps=False,
+            prefer_hdr=False,
+            fallback=Val(Fallback.FAIL),
+        )
+        self.media = Media.objects.create(
+            key='lazy', source=self.source, metadata=metadata,
+            published=aware(2026, 3, 5, 10, 0, 0),
+        )
+
+    def test_unused_episode_keys_are_not_computed(self):
+        with patch.object(Media, '_episode_day_index') as day_index:
+            format_dict = self.media.format_dict
+            self.media.filename
+        day_index.assert_not_called()
+        self.assertNotIn('episode_mmddnn', format_dict)
+        self.assertNotIn('episode_yyyy', format_dict)
+
+    def test_used_episode_keys_are_computed(self):
+        self.source.media_format = 's{episode_mmddnn} [{key}].{ext}'
+        format_dict = self.media.format_dict
+        self.assertEqual(format_dict['episode_mmddnn'], '030501')
+        self.assertNotIn('episode_yyyy', format_dict)
+        self.assertEqual(self.media.filename, 's030501 [lazy].mkv')
+
+
+class RenameRewritesEpisodeNfoTestCase(TestCase):
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+
+    def test_rename_rewrites_the_nfo_without_copy_thumbnails(self):
+        '''
+            A rename into a new episode number moves the old NFO; with
+            `write_nfo` on it is rewritten even when `copy_thumbnails` is
+            off, so `<episode>` matches the new file name.
+        '''
+        source = Source.objects.create(
+            source_type=Val(YouTube_SourceType.CHANNEL),
+            key='renamekey',
+            name='renamename',
+            directory='renamedirectory',
+            media_format=PLEX_FORMAT,
+            write_nfo=True,
+            copy_thumbnails=False,
+            index_schedule=3600,
+            delete_old_media=False,
+            days_to_keep=14,
+            source_resolution=Val(SourceResolution.VIDEO_1080P),
+            source_vcodec=Val(YouTube_VideoCodec.VP9),
+            source_acodec=Val(YouTube_AudioCodec.OPUS),
+            prefer_60fps=False,
+            prefer_hdr=False,
+            fallback=Val(Fallback.FAIL),
+        )
+        media = Media.objects.create(
+            key='renamed', source=source, metadata=metadata,
+            published=aware(2026, 3, 5, 10, 0, 0),
+        )
+        with temp_download_root() as tmp_dir:
+            old_video = Path(tmp_dir) / 'renamedirectory' / 'old name [renamed].mkv'
+            old_video.parent.mkdir(parents=True)
+            old_video.write_bytes(b'video')
+            old_nfo = old_video.with_suffix('.nfo')
+            old_nfo.write_text('<episodedetails><episode>1</episode></episodedetails>')
+            Media.objects.filter(pk=media.pk).update(
+                downloaded=True,
+                media_file='renamedirectory/old name [renamed].mkv',
+            )
+            media = Media.objects.get(pk=media.pk)
+
+            media.rename_files()
+
+            new_video = source.directory_path / media.filename
+            self.assertTrue(new_video.exists())
+            self.assertFalse(old_video.exists())
+            new_nfo = new_video.with_suffix('.nfo')
+            self.assertFalse(old_nfo.exists())
+            nfo_tree = ElementTree.fromstring(new_nfo.read_text())
+            self.assertEqual(nfo_tree.find('episode').text, '30501')
+
+
+class NewMetadataWithoutPublishedTestCase(TestCase):
+    '''
+        A `new_metadata` row without `published` (written without going
+        through `ingest_metadata`) is dated by `upload_date` in Python;
+        `_same_day_index` must count it the same way.
+    '''
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+        self.source = Source.objects.create(
+            source_type=Val(YouTube_SourceType.CHANNEL),
+            key='nullpubkey',
+            name='nullpubname',
+            directory='nullpubdirectory',
+            media_format=settings.MEDIA_FORMATSTR_DEFAULT,
+            index_schedule=3600,
+            delete_old_media=False,
+            days_to_keep=14,
+            source_resolution=Val(SourceResolution.VIDEO_1080P),
+            source_vcodec=Val(YouTube_VideoCodec.VP9),
+            source_acodec=Val(YouTube_AudioCodec.OPUS),
+            prefer_60fps=False,
+            prefer_hdr=False,
+            fallback=Val(Fallback.FAIL),
+        )
+
+    def test_counted_on_its_upload_date(self):
+        # `metadata` encodes upload_date 2017-09-11.
+        bare = Media.objects.create(
+            key='bare-new-metadata', source=self.source, metadata=metadata,
+        )
+        Media.objects.filter(pk=bare.pk).update(published=None)
+        Metadata.objects.create(
+            media=bare, site='Youtube', key=bare.key, published=None,
+        )
+        bare = Media.objects.get(pk=bare.pk)
+        self.assertIsNone(bare.new_metadata.published)
+        self.assertEqual(bare.episode_date, aware(2017, 9, 11))
+        later = Media.objects.create(
+            key='later-same-day', source=self.source, metadata=metadata,
+            published=aware(2017, 9, 11, 12, 0, 0),
+        )
+        self.assertEqual(later._same_day_index(), 2)
+        self.assertEqual(bare._same_day_index(), 1)
+
+
+class UploadDateOnlyTimezoneTestCase(TestCase):
+    '''
+        `download_media_metadata` sets `Media.published` from a bare
+        `upload_date` with `timezone.make_aware` (local time), while
+        `Metadata.ingest_metadata` stores it as UTC midnight. `episode_date`
+        reads the latter, so a timezone east of UTC (local midnight is
+        the previous UTC day) does not move the episode to the day before.
+    '''
+
+    @override_settings(TIME_ZONE='Asia/Tokyo')
+    def test_episode_day_is_the_upload_date_in_any_timezone(self):
+        logging.disable(logging.CRITICAL)
+        source = Source.objects.create(
+            source_type=Val(YouTube_SourceType.CHANNEL),
+            key='tzkey',
+            name='tzname',
+            directory='tzdirectory',
+            media_format=PLEX_FORMAT,
+            index_schedule=3600,
+            delete_old_media=False,
+            days_to_keep=14,
+            source_resolution=Val(SourceResolution.VIDEO_1080P),
+            source_vcodec=Val(YouTube_VideoCodec.VP9),
+            source_acodec=Val(YouTube_AudioCodec.OPUS),
+            prefer_60fps=False,
+            prefer_hdr=False,
+            fallback=Val(Fallback.FAIL),
+        )
+        media = Media.objects.create(key='tz', source=source)
+        data = json.loads(metadata)
+        data.pop('timestamp', None)
+        data.pop('release_timestamp', None)
+        media.ingest_metadata(data)
+        # What download_media_metadata does next for a bare upload_date.
+        media.metadata = media.metadata_dumps(arg_dict={'_using_table': True})
+        media.published = timezone.make_aware(media.upload_date)
+        media.save()
+        media = Media.objects.get(pk=media.pk)
+        self.assertEqual(media.published.date(), datetime(2017, 9, 10).date())
+        self.assertEqual(media.episode_date, aware(2017, 9, 11))
+        self.assertEqual(media.episode_mmddnn, '091101')
