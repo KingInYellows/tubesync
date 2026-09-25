@@ -158,6 +158,17 @@ def build_tvshow_nfo(source):
         Returns a Kodi/Plex "tvshow.nfo" formatted (prettified) XML string
         for `source`. Looks the channel cache and latest media up once and
         derives <title>, <studio> and <plot> from that one snapshot.
+
+        Carries two `<uniqueid>` elements: `type="youtube"` (the source's
+        current, user-editable `key` -- the one Kodi/Plex/Jellyfin actually
+        scrape against) and a second, non-`default` `type="tubesync"` (the
+        source's immutable `uuid` primary key). Extra `<uniqueid>` elements
+        are ignored by those scrapers as long as none but the intended one
+        is `default="true"`. The second one lets `_foreign_nfo_reason`
+        keep recognising a file this writer created even after the user
+        edits the source's `key` through the source-update form, which
+        would otherwise leave a file with a stale youtube id (and its
+        stale title/plot) permanently un-owned and un-refreshed.
     '''
     cached = _cached_channel_metadata(source)
     studio = _resolve_show_title_from_data(source, cached)
@@ -175,6 +186,11 @@ def build_tvshow_nfo(source):
     nfo.append(_nfo_element(
         nfo, 'uniqueid', str(source.key).strip(), attrs=uniqueid_attrs,
     ))
+    ownership_attrs = OrderedDict()
+    ownership_attrs['type'] = 'tubesync'
+    nfo.append(_nfo_element(
+        nfo, 'uniqueid', str(source.uuid), attrs=ownership_attrs,
+    ))
     if studio:
         nfo.append(_nfo_element(nfo, 'studio', clean_emoji(studio)))
     nfo[-1].tail = '\n'
@@ -185,13 +201,22 @@ def _foreign_nfo_reason(nfo_path, source):
     '''
         Why the well-formed file at `nfo_path` is not this writer's to
         replace, or None when it is (absent, unparseable, or a `<tvshow>`
-        carrying this source's `<uniqueid type="youtube">`, which only this
-        writer emits):
+        carrying either this source's `<uniqueid type="youtube">` (current
+        `key`) or its `<uniqueid type="tubesync">` (immutable `uuid`
+        primary key) -- only this writer emits either):
           - another root, such as a video's own `<episodedetails>` from a
             `media_format` that renders a filename as `tvshow`; overwriting
             it would leave the two writers replacing each other's file;
           - any other `<tvshow>`, such as one written by hand or by the
             upstream `create-tvshow-nfo` command, which never overwrites.
+
+        The `tubesync` id is checked so that editing a source's `key`
+        through the source-update form does not orphan the file this
+        writer already created for it: matching by key alone would treat
+        it as foreign forever after, freezing its title/plot stale. A file
+        written before the `tubesync` id existed only carries the youtube
+        one, which still matches as long as `key` has not since changed --
+        that older/unedited case is unaffected.
     '''
     if not nfo_path.exists():
         return None
@@ -205,8 +230,13 @@ def _foreign_nfo_reason(nfo_path, source):
             'filename as "tvshow"?)'
         )
     key = str(source.key).strip()
+    tubesync_id = str(source.uuid)
     for uniqueid in root.iter('uniqueid'):
-        if uniqueid.get('type') == 'youtube' and (uniqueid.text or '').strip() == key:
+        uid_type = uniqueid.get('type')
+        uid_text = (uniqueid.text or '').strip()
+        if uid_type == 'youtube' and uid_text == key:
+            return None
+        if uid_type == 'tubesync' and uid_text == tubesync_id:
             return None
     return 'it is a tvshow.nfo this writer did not create'
 
