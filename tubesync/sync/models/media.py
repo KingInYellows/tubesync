@@ -1147,13 +1147,15 @@ class Media(models.Model):
             get distinct indexes). The rows are counted in three groups:
 
             - `published` set: `episode_date` is `published`, one COUNT.
-            - `published` unset, no metadata: `upload_date` is unknown, so
-              `episode_date` is `created`, one COUNT.
-            - `published` unset, metadata present: `episode_date` may come
-              from metadata's `upload_date`, which is not a column, so these
-              are evaluated in Python. Fetching metadata sets `published`
-              whenever it has an `upload_date`, so this group is normally
-              empty or tiny.
+            - `published` unset, no metadata in either the legacy
+              `metadata` column or the related `new_metadata` row:
+              `upload_date` is unknown, so `episode_date` is `created`, one
+              COUNT.
+            - `published` unset, metadata present in either place:
+              `episode_date` may come from metadata's `upload_date`, which is
+              not a column, so these are evaluated in Python. Fetching
+              metadata sets `published` whenever it has an `upload_date`, so
+              this group is normally empty or tiny.
 
             Each COUNT matches the items that sort strictly before this one
             (unique per source by `key`, so a strict "less than" on the full
@@ -1191,13 +1193,14 @@ class Media(models.Model):
             published__lt=day_end,
         ).filter(sorts_before('published')).count()
         unpublished = others.filter(published__isnull=True)
+        no_metadata = models.Q(metadata__isnull=True, new_metadata__isnull=True)
         before += unpublished.filter(
-            metadata__isnull=True,
+            no_metadata,
             created__gte=day_start,
             created__lt=day_end,
         ).filter(sorts_before('created')).count()
         this_item = (date, created, self.key)
-        for other in unpublished.filter(metadata__isnull=False):
+        for other in unpublished.exclude(no_metadata):
             other_date = other.episode_date
             if day_start <= other_date < day_end and (
                 (other_date, _aware_utc(other.created), other.key) < this_item
