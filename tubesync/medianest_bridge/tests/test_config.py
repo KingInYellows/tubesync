@@ -331,8 +331,8 @@ class SourceDefaultsValidationSafetyTestCase(BridgeTestCase):
         self.assertTrue(any('filter_text' in e for e in errors))
         self.assertFalse(any('(unclosed' in e for e in errors))
 
-    def test_list_shaped_field_accepts_a_string_or_a_list(self):
-        for value in ('sponsor', ['sponsor']):
+    def test_list_shaped_field_accepts_a_comma_string_or_a_list(self):
+        for value in ('sponsor', ['sponsor'], 'sponsor,selfpromo'):
             with self.subTest(value=value):
                 self.set_defaults({'*': {'sponsorblock_categories': value}})
                 self.assertEqual(config.validate_source_defaults(), [])
