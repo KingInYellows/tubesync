@@ -199,21 +199,48 @@ def _holds_another_nfo(nfo_path):
     return root.tag != 'tvshow'
 
 
-def write_tvshow_nfo(source):
+def tvshow_nfo_needs_write(source):
     '''
-        Writes `tvshow.nfo` for `source`, only when `write_nfo` is enabled.
-        Idempotent: skips the filesystem write entirely when the bytes on
-        disk already match what would be written, so calling this from
-        `index_source`, `download_source_images` and
-        `download_media_metadata` every run does not churn the file (or
-        its mtime) when nothing has changed. Never deletes anything.
+        True when `write_tvshow_nfo()` would write: `write_nfo` is enabled,
+        the source directory exists, the bytes on disk differ from
+        `build_tvshow_nfo()`, and the path does not hold a video's own NFO
+        (`_holds_another_nfo`, which logs a warning). Shared with T4's
+        backfill dry-run so its preview and the real write use one
+        decision.
+    '''
+    if not source.write_nfo:
+        return False
+    directory = Path(source.directory_path)
+    if not directory.is_dir():
+        return False
+    nfo_path = directory / 'tvshow.nfo'
+    content = build_tvshow_nfo(source).encode('utf-8')
+    if nfo_path.exists() and nfo_path.read_bytes() == content:
+        return False
+    if _holds_another_nfo(nfo_path):
+        log.warning(
+            f'Not writing tvshow.nfo for: {source}: {nfo_path} holds another '
+            'NFO (does media_format render a video filename as "tvshow"?)'
+        )
+        return False
+    return True
 
-        Best-effort: it runs at the tail of those tasks, after their real
-        work has succeeded, so it never raises. A missing source directory
-        (not created yet by `check_source_directory_exists`) is skipped --
-        creating it is not this function's job -- and any other error is
-        logged with its traceback instead of failing, and so retrying, the
-        calling task.
+
+def write_tvshow_nfo(source, raise_errors=False):
+    '''
+        Writes `tvshow.nfo` for `source` when `tvshow_nfo_needs_write()`
+        says so: only with `write_nfo` enabled, never into a missing
+        source directory (creating it is `check_source_directory_exists`'s
+        job), never over a video's own NFO, and never when the bytes on
+        disk already match -- so calling this from `index_source`,
+        `download_source_images` and `download_media_metadata` every run
+        does not churn the file (or its mtime). Never deletes anything.
+
+        Best-effort by default: it runs at the tail of those tasks, after
+        their real work has succeeded, so any error is logged with its
+        traceback instead of failing, and so retrying, the calling task.
+        `raise_errors=True` re-raises instead, for T4's backfill command,
+        which counts failures in its summary and exit status.
 
         Concurrent-write caveat (accepted limitation): two
         `download_media_metadata` tasks for the same source can finish
@@ -231,31 +258,19 @@ def write_tvshow_nfo(source):
         just to close that narrow window, so we accept this self-healing
         race instead.
 
-        Returns True when it actually wrote the file, False otherwise
-        (disabled, no directory, already up to date, or an error) -- used
-        by T4's backfill command summary counters; the task call sites
-        ignore it.
+        Returns True when it actually wrote the file, False otherwise.
     '''
-    if not source.write_nfo:
-        return False
     try:
-        directory = Path(source.directory_path)
-        if not directory.is_dir():
-            log.debug(f'Skipping tvshow.nfo, no directory yet for: {source}')
-            return False
-        nfo_path = directory / 'tvshow.nfo'
-        content = build_tvshow_nfo(source)
-        if nfo_path.exists() and nfo_path.read_bytes() == content.encode('utf-8'):
-            return False
-        if _holds_another_nfo(nfo_path):
-            log.warning(
-                f'Not writing tvshow.nfo for: {source}: {nfo_path} holds another '
-                'NFO (does media_format render a video filename as "tvshow"?)'
-            )
+        if not tvshow_nfo_needs_write(source):
             return False
         log.info(f'Writing tvshow.nfo for: {source}')
-        write_text_file(nfo_path, content)
+        write_text_file(
+            Path(source.directory_path) / 'tvshow.nfo',
+            build_tvshow_nfo(source),
+        )
         return True
     except Exception:
+        if raise_errors:
+            raise
         log.exception(f'Failed to write tvshow.nfo for: {source}')
         return False
