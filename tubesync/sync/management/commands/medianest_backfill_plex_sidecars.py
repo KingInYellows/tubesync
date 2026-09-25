@@ -112,7 +112,7 @@ _TUBESYNC_TO_CONTRACT_SOURCE_TYPE = {
 }
 
 _SUMMARY_FIELDS = (
-    'sources', 'media_seen', 'renamed', 'already_in_place',
+    'sources', 'media_seen', 'renamed', 'adopted', 'already_in_place',
     'nfo_written', 'nfo_unchanged', 'thumbs_copied',
     'tvshow_written', 'images_enqueued', 'locked', 'errors',
 )
@@ -251,8 +251,7 @@ class Command(BaseCommand):
         working_source = source
         images_already_queued = False
         if overlay:
-            changes = self._overlay_changes(source, overlay)
-            self._describe_overlay_diff(source, changes)
+            original = {field: getattr(source, field, None) for field in overlay}
             # Dry-run validates against a copy, so it reports exactly the
             # failures --apply would hit without touching `source`.
             form = self._overlay_form(
@@ -267,6 +266,8 @@ class Command(BaseCommand):
                 )
                 self.stdout.write(self.style.ERROR(f'  SKIPPED: {messages}'))
                 return
+            changes = self._overlay_changes(original, form.cleaned_data, overlay)
+            self._describe_overlay_diff(original, changes)
             # Turning copy_channel_images on makes source_pre_save enqueue
             # download_source_images itself.
             images_already_queued = bool(changes.get('copy_channel_images'))
@@ -279,14 +280,17 @@ class Command(BaseCommand):
             else:
                 working_source = form.instance
 
-        downloaded_qs = Media.objects.filter(
-            source=source, downloaded=True,
-        ).order_by('key')
-        for media in downloaded_qs:
+        downloaded = list(
+            Media.objects.filter(source=source, downloaded=True).order_by('key')
+        )
+        media_files = {
+            Path(media.media_file.path) for media in downloaded if media.media_file
+        }
+        for media in downloaded:
             summary['media_seen'] += 1
             if not apply_changes:
                 media.source = working_source
-            self._process_media(media, apply_changes, summary)
+            self._process_media(media, apply_changes, summary, media_files)
 
         self._process_tvshow_and_images(
             working_source, apply_changes, summary, images_already_queued,
@@ -320,13 +324,20 @@ class Command(BaseCommand):
             run_edit_source_checks(form)
         return form
 
-    def _overlay_changes(self, source, overlay):
-        '''The overlay fields whose value differs from `source`'s.'''
-        return {
-            field: value for field, value in overlay.items()
-            if self._comparable(field, getattr(source, field, None))
-            != self._comparable(field, value)
-        }
+    def _overlay_changes(self, original, cleaned, overlay):
+        '''
+            The overlay fields whose validated value differs from the
+            source's `original` one. Comparing the form's cleaned value, not
+            the raw JSON, keeps a re-run a no-op when the form normalizes it
+            (`"3600"` to 3600, a stripped media_format).
+        '''
+        changes = {}
+        for field in overlay:
+            value = cleaned.get(field, overlay[field])
+            before = self._comparable(field, original[field])
+            if before != self._comparable(field, value):
+                changes[field] = value
+        return changes
 
     def _comparable(self, field, value):
         '''
@@ -343,17 +354,17 @@ class Command(BaseCommand):
             choice for item in value for choice in str(item).split(',') if choice
         )
 
-    def _describe_overlay_diff(self, source, changes):
+    def _describe_overlay_diff(self, original, changes):
         if not changes:
             self.stdout.write('  T3 profile already applied (no field changes).')
             return
         self.stdout.write('  T3 profile field changes:')
         for field in sorted(changes):
             self.stdout.write(
-                f'    {field}: {getattr(source, field, None)!r} -> {changes[field]!r}'
+                f'    {field}: {original[field]!r} -> {changes[field]!r}'
             )
 
-    def _process_media(self, media, apply_changes, summary):
+    def _process_media(self, media, apply_changes, summary, media_files):
         try:
             if apply_changes:
                 with (
@@ -369,10 +380,10 @@ class Command(BaseCommand):
                     # moves, its own NFO rewrite). Rolling that save back
                     # on a later failure would leave the database pointing
                     # at a file that has already moved.
-                    if self._rename_media(media, summary, True):
+                    if self._rename_media(media, summary, True, media_files):
                         self._handle_episode_nfo(media, summary, True)
                         self._handle_thumbnail(media, summary, True)
-            elif self._rename_media(media, summary, False):
+            elif self._rename_media(media, summary, False, media_files):
                 self._handle_episode_nfo(media, summary, False)
                 self._handle_thumbnail(media, summary, False)
         except TaskLockedException:
@@ -387,33 +398,64 @@ class Command(BaseCommand):
                 f'medianest_backfill_plex_sidecars: error processing {media}'
             )
 
-    def _rename_media(self, media, summary, apply_changes):
+    def _rename_media(self, media, summary, apply_changes, media_files):
         '''
             Moves the video to its profile path (apply) or reports whether
             it would (dry-run). Returns True when the media is (or would
             be) at its profile path, so its sidecars can be written there.
-            A missing current file, a target video already occupied by
-            another file, or any sidecar destination that
-            `_occupied_sidecar_targets()` finds already present, is
-            counted as an error and returns False: rename_files()
-            silently declines to move the video in the first two cases
-            and would overwrite existing sidecars in the third; writing
-            sidecars would then name them after the wrong file.
+
+            When the current file is gone but the profile path holds a
+            file no other media claims, an earlier run moved it and then
+            failed to save media_file (rename_files() moves before it
+            saves), so the row is pointed at it ("adopted").
+
+            Counted as an error, returning False: a downloaded row with no
+            media_file; a missing current file with nothing to adopt; a
+            target video that already exists; a sidecar destination that
+            already exists (rename_files() would overwrite it); or a
+            "sidecar" that is another media's own video (rename_files()
+            would move it without updating that media's row).
         '''
-        if not (media.downloaded and media.media_file):
-            summary['already_in_place'] += 1
-            return True
+        if not media.media_file:
+            summary['errors'] += 1
+            log.error(
+                f'medianest_backfill_plex_sidecars: {media}: marked downloaded '
+                'but has no media file; skipping its NFO and thumbnail'
+            )
+            return False
         current = Path(media.media_file.path)
         target = Path(media.filepath)
         if current == target:
             summary['already_in_place'] += 1
             return True
+        if not current.exists() and target.exists() and target not in media_files:
+            if apply_changes:
+                media.media_file.name = str(
+                    target.relative_to(media.media_file.storage.location)
+                )
+                media.skip = False
+                media.save(update_fields=('media_file', 'skip'))
+            log.warning(
+                f'medianest_backfill_plex_sidecars: {media}: adopting {target}, '
+                f'already moved from {current} by an earlier run'
+            )
+            summary['adopted'] += 1
+            return True
         problem = None
-        occupied = self._occupied_sidecar_targets(current, target)
+        moves = self._sidecar_moves(current, target)
+        occupied = [
+            destination for other, destination in moves
+            if destination != other and destination.exists()
+        ]
+        claimed = [other for other, _ in moves if other in media_files]
         if not current.exists():
             problem = f'current file {current} is missing'
         elif target.exists():
             problem = f'target {target} is already occupied'
+        elif claimed:
+            problem = 'other media files share its name prefix: ' + ', '.join(
+                str(path) for path in claimed
+            )
         elif occupied:
             problem = 'sidecar target(s) already occupied: ' + ', '.join(
                 str(path) for path in occupied
@@ -432,23 +474,20 @@ class Command(BaseCommand):
         summary['renamed'] += 1
         return True
 
-    def _occupied_sidecar_targets(self, current, target):
+    def _sidecar_moves(self, current, target):
         '''
-            The files rename_files() would overwrite: it moves every file
-            next to `current` that shares its stem to the matching name
-            next to `target` with Path.replace(), which silently replaces
-            an existing file there.
+            The (file, destination) pairs rename_files() would move: every
+            file next to `current` that shares its stem goes to the matching
+            name next to `target`, with Path.replace(), which silently
+            replaces an existing file there.
         '''
         (old_dir, old_stem) = directory_and_stem(current)
         (new_dir, new_stem) = directory_and_stem(target)
-        occupied = []
-        for other in sorted(old_dir.glob(glob_quote(old_stem) + '*')):
-            if other == current:
-                continue
-            destination = new_dir / (new_stem + other.name[len(old_stem):])
-            if destination != other and destination.exists():
-                occupied.append(destination)
-        return occupied
+        return [
+            (other, new_dir / (new_stem + other.name[len(old_stem):]))
+            for other in sorted(old_dir.glob(glob_quote(old_stem) + '*'))
+            if other != current
+        ]
 
     def _sidecar_path(self, media, suffix):
         '''
