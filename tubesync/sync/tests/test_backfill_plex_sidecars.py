@@ -20,6 +20,7 @@ import logging
 import tempfile
 from contextlib import contextmanager
 from io import StringIO
+from pathlib import Path
 from unittest.mock import PropertyMock, patch
 from xml.etree import ElementTree
 
@@ -129,6 +130,25 @@ class BackfillPlexSidecarsTestCase(TestCase):
                 str(old_path.relative_to(media_file_storage.location)),
             )
             self.assertFalse((source.directory_path / 'tvshow.nfo').exists())
+
+    def test_dry_run_predicts_tvshow_write_when_apply_would_create_the_directory(self):
+        '''
+            No source.make_directory() here: the built-in profile's
+            write_nfo=True overlay change means apply's form.save() would
+            create the still-missing directory via source_pre_save before
+            writing tvshow.nfo. Dry-run must predict that write instead of
+            reporting none just because the directory does not exist yet.
+        '''
+        with temp_download_root():
+            source = make_bridge_source()
+            self.assertFalse(source.directory_path.exists())
+
+            dry = run_backfill('--source', str(source.uuid))
+            self.assertIn('tvshow_written: 1', dry)
+
+            applied = run_backfill('--source', str(source.uuid), '--apply')
+            self.assertIn('tvshow_written: 1', applied)
+            self.assertTrue((source.directory_path / 'tvshow.nfo').exists())
 
     def test_apply_produces_exact_target_tree_for_channel_and_playlist(self):
         with temp_download_root():
@@ -434,6 +454,91 @@ class BackfillFailureHandlingTestCase(TestCase):
             self.assertEqual(media.media_file.path, str(target))
             self.assertTrue(target.with_suffix('.nfo').exists())
 
+    def test_second_row_cannot_adopt_a_target_the_first_row_just_claimed(self):
+        '''
+            Two rows resolving to the same target under a custom
+            media_format: the first row's real move must claim that target
+            for the rest of this run, so the second row (whose own current
+            file happens to already be missing) is refused rather than
+            silently adopting the first row's freshly-moved file.
+        '''
+        overlay = '{"*": {"media_format": "shared.{ext}"}}'
+        with (
+            temp_download_root(),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source = make_bridge_source()
+            source.make_directory()
+            first = Media.objects.create(key='vid1', source=source, metadata=metadata)
+            download_dummy_file(first)
+            second = Media.objects.create(key='vid2', source=source, metadata=metadata)
+            second_old_path = download_dummy_file(second)
+            second_old_path.unlink()
+
+            with self.assertRaises(CommandError):
+                run_backfill('--source', str(source.uuid), '--apply')
+
+            first.refresh_from_db()
+            second.refresh_from_db()
+            self.assertEqual(
+                Path(first.media_file.path), source.directory_path / 'shared.mkv',
+            )
+            # The second row must not have been silently re-pointed at the
+            # first row's file.
+            self.assertEqual(
+                str(second.media_file),
+                str(second_old_path.relative_to(media_file_storage.location)),
+            )
+
+    def test_already_in_place_but_missing_video_is_an_error(self):
+        with temp_download_root():
+            source = make_bridge_source()
+            source.make_directory()
+            media = Media.objects.create(key='vid1', source=source, metadata=metadata)
+
+            overlay = source_defaults()['channel']
+            clone = copy.copy(source)
+            for field, value in overlay.items():
+                setattr(clone, field, value)
+            media.source = clone
+            new_path = media.filepath
+            media.source = source
+            media.media_file.name = str(
+                new_path.relative_to(media_file_storage.location),
+            )
+            media.downloaded = True
+            media.save()
+            # No file actually written at new_path: the DB says it is
+            # already at its target, but the video itself is gone.
+
+            with self.assertRaises(CommandError):
+                run_backfill('--source', str(source.uuid), '--apply')
+
+    def test_stray_sidecar_outside_target_dir_is_reported_as_an_error(self):
+        '''
+            A prior run's rename_files() moved the video and saved
+            media_file, then raised partway through moving an old-name
+            sidecar (subtitle, JSON, ...). The next run's already-in-place
+            branch must not silently exit clean while that sidecar is
+            still orphaned under the old name.
+        '''
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            target = source.directory_path / 'Season 2017' / (
+                's2017e091101 - no fancy stuff title [vid1].mkv'
+            )
+            target.parent.mkdir(parents=True)
+            old_path.rename(target)
+            media.media_file.name = str(target.relative_to(media_file_storage.location))
+            media.save()
+            stray = old_path.with_suffix('.en.srt')
+            stray.write_text('left behind', encoding='utf-8')
+
+            with self.assertRaises(CommandError):
+                run_backfill('--source', str(source.uuid), '--apply')
+            # Never moved or deleted, just reported.
+            self.assertTrue(stray.exists())
+
     def test_another_video_sharing_the_stem_prefix_is_not_moved(self):
         with temp_download_root():
             source, media, old_path = self.make_downloaded()
@@ -603,6 +708,22 @@ class BackfillFailureHandlingTestCase(TestCase):
                 output = run_backfill('--source', str(source.uuid), '--apply')
             mock_copy.assert_called_once()
             self.assertIn('thumbs_copied: 1', output)
+
+    def test_images_enqueued_counts_the_signal_triggered_job_without_a_duplicate(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            # copy_channel_images starts False; the built-in profile turns
+            # it on, so source_pre_save's own check enqueues the image job
+            # itself once apply saves the source -- this command must not
+            # also enqueue it directly, but must still count it (dry-run
+            # predicts the same signal-triggered job would be enqueued).
+            dry = run_backfill('--source', str(source.uuid))
+            self.assertIn('images_enqueued: 1', dry)
+
+            with patch(f'{self.COMMAND}.download_source_images') as mock_enqueue:
+                applied = run_backfill('--source', str(source.uuid), '--apply')
+            mock_enqueue.assert_not_called()
+            self.assertIn('images_enqueued: 1', applied)
 
     def test_dry_run_predicts_the_apply_counts(self):
         with temp_download_root():
