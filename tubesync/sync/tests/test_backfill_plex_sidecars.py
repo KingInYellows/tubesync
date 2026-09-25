@@ -17,6 +17,7 @@
 '''
 import copy
 import logging
+import os
 import tempfile
 from contextlib import contextmanager
 from io import StringIO
@@ -25,11 +26,13 @@ from unittest.mock import PropertyMock, patch
 from xml.etree import ElementTree
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase, override_settings
 from huey.exceptions import TaskLockedException
 
+from medianest_bridge import source_forms as medianest_source_forms
 from medianest_bridge.config import source_defaults
 from sync.choices import (
     Val, Fallback, SourceResolution,
@@ -39,6 +42,8 @@ from sync.choices import (
 from sync.forms import SourceForm
 from sync.models import Media, Source
 from sync.models._migrations import media_file_storage
+from sync.tasks import download_source_images
+from sync.tvshow_nfo import _clear_show_title_cache
 
 from .fixtures import all_test_metadata
 
@@ -104,10 +109,30 @@ def run_backfill(*args, **options):
     return out.getvalue()
 
 
+def run_backfill_capture(*args, **options):
+    '''
+        Same as run_backfill(), but returns (output, exception) instead of
+        letting a CommandError propagate -- lets a test inspect stdout
+        (per-media/per-source FAILED/SKIPPED/NOTE lines) even when the
+        command exits non-zero.
+    '''
+    out = StringIO()
+    exc = None
+    try:
+        call_command('medianest_backfill_plex_sidecars', *args, stdout=out, **options)
+    except CommandError as caught:
+        exc = caught
+    return out.getvalue(), exc
+
+
 class BackfillPlexSidecarsTestCase(TestCase):
 
     def setUp(self):
         logging.disable(logging.CRITICAL)
+        # resolve_show_title()'s process-local cache is keyed by
+        # source.pk, but every test here creates fresh sources anyway --
+        # cleared defensively so a title never leaks between tests.
+        _clear_show_title_cache()
 
     def test_dry_run_changes_nothing(self):
         with temp_download_root():
@@ -352,6 +377,7 @@ class BackfillFailureHandlingTestCase(TestCase):
 
     def setUp(self):
         logging.disable(logging.CRITICAL)
+        _clear_show_title_cache()
 
     def make_downloaded(self, **source_overrides):
         source = make_bridge_source(**source_overrides)
@@ -461,10 +487,18 @@ class BackfillFailureHandlingTestCase(TestCase):
             for the rest of this run, so the second row (whose own current
             file happens to already be missing) is refused rather than
             silently adopting the first row's freshly-moved file.
+
+            RENAME_ALL_SOURCES disabled: this scenario's second row is
+            refused regardless (its own current file is missing), which
+            would otherwise also trip the unrelated rename-cascade gate
+            (CascadeGateTestCase) and block the source from being saved
+            at all -- masking the actual per-media claim-tracking
+            behavior this test exists to exercise.
         '''
         overlay = '{"*": {"media_format": "shared.{ext}"}}'
         with (
             temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
             patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
         ):
             source = make_bridge_source()
@@ -558,7 +592,19 @@ class BackfillFailureHandlingTestCase(TestCase):
             self.assertEqual(media.media_file.path, str(old_path))
 
     def test_downloaded_row_without_a_file_is_an_error(self):
-        with temp_download_root():
+        '''
+            RENAME_ALL_SOURCES disabled: the one downloaded row here has
+            no media_file at all, always refused -- with the cascade
+            enabled (the default) that would also trip the rename-cascade
+            gate (CascadeGateTestCase) and skip the WHOLE source,
+            including its tvshow.nfo write, which is not what this test
+            means to exercise (that a media-level failure does not stop
+            the source-level tvshow.nfo write).
+        '''
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
             source = make_bridge_source()
             source.make_directory()
             Media.objects.create(
@@ -625,7 +671,7 @@ class BackfillFailureHandlingTestCase(TestCase):
     def test_apply_refuses_to_run_as_a_different_user(self):
         with temp_download_root():
             source, media, old_path = self.make_downloaded()
-            real_uid = __import__('os').geteuid()
+            real_uid = os.geteuid()
             with (
                 patch(f'{self.COMMAND}.os.geteuid', return_value=real_uid + 1),
                 self.assertRaises(CommandError) as ctx,
@@ -738,3 +784,398 @@ class BackfillFailureHandlingTestCase(TestCase):
                     x for x in dry.splitlines() if x.strip().startswith(f'{field}:')
                 )
                 self.assertIn(line.strip(), applied)
+
+    def test_target_side_nfo_not_covered_by_a_move_is_occupied(self):
+        '''
+            No .nfo beside the OLD video (nothing for rename_files()'s own
+            sidecar-move glob to find), but the TARGET directory already
+            has one from something unrelated -- this command's own
+            _handle_episode_nfo() would otherwise silently clobber it
+            right after the video moves. Must be refused up front instead.
+        '''
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            target = source.directory_path / 'Season 2017' / (
+                's2017e091101 - no fancy stuff title [vid1].mkv'
+            )
+            target_nfo = target.with_suffix('.nfo')
+            target_nfo.parent.mkdir(parents=True)
+            target_nfo.write_text('foreign nfo', encoding='utf-8')
+            with self.assertRaises(CommandError):
+                run_backfill('--source', str(source.uuid), '--apply')
+            self.assertTrue(old_path.exists())
+            self.assertFalse(target.exists())
+            self.assertEqual(
+                target_nfo.read_text(encoding='utf-8'), 'foreign nfo',
+            )
+
+    def test_target_side_thumbnail_not_covered_by_a_move_is_occupied(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            target = source.directory_path / 'Season 2017' / (
+                's2017e091101 - no fancy stuff title [vid1].mkv'
+            )
+            target_jpg = target.with_suffix('.jpg')
+            target_jpg.parent.mkdir(parents=True)
+            target_jpg.write_bytes(b'foreign thumbnail')
+            with (
+                patch.object(
+                    Media, 'thumb_file_exists',
+                    new_callable=PropertyMock, return_value=True,
+                ),
+                self.assertRaises(CommandError),
+            ):
+                run_backfill('--source', str(source.uuid), '--apply')
+            self.assertTrue(old_path.exists())
+            self.assertFalse(target.exists())
+            self.assertEqual(target_jpg.read_bytes(), b'foreign thumbnail')
+
+    def test_adoption_with_leftover_sidecar_is_an_error_and_nothing_is_adopted(self):
+        '''
+            The video already sits at its target (an earlier run moved it)
+            but the DB row still points at the old (now-gone) path --
+            normally "adopted". Here that earlier run also left a stray
+            same-key sidecar behind under the old name/location; adoption
+            must refuse instead of silently pointing the row at `target`
+            while the leftover sits forgotten.
+        '''
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            target = source.directory_path / 'Season 2017' / (
+                's2017e091101 - no fancy stuff title [vid1].mkv'
+            )
+            target.parent.mkdir(parents=True)
+            old_path.rename(target)
+            stray = old_path.with_suffix('.en.srt')
+            stray.write_text('left behind', encoding='utf-8')
+
+            with self.assertRaises(CommandError):
+                run_backfill('--source', str(source.uuid), '--apply')
+            media.refresh_from_db()
+            self.assertEqual(
+                str(media.media_file),
+                str(old_path.relative_to(media_file_storage.location)),
+            )
+            self.assertTrue(stray.exists())
+            self.assertTrue(target.exists())
+
+    def test_stray_snapshot_is_built_once_per_source(self):
+        '''
+            Two already-in-place media of the SAME source both need a
+            stray-sidecar check; the directory should be walked (rglob)
+            once for the whole source, not once per media.
+        '''
+        with temp_download_root():
+            source = make_bridge_source()
+            source.make_directory()
+            for key in ('vid1', 'vid2'):
+                media = Media.objects.create(
+                    key=key, source=source, metadata=metadata,
+                )
+                overlay = source_defaults()['channel']
+                clone = copy.copy(source)
+                for field, value in overlay.items():
+                    setattr(clone, field, value)
+                media.source = clone
+                new_path = media.filepath
+                media.source = source
+                new_path.parent.mkdir(parents=True, exist_ok=True)
+                new_path.write_bytes(b'already-at-new-path')
+                media.media_file.name = str(
+                    new_path.relative_to(media_file_storage.location),
+                )
+                media.downloaded = True
+                media.save()
+
+            original_rglob = Path.rglob
+            calls = []
+
+            def counting_rglob(path_self, *args, **kwargs):
+                calls.append((path_self, args, kwargs))
+                return original_rglob(path_self, *args, **kwargs)
+
+            with patch.object(Path, 'rglob', counting_rglob):
+                output = run_backfill('--source', str(source.uuid), '--apply')
+            self.assertIn('already_in_place: 2', output)
+            self.assertEqual(len(calls), 1)
+
+    def test_image_enqueue_uses_task_history_schedule_with_remove_duplicates(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded(
+                copy_channel_images=True,
+            )
+            with patch(f'{self.COMMAND}.TaskHistory') as mock_th:
+                output = run_backfill('--source', str(source.uuid), '--apply')
+            mock_th.schedule.assert_called_once()
+            args, kwargs = mock_th.schedule.call_args
+            self.assertEqual(args[0], download_source_images)
+            self.assertEqual(args[1], str(source.pk))
+            self.assertTrue(kwargs.get('remove_duplicates'))
+            self.assertIn('images_enqueued: 1', output)
+
+    def test_re_run_reschedules_via_task_history_not_a_raw_duplicate_call(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded(
+                copy_channel_images=True,
+            )
+            with patch(f'{self.COMMAND}.TaskHistory') as mock_th:
+                run_backfill('--source', str(source.uuid), '--apply')
+                run_backfill('--source', str(source.uuid), '--apply')
+            # poster.jpg is never actually created by these tests (the
+            # async job never runs without a huey consumer), so every
+            # re-run still schedules -- but always through
+            # TaskHistory.schedule(remove_duplicates=True), which lets
+            # huey's own on_executing_remove_duplicates() revoke whichever
+            # earlier pending job loses the race once a worker executes.
+            self.assertEqual(mock_th.schedule.call_count, 2)
+            for _, kwargs in mock_th.schedule.call_args_list:
+                self.assertTrue(kwargs.get('remove_duplicates'))
+
+    def test_image_enqueue_skipped_when_poster_already_exists(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded(
+                copy_channel_images=True,
+            )
+            (source.directory_path / 'poster.jpg').write_bytes(b'existing poster')
+            with patch(f'{self.COMMAND}.TaskHistory') as mock_th:
+                output = run_backfill('--source', str(source.uuid), '--apply')
+            mock_th.schedule.assert_not_called()
+            self.assertIn('images_enqueued: 0', output)
+
+    def test_locked_media_prints_a_stdout_line(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            with patch(
+                f'{self.COMMAND}.huey_lock_task',
+                side_effect=TaskLockedException('busy'),
+            ):
+                output, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            self.assertIsNotNone(exc)
+            self.assertIn('LOCKED', output)
+            self.assertIn(str(media), output)
+
+    def test_rename_problem_prints_a_stdout_line(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            target = source.directory_path / 'Season 2017' / (
+                's2017e091101 - no fancy stuff title [vid1].mkv'
+            )
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b'someone else')
+            output, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            self.assertIsNotNone(exc)
+            self.assertIn('FAILED', output)
+            self.assertIn(str(media), output)
+            self.assertIn('already occupied', output)
+
+    def test_apply_tvshow_write_failure_prints_a_stdout_line(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            with patch(
+                'sync.tvshow_nfo.write_text_file',
+                side_effect=OSError('read-only'),
+            ):
+                output, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            self.assertIsNotNone(exc)
+            self.assertIn('FAILED', output)
+            self.assertIn('tvshow.nfo', output)
+
+    def test_handle_based_channel_source_has_no_profile_and_is_skipped(self):
+        with temp_download_root():
+            source = make_bridge_source(
+                source_type=Val(YouTube_SourceType.CHANNEL),
+                key='@somehandle',
+                name='acq-src-somehandle',
+                directory='acq-src-somehandle',
+            )
+            source.make_directory()
+            with self.assertRaises(CommandError) as ctx:
+                run_backfill('--source', str(source.uuid), '--apply')
+            self.assertIn('1 error', str(ctx.exception))
+            source.refresh_from_db()
+            self.assertFalse(source.write_nfo)
+
+    def test_one_sources_invalid_overlay_does_not_stop_processing_others(self):
+        '''
+            A per-source overlay form-validation failure (SourceForm plus
+            run_edit_source_checks(), applied against THIS source's own
+            current field values -- see _overlay_form()) must skip only
+            that source, not abort the rest of an --all-bridge-sources
+            run. Forces the failure for one specific source via a patched
+            run_edit_source_checks() rather than crafting a real invalid
+            value, so this test cannot itself create anything outside the
+            sandboxed temp download root.
+        '''
+        with temp_download_root():
+            channel = make_bridge_source()
+            channel.make_directory()
+            Media.objects.create(key='chvid1', source=channel, metadata=metadata)
+            old_format = channel.media_format
+
+            playlist = make_bridge_source(
+                source_type=Val(YouTube_SourceType.PLAYLIST),
+                key='PLabcdefghijklmnopqrstuv',
+                name='acq-src-PLabcdefghijklmnopqrstuv',
+                directory='acq-src-PLabcdefghijklmnopqrstuv',
+            )
+            playlist.make_directory()
+
+            real_checks = medianest_source_forms.run_edit_source_checks
+
+            def fail_only_for_channel(form):
+                real_checks(form)
+                if form.instance.pk == channel.pk:
+                    form.add_error(
+                        'media_format', ValidationError('forced failure'),
+                    )
+
+            with patch(
+                f'{self.COMMAND}.run_edit_source_checks',
+                side_effect=fail_only_for_channel,
+            ):
+                output, exc = run_backfill_capture(
+                    '--all-bridge-sources', '--apply',
+                )
+
+            self.assertIsNotNone(exc)
+            self.assertIn('SKIPPED', output)
+            # The playlist source is still visited and reported normally
+            # -- the channel source's own validation failure does not
+            # abort the rest of the --all-bridge-sources run.
+            self.assertIn(playlist.name, output)
+            channel.refresh_from_db()
+            self.assertEqual(channel.media_format, old_format)
+            playlist.refresh_from_db()
+            self.assertTrue(playlist.write_nfo)
+
+
+class CascadeGateTestCase(TestCase):
+    '''
+        T4 rename-cascade gate: saving a source whose overlay changes a
+        field fires source_post_save -> save_all_media_for_source ->
+        rename_all_media_for_source (sync/tasks.py), which has none of
+        this command's own refusal checks and would silently overwrite a
+        same-stem sidecar via Path.replace(). --apply must not save such a
+        source when any of its media would be refused AND the cascade is
+        enabled for it (settings.RENAME_ALL_SOURCES / RENAME_SOURCES,
+        mirroring rename_all_media_for_source's own gate exactly).
+    '''
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+        _clear_show_title_cache()
+
+    def make_conflicted_source(self, **source_overrides):
+        '''
+            A bridge source with one downloaded media whose rename target
+            is already occupied by someone else's file -- always refused,
+            regardless of any cascade setting.
+        '''
+        source = make_bridge_source(**source_overrides)
+        source.make_directory()
+        media = Media.objects.create(key='vid1', source=source, metadata=metadata)
+        old_path = download_dummy_file(media)
+        target = source.directory_path / 'Season 2017' / (
+            's2017e091101 - no fancy stuff title [vid1].mkv'
+        )
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b'someone else')
+        return source, media, old_path, target
+
+    def test_apply_does_not_save_when_cascade_enabled_and_media_refused(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=True, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path, target = self.make_conflicted_source()
+            output, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            self.assertIsNotNone(exc)
+            self.assertIn('errors: 1', output)
+            self.assertIn('SKIPPED', output)
+            self.assertIn(
+                '1 already-downloaded media item(s) would be refused', output,
+            )
+            self.assertIn('TUBESYNC_RENAME_ALL_SOURCES=false', output)
+            source.refresh_from_db()
+            self.assertFalse(source.write_nfo)  # overlay never saved
+            self.assertTrue(old_path.exists())
+            self.assertEqual(target.read_bytes(), b'someone else')
+
+    def test_apply_proceeds_when_cascade_disabled(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path, target = self.make_conflicted_source()
+            output, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            # The command still exits non-zero (the one conflicted media
+            # is still refused, for its own unrelated reason), but the
+            # gate itself did not block the save this time.
+            self.assertIsNotNone(exc)
+            self.assertNotIn(
+                'already-downloaded media item(s) would be refused', output,
+            )
+            source.refresh_from_db()
+            self.assertTrue(source.write_nfo)  # overlay WAS saved
+
+    def test_apply_proceeds_when_cascade_enabled_but_nothing_is_refused(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=True, RENAME_SOURCES=[]),
+        ):
+            source = make_bridge_source()
+            source.make_directory()
+            media = Media.objects.create(key='vid1', source=source, metadata=metadata)
+            download_dummy_file(media)
+
+            output = run_backfill('--source', str(source.uuid), '--apply')
+            self.assertIn('renamed: 1', output)
+            self.assertIn('errors: 0', output)
+            source.refresh_from_db()
+            self.assertTrue(source.write_nfo)
+
+    def test_apply_gate_triggers_via_rename_sources_list(self):
+        with (
+            temp_download_root(),
+            override_settings(
+                RENAME_ALL_SOURCES=False,
+                RENAME_SOURCES=['acq-src-UCabcdefghijklmnopqrstuv'],
+            ),
+        ):
+            source, media, old_path, target = self.make_conflicted_source()
+            output, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            self.assertIsNotNone(exc)
+            self.assertIn(
+                '1 already-downloaded media item(s) would be refused', output,
+            )
+            source.refresh_from_db()
+            self.assertFalse(source.write_nfo)
+
+    def test_dry_run_reports_apply_would_skip_the_source(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=True, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path, target = self.make_conflicted_source()
+            output, exc = run_backfill_capture('--source', str(source.uuid))
+            # Dry-run never saves anything anyway, so the normal per-media
+            # prediction still runs (and still reports the conflict as an
+            # error) -- this just adds an informational note about what
+            # --apply would additionally do.
+            self.assertIsNotNone(exc)
+            self.assertIn('NOTE', output)
+            self.assertIn(
+                '1 already-downloaded media item(s) would be refused', output,
+            )
