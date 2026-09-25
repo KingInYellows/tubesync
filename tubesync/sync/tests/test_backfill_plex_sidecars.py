@@ -384,6 +384,41 @@ class BackfillFailureHandlingTestCase(TestCase):
                 run_backfill('--source', str(source.uuid))
             self.assertTrue(old_path.exists())
 
+    def test_occupied_sidecar_target_is_an_error_and_nothing_moves(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            old_nfo = old_path.with_suffix('.nfo')
+            old_nfo.write_text('<episodedetails/>', encoding='utf-8')
+            target_nfo = source.directory_path / 'Season 2017' / (
+                's2017e091101 - no fancy stuff title [vid1].nfo'
+            )
+            target_nfo.parent.mkdir(parents=True)
+            target_nfo.write_text('someone else', encoding='utf-8')
+            with self.assertRaises(CommandError):
+                run_backfill('--source', str(source.uuid), '--apply')
+            self.assertTrue(old_path.exists())
+            self.assertTrue(old_nfo.exists())
+            self.assertEqual(
+                target_nfo.read_text(encoding='utf-8'), 'someone else',
+            )
+
+    def test_nfo_failure_inside_rename_keeps_the_moved_file_in_the_db(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            # Only rename_files()'s own NFO rewrite goes through this name.
+            with (
+                patch(
+                    'sync.models.media.write_text_file',
+                    side_effect=OSError('read-only'),
+                ),
+                self.assertRaises(CommandError),
+            ):
+                run_backfill('--source', str(source.uuid), '--apply')
+            media.refresh_from_db()
+            self.assertFalse(old_path.exists())
+            self.assertTrue(media.media_file_exists)
+            self.assertIn('Season 2017', media.media_file.path)
+
     def test_tvshow_nfo_write_failure_is_counted(self):
         with temp_download_root():
             source, media, old_path = self.make_downloaded()
@@ -467,6 +502,27 @@ class BackfillFailureHandlingTestCase(TestCase):
         with temp_download_root():
             source, media, old_path = self.make_downloaded()
             run_backfill('--source', str(source.uuid), '--apply')
+            with patch.object(Source, 'save') as mock_save:
+                run_backfill('--source', str(source.uuid), '--apply')
+            mock_save.assert_not_called()
+
+    def test_configured_list_field_does_not_resave_the_source(self):
+        overlay = (
+            '{"*": {"write_nfo": true, "copy_thumbnails": true, '
+            '"copy_channel_images": true, "index_streams": false, '
+            '"sponsorblock_categories": ["sponsor", "selfpromo"]}}'
+        )
+        with (
+            temp_download_root(),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, media, old_path = self.make_downloaded()
+            run_backfill('--source', str(source.uuid), '--apply')
+            source.refresh_from_db()
+            self.assertEqual(
+                sorted(source.sponsorblock_categories.selected_choices),
+                ['selfpromo', 'sponsor'],
+            )
             with patch.object(Source, 'save') as mock_save:
                 run_backfill('--source', str(source.uuid), '--apply')
             mock_save.assert_not_called()
