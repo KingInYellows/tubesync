@@ -1186,10 +1186,10 @@ class Media(models.Model):
         nfo.append(_nfo_element(nfo,
             'title', clean_emoji(self.title),
         ))
-        # showtitle = resolved show title (T2): the cached channel/playlist
-        # Metadata (sync/tvshow_nfo.py), then the latest media's own
-        # channel/uploader/playlist_title, then source.name -- same
-        # resolution tvshow.nfo's <title> uses, so both agree.
+        # showtitle = resolved show title (Plex T2, sync/tvshow_nfo.py):
+        # the <title> of a tvshow.nfo TubeSync leaves alone, else the same
+        # resolution its own tvshow.nfo <title> uses (channel cache, recent
+        # media's channel/uploader/playlist_title, then source.name).
         from ..tvshow_nfo import resolve_show_title
         nfo.append(_nfo_element(nfo,
             'showtitle', clean_emoji(str(resolve_show_title(self.source)).strip()),

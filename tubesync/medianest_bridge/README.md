@@ -95,8 +95,10 @@ Nine upstream files are touched at ten points (`settings.py` twice), seven of th
    changes `nfoxml`'s `<showtitle>` from `source.name` to `sync/tvshow_nfo.py`'s
    `resolve_show_title()` (a local import inside the method, to avoid a
    circular import with the new module -- see that module's own
-   docstring), so an episode's `<showtitle>` always agrees with its
-   `tvshow.nfo`'s `<title>`.
+   docstring), so an episode's `<showtitle>` names the same show as the
+   source's `tvshow.nfo` -- including one this writer leaves alone. It
+   can lag a title change by up to that function's 60-second
+   per-process cache.
 7. `sync/models/source.py` (Plex T1) -- adds the same three keys
    (`episode_yyyy`, `episode_mmddnn`, `title_full_bounded`) to the dict
    `example_media_format_dict` returns, required for
@@ -121,12 +123,18 @@ Nine upstream files are touched at ten points (`settings.py` twice), seven of th
    the end of `download_source_images()`, and right after
    `download_media_metadata()` saves the media (so the first real channel
    name refreshes the show title), each just `write_tvshow_nfo(source)`.
-   `write_tvshow_nfo` never raises. No existing logic in any of these
+   `write_tvshow_nfo` logs database and filesystem errors instead of
+   raising them. No existing logic in any of these
    tasks is changed, reordered, or made conditional on the new call.
 
 `sync/tvshow_nfo.py` (Plex T2) is a new, wholly fork-owned module (like
 `medianest_bridge/` itself), not an upstream touch point -- it is not
-counted above.
+counted above. It only replaces a `tvshow.nfo` it wrote itself and that
+nobody has edited since: its files carry a `<uniqueid type="tubesync">`
+with the source's uuid and a `checksum` of the file. A hand-edited copy,
+a `create-tvshow-nfo` file or any other `tvshow.nfo` is left alone (a
+warning is logged), and episode NFOs take their `<showtitle>` from it.
+Delete such a file to have it regenerated.
 
 Points 1-5 are tagged with the bridge's own slices (T1-T5); points 6 on
 are tagged with the Plex TV library slices (Plex T1-T4), a separate

@@ -13,11 +13,12 @@ import logging
 import tempfile
 import time
 from contextlib import contextmanager
-from unittest.mock import patch
+from collections import deque
+from unittest.mock import PropertyMock, patch
 from xml.etree import ElementTree
 
 from django.conf import settings
-from django.db import DatabaseError
+from django.db import DatabaseError, InterfaceError, connection, transaction
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -29,9 +30,9 @@ from sync.choices import (
 from sync.models import Media, Metadata, Source
 from sync.models._migrations import media_file_storage
 from sync.tvshow_nfo import (
-    _clear_show_title_cache, _show_title_cache,
-    build_tvshow_nfo, resolve_show_plot, resolve_show_studio,
-    resolve_show_title, write_tvshow_nfo,
+    _clear_show_title_cache, _invalidate_show_title_cache,
+    _show_title_cache, _store_show_title,
+    build_tvshow_nfo, resolve_show_title, write_tvshow_nfo,
 )
 
 from .fixtures import all_test_metadata
@@ -92,13 +93,15 @@ class ResolveShowTitleTestCase(TestCase):
 
     def test_falls_back_to_source_name_with_no_data(self):
         self.assertEqual(resolve_show_title(self.source), 'testname')
-        self.assertIsNone(resolve_show_studio(self.source))
-        self.assertEqual(resolve_show_plot(self.source), '')
+        tree = ElementTree.fromstring(build_tvshow_nfo(self.source))
+        self.assertIsNone(tree.find('studio'))
+        self.assertIsNone(tree.find('plot'))
 
     def test_uses_latest_medias_uploader_for_a_channel(self):
         Media.objects.create(key='m1', source=self.source, metadata=metadata)
         self.assertEqual(resolve_show_title(self.source), 'test uploader')
-        self.assertEqual(resolve_show_studio(self.source), 'test uploader')
+        tree = ElementTree.fromstring(build_tvshow_nfo(self.source))
+        self.assertEqual(tree.find('studio').text, 'test uploader')
 
     def test_uses_latest_medias_playlist_title_for_a_playlist(self):
         playlist_source = make_source(
@@ -120,8 +123,9 @@ class ResolveShowTitleTestCase(TestCase):
             },
         )
         self.assertEqual(resolve_show_title(self.source), 'Cached Channel Title')
-        self.assertEqual(resolve_show_studio(self.source), 'Cached Channel Title')
-        self.assertEqual(resolve_show_plot(self.source), 'Cached channel plot')
+        tree = ElementTree.fromstring(build_tvshow_nfo(self.source))
+        self.assertEqual(tree.find('studio').text, 'Cached Channel Title')
+        self.assertEqual(tree.find('plot').text, 'Cached channel plot')
 
     def test_a_differently_keyed_cache_row_does_not_match(self):
         # A handle-based CHANNEL source's key never matches the cached
@@ -401,9 +405,8 @@ class ResolveShowTitleCacheTestCase(TestCase):
     '''
         resolve_show_title()'s process-local TTL cache: hit/expiry/
         invalidation/bypass/error-fallback behaviour. `build_tvshow_nfo()`
-        and `resolve_show_studio()`/`resolve_show_plot()` are untouched by
-        this cache -- only `resolve_show_title()` (and, through it,
-        `Media.nfoxml`) is covered here.
+        is untouched by this cache -- only `resolve_show_title()` (and,
+        through it, `Media.nfoxml`) is covered here.
     '''
 
     def setUp(self):
@@ -515,3 +518,342 @@ class ResolveShowTitleCacheTestCase(TestCase):
             xml_str = media.nfoxml
         tree = ElementTree.fromstring(xml_str)
         self.assertEqual(tree.find('showtitle').text, self.source.name)
+
+
+def media_metadata(**fields):
+    '''The "boring" fixture's JSON with `fields` replaced (None removes).'''
+    data = json.loads(metadata)
+    for key, value in fields.items():
+        if value is None:
+            data.pop(key, None)
+        else:
+            data[key] = value
+    return json.dumps(data)
+
+
+class ShowTitleTiersTestCase(TestCase):
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+        _clear_show_title_cache()
+        self.source = make_source()
+
+    def tearDown(self):
+        _clear_show_title_cache()
+
+    def test_channel_is_preferred_over_uploader(self):
+        Media.objects.create(
+            key='m1', source=self.source,
+            metadata=media_metadata(channel='The Channel', uploader='The Uploader'),
+        )
+        self.assertEqual(resolve_show_title(self.source), 'The Channel')
+
+    def test_a_stub_row_without_a_name_does_not_hide_an_older_one(self):
+        Media.objects.create(
+            key='older', source=self.source, metadata=metadata,
+            published=timezone.now() - timezone.timedelta(days=1),
+        )
+        Media.objects.create(
+            key='stub', source=self.source,
+            metadata=media_metadata(channel=None, uploader=None),
+            published=timezone.now(),
+        )
+        self.assertEqual(resolve_show_title(self.source), 'test uploader')
+
+    def test_same_published_ties_break_by_newest_created(self):
+        published = timezone.now()
+        Media.objects.create(
+            key='first', source=self.source, published=published,
+            metadata=media_metadata(uploader='First Name'),
+        )
+        Media.objects.create(
+            key='second', source=self.source, published=published,
+            metadata=media_metadata(uploader='Second Name'),
+        )
+        self.assertEqual(resolve_show_title(self.source), 'Second Name')
+
+    def test_cached_channel_row_prefers_channel_over_its_tab_title(self):
+        Metadata.objects.create(
+            site='YoutubeTab', key=self.source.key,
+            value={'title': 'The Channel - Videos', 'channel': 'The Channel'},
+        )
+        self.assertEqual(resolve_show_title(self.source), 'The Channel')
+
+    def test_media_retrieved_after_the_cached_row_wins_for_a_channel(self):
+        now = timezone.now()
+        Metadata.objects.create(
+            site='YoutubeTab', key=self.source.key,
+            value={'channel': 'Old Name'},
+            retrieved=now - timezone.timedelta(days=2),
+        )
+        media = Media.objects.create(key='renamed', source=self.source)
+        media.ingest_metadata(json.loads(media_metadata(
+            channel='New Name', epoch=int(now.timestamp()),
+        )))
+        self.assertEqual(resolve_show_title(self.source), 'New Name')
+        Metadata.objects.filter(media__isnull=True).update(
+            retrieved=now + timezone.timedelta(days=1),
+        )
+        _clear_show_title_cache()
+        self.assertEqual(resolve_show_title(self.source), 'Old Name')
+
+    def test_playlist_studio_is_the_cached_playlist_title(self):
+        playlist_source = make_source(
+            source_type=Val(YouTube_SourceType.PLAYLIST),
+            key='PLabcdefghijklmnopqrstuv',
+            name='playlistname',
+            directory='playlistdirectory',
+        )
+        Metadata.objects.create(
+            site='YoutubeTab', key=playlist_source.key,
+            value={'title': 'The Playlist', 'channel': 'Its Owner'},
+        )
+        tree = ElementTree.fromstring(build_tvshow_nfo(playlist_source))
+        self.assertEqual(tree.find('title').text, 'The Playlist')
+        self.assertEqual(tree.find('studio').text, 'The Playlist')
+
+    def test_an_emoji_only_name_falls_through_to_the_next_tier(self):
+        Media.objects.create(
+            key='emoji', source=self.source,
+            metadata=media_metadata(channel='\U0001F389', uploader='\U0001F389'),
+        )
+        self.assertEqual(resolve_show_title(self.source), 'testname')
+        emoji_source = make_source(
+            key='UCemojiabcdefghijklmnopq', name='\U0001F389',
+            directory='emojidirectory',
+        )
+        self.assertEqual(resolve_show_title(emoji_source), '\U0001F389')
+        tree = ElementTree.fromstring(build_tvshow_nfo(emoji_source))
+        self.assertEqual(tree.find('title').text, '\U0001F389')
+
+    def test_title_and_showtitle_are_stripped_alike(self):
+        self.source.name = '  spaced name  '
+        self.source.save()
+        tree = ElementTree.fromstring(build_tvshow_nfo(self.source))
+        self.assertEqual(tree.find('title').text, 'spaced name')
+        self.assertEqual(resolve_show_title(self.source), 'spaced name')
+
+
+class TvshowNfoOwnershipTestCase(TestCase):
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+        _clear_show_title_cache()
+        self.source = make_source()
+
+    def tearDown(self):
+        _clear_show_title_cache()
+
+    def _nfo_path(self):
+        return self.source.directory_path / 'tvshow.nfo'
+
+    def test_the_checksum_marker_verifies(self):
+        xml_str = build_tvshow_nfo(self.source)
+        tree = ElementTree.fromstring(xml_str)
+        tubesync_id = [
+            u for u in tree.findall('uniqueid') if u.get('type') == 'tubesync'
+        ][0]
+        self.assertRegex(tubesync_id.get('checksum'), r'^sha256:[0-9a-f]{64}$')
+        with temp_download_root():
+            self.source.make_directory()
+            write_tvshow_nfo(self.source)
+            self.assertEqual(self._nfo_path().read_text(encoding='utf-8'), xml_str)
+            Media.objects.create(key='m1', source=self.source, metadata=metadata)
+            write_tvshow_nfo(self.source)
+            self.assertIn(
+                'test uploader', self._nfo_path().read_text(encoding='utf-8'),
+            )
+
+    def test_a_hand_edited_file_is_kept_and_names_the_episodes(self):
+        with temp_download_root():
+            self.source.make_directory()
+            write_tvshow_nfo(self.source)
+            edited = self._nfo_path().read_text(encoding='utf-8').replace(
+                '<title>testname</title>', '<title>My Show</title>',
+            )
+            self._nfo_path().write_text(edited, encoding='utf-8')
+            media = Media.objects.create(
+                key='m1', source=self.source, metadata=metadata,
+            )
+            with patch('sync.tvshow_nfo.log') as mock_log:
+                write_tvshow_nfo(self.source)
+            mock_log.warning.assert_called_once()
+            self.assertIn('edited', mock_log.warning.call_args.args[0])
+            self.assertEqual(self._nfo_path().read_text(encoding='utf-8'), edited)
+            self.assertEqual(resolve_show_title(self.source), 'My Show')
+            tree = ElementTree.fromstring(media.nfoxml)
+            self.assertEqual(tree.find('showtitle').text, 'My Show')
+
+    def test_a_youtube_uniqueid_alone_does_not_make_a_file_ours(self):
+        manual = (
+            '<tvshow><title>Kept</title><genre>Custom</genre>'
+            f'<uniqueid type="youtube">{self.source.key}</uniqueid></tvshow>'
+        )
+        with temp_download_root():
+            self.source.make_directory()
+            self._nfo_path().write_text(manual, encoding='utf-8')
+            write_tvshow_nfo(self.source)
+            self.assertEqual(self._nfo_path().read_text(encoding='utf-8'), manual)
+
+    def test_a_file_from_before_the_checksum_is_still_ours(self):
+        legacy = (
+            '<tvshow><title>Old</title>'
+            f'<uniqueid type="tubesync">{self.source.uuid}</uniqueid></tvshow>'
+        )
+        with temp_download_root():
+            self.source.make_directory()
+            self._nfo_path().write_text(legacy, encoding='utf-8')
+            write_tvshow_nfo(self.source)
+            self.assertEqual(
+                self._nfo_path().read_text(encoding='utf-8'),
+                build_tvshow_nfo(self.source),
+            )
+
+    def test_episodes_follow_a_create_tvshow_nfo_title(self):
+        # What the upstream create-tvshow-nfo command writes: source.name
+        # and an upper-case "Youtube" id this writer does not own.
+        upstream = (
+            '<tvshow><title>Upstream Title</title>'
+            f'<uniqueid type="Youtube" default="true">{self.source.key}'
+            '</uniqueid></tvshow>'
+        )
+        with temp_download_root():
+            self.source.make_directory()
+            self._nfo_path().write_text(upstream, encoding='utf-8')
+            media = Media.objects.create(
+                key='m1', source=self.source, metadata=metadata,
+            )
+            self.assertEqual(resolve_show_title(self.source), 'Upstream Title')
+            tree = ElementTree.fromstring(media.nfoxml)
+            self.assertEqual(tree.find('showtitle').text, 'Upstream Title')
+
+
+class ShowTitleCacheSafetyTestCase(TestCase):
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+        _clear_show_title_cache()
+        self.source = make_source()
+
+    def tearDown(self):
+        _clear_show_title_cache()
+
+    def test_a_lookup_invalidated_while_running_is_not_stored(self):
+        def invalidate_mid_lookup(source):
+            _invalidate_show_title_cache(source)
+            return None
+
+        with patch(
+            'sync.tvshow_nfo._cached_channel_metadata',
+            side_effect=invalidate_mid_lookup,
+        ):
+            self.assertEqual(resolve_show_title(self.source), 'testname')
+        self.assertEqual(_show_title_cache, {})
+        resolve_show_title(self.source)
+        self.assertIn(self.source.pk, _show_title_cache)
+
+    def test_expired_entries_are_pruned(self):
+        other = make_source(
+            key='UCotherabcdefghijklmnopq', name='other', directory='other',
+        )
+        resolve_show_title(other)
+        self.assertIn(other.pk, _show_title_cache)
+        with patch(
+            'sync.tvshow_nfo.time.monotonic',
+            return_value=time.monotonic() + 61,
+        ):
+            _store_show_title(self.source, 0, 'fresh')
+        self.assertNotIn(other.pk, _show_title_cache)
+        self.assertIn(self.source.pk, _show_title_cache)
+
+    def test_interface_error_falls_back_to_source_name(self):
+        with (
+            patch(
+                'sync.tvshow_nfo._cached_channel_metadata',
+                side_effect=InterfaceError('connection already closed'),
+            ),
+            patch('sync.tvshow_nfo.log') as mock_log,
+        ):
+            self.assertEqual(resolve_show_title(self.source), 'testname')
+        mock_log.exception.assert_called_once()
+
+    def test_the_lookup_runs_in_a_savepoint(self):
+        with transaction.atomic():
+            outer = len(connection.savepoint_ids)
+
+            def fail_inside_a_savepoint(source):
+                self.assertGreater(len(connection.savepoint_ids), outer)
+                raise DatabaseError('boom')
+
+            with patch(
+                'sync.tvshow_nfo._cached_channel_metadata',
+                side_effect=fail_inside_a_savepoint,
+            ):
+                self.assertEqual(resolve_show_title(self.source), 'testname')
+            self.assertFalse(connection.needs_rollback)
+            self.assertEqual(Source.objects.filter(pk=self.source.pk).count(), 1)
+
+    def test_unexpected_errors_are_not_swallowed(self):
+        with (
+            temp_download_root(),
+            patch(
+                'sync.tvshow_nfo.build_tvshow_nfo',
+                side_effect=AttributeError('bug'),
+            ),
+        ):
+            self.source.make_directory()
+            with self.assertRaises(AttributeError):
+                write_tvshow_nfo(self.source)
+
+
+class TasksWriteTvshowNfoTestCase(TestCase):
+    '''The three task call sites refresh tvshow.nfo for their source.'''
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+        self.source = make_source(download_media=True)
+
+    def assert_called_for_source(self, mock_write):
+        mock_write.assert_called_once()
+        self.assertEqual(mock_write.call_args.args[0].pk, self.source.pk)
+
+    def test_index_source(self):
+        from sync.tasks import index_source
+        fake_video = {
+            'id': 'newvid1',
+            'duration': 120,
+            'title': 'New Video',
+            'ie_key': 'Youtube',
+            'timestamp': int(timezone.now().timestamp()),
+        }
+        with (
+            patch.object(Source, 'index_media', return_value=deque([fake_video])),
+            patch('sync.tasks.write_tvshow_nfo') as mock_write,
+        ):
+            index_source.call_local(str(self.source.pk))
+        self.assert_called_for_source(mock_write)
+
+    def test_download_source_images(self):
+        from sync.tasks import download_source_images
+        with (
+            patch.object(
+                Source, 'get_image_url', new_callable=PropertyMock,
+                return_value=(None, None, None),
+            ),
+            patch('sync.tasks.write_tvshow_nfo') as mock_write,
+        ):
+            download_source_images.call_local(str(self.source.pk))
+        self.assert_called_for_source(mock_write)
+
+    def test_download_media_metadata(self):
+        from sync.tasks import download_media_metadata
+        media = Media.objects.create(
+            key='m1', source=self.source, published=timezone.now(),
+        )
+        response = json.loads(all_test_metadata['minimal'])
+        with (
+            patch.object(Media, 'index_metadata', return_value=response),
+            patch('sync.tasks.write_tvshow_nfo') as mock_write,
+        ):
+            download_media_metadata.call_local(str(media.pk))
+        self.assert_called_for_source(mock_write)
