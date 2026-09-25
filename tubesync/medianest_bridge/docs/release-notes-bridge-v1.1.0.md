@@ -22,7 +22,8 @@ owner. This file records what the tag would contain and what was verified.
    - Channel NFOs now emit `<season>YYYY</season>` and
      `<episode>MMDDNN</episode>`. Past 99 videos on one day, `<episode>`
      moves to a separate 10,000,000+ range so numbers never collide.
-     Playlist NFOs are unchanged.
+     Playlists filed by this scheme (every bridge-created playlist) get the
+     same values. Other playlists keep season `1` and playlist order.
    - Items are grouped by the same date they encode, including unpublished
      items whose date comes from metadata, so two videos never share a
      number.
@@ -90,7 +91,7 @@ The contract gains one additive, optional component, `HealthReady.components.sou
 
 ## Verification (2026-09-25, stack tip T4, after the review sweep)
 
-- `manage.py test sync medianest_bridge`: 450 tests OK. They ran inside `ghcr.io/kinginyellows/tubesync:bridge-v1.0.0` with the worktree mounted and `local_settings.py` copied from `.example`, as CI does.
+- `manage.py test sync medianest_bridge`: 451 tests OK. They ran inside `ghcr.io/kinginyellows/tubesync:bridge-v1.0.0` with the worktree mounted and `local_settings.py` copied from `.example`, as CI does.
 - `ruff check` with the CI rule set: clean. `makemigrations --check`: no changes.
 - Manual end-to-end smoke: a throwaway SQLite DB and scratch `DOWNLOAD_ROOT`, with fixture metadata and no network. `--all-bridge-sources --apply` produced `video/acq-src-*/tvshow.nfo` and `Season 2017/s2017e091101 - <title> [<key>].mkv|.nfo` for a channel and a playlist source. A non-`acq-src-` source was untouched. Every `.nfo` parsed with ElementTree (`xmllint` is not in the image).
 - Not verifiable offline: Plex's actual NFO-agent parsing, which should be confirmed on the pilot source during the migration runbook.
