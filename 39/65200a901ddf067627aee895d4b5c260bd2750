@@ -1,0 +1,21 @@
+tubesync/medianest_bridge/source_forms.py
+  s_237fbbbabfe3a4::t_86a7602941b585 173-178
+tubesync/medianest_bridge/tests/test_config.py
+  s_237fbbbabfe3a4::t_494ff7b0e2becb 334-335
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "3965200a901ddf067627aee895d4b5c260bd2750",
+  "prompts": {},
+  "sessions": {
+    "s_237fbbbabfe3a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2373b7aa-381c-4fe7-83a0-be4487388411",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
