@@ -444,6 +444,17 @@ choices inline -- most notably, TubeSync's `MediaState.UNKNOWN` maps to
   without a live metadata fetch, out of scope here) -- also codified in
   the contract's own schema description. Not blocked by
   `MEDIANEST_BRIDGE_READ_ONLY` (see the read-only gate section above).
+  Also checks `MEDIANEST_BRIDGE_SOURCE_DEFAULTS` (after the checks
+  above, before nothing else -- it's the last check this endpoint runs)
+  and returns `503 PROVIDER_UNAVAILABLE` when it's invalid, identical to
+  `POST /sources`' own check below (`views_write.py`'s
+  `_source_defaults_or_error()` is the one shared implementation both
+  views call). This is the 503 that matters for retries: MediaNest calls
+  this endpoint before `POST /sources` and treats any validate failure
+  as a definite, user-retryable failure, so a broken configuration fails
+  cleanly here and the user can re-submit once an operator fixes it --
+  see `POST /sources`' own bullet below for why its create-time 503 is
+  only a backstop.
 - `POST /sources` -- create-or-adopt on the canonical key. A `key`
   collision (an existing source already uses it) returns `409
   SOURCE_CONFLICT` with `existingSourceUuid`, adopt semantics, and always
@@ -468,7 +479,17 @@ choices inline -- most notably, TubeSync's `MediaState.UNKNOWN` maps to
   PROVIDER_UNAVAILABLE` (checked before any DB query) rather than
   silently falling back to plain model defaults -- see the
   `sourceDefaults` readiness component above, which reports the same
-  underlying check. `profile` is
+  underlying check. This create-time check is a **backstop**, not the
+  primary defense: `POST /sources/validate` (above) runs the identical
+  check first, and MediaNest calls it before `POST /sources`, so a
+  broken configuration should already have failed there with a 503
+  MediaNest treats as a definite, re-submittable failure. A 503 reaching
+  a caller from create's own check specifically has no dedicated retry
+  semantics on the MediaNest side (its `translateBridgeWriteError` has
+  no 503 case), so it is reconciled as an unknown outcome rather than
+  retried -- do not rely on MediaNest retrying a create-time 503 on its
+  own; the validate-time 503 is the one that gets a clean, user-visible
+  retry. `profile` is
   accepted and structurally validated but not currently mapped onto any
   TubeSync field (no contract-level field-name/enum-value mapping exists
   yet); created sources use TubeSync's own (bridge-overlaid) defaults for
@@ -544,25 +565,38 @@ uuid, none of which can carry either.
 `medianest_bridge/contract/bridge-openapi.v1.yaml` is a vendored, read-only
 copy of the canonical contract (MediaNest repo,
 `docs/planning/tubesync-integration/bridge-openapi.v1.yaml` @
-`f84aa1853cf8b3ba2cd4c68be6dca8b997e64731`, re-vendored for T3's
-`sourceDefaults` readiness component and `POST /sources`' declared 503). **Note:** that SHA is the contract
-worktree's own local commit on `plex/m3a-contract-source-defaults` as of
-this PR -- a pre-merge branch commit, not yet on the canonical repo's
-`main`. Re-sync this field (and re-verify the sha256 below) once that
-branch merges, the same way every prior re-vendor here has recorded
-whatever commit was canonical at the time. History: T1 vendored
-`ce17a28773a6f3866c9c9235ae4eae04f4bafff4`; T2 re-vendored
-`713f9b4ac9efc24e0f285f9af58a50276f29ebb9` (`REQUEST_TOO_LARGE` joining
-`Error.code`'s enum); T4 re-vendored `35a9c069fe4f1512ff7b606c33c0c2a11c7efa76`
-(description-only, DECISIONS #27: codifies `/sources/validate`'s slice-1
-scope and `ValidatedSource.displayName`'s placeholder, both already
-implemented exactly this way since T3); this T3 (source-defaults) re-vendor
-adds one new OPTIONAL property, `sourceDefaults`, under
+`118834c5c4e1611ac51694334feeb93d2b4ae1f2`, re-vendored to declare
+`POST /sources/validate`'s own 503 `ProviderUnavailable` response).
+**Note:** that SHA is the contract worktree's own local commit on
+`plex/m3a-contract-source-defaults` as of this PR -- a pre-merge branch
+commit, not yet on the canonical repo's `main`. Re-sync this field (and
+re-verify the sha256 below) once that branch merges, the same way every
+prior re-vendor here has recorded whatever commit was canonical at the
+time. History: T1 vendored `ce17a28773a6f3866c9c9235ae4eae04f4bafff4`; T2
+re-vendored `713f9b4ac9efc24e0f285f9af58a50276f29ebb9`
+(`REQUEST_TOO_LARGE` joining `Error.code`'s enum); T4 re-vendored
+`35a9c069fe4f1512ff7b606c33c0c2a11c7efa76` (description-only, DECISIONS
+#27: codifies `/sources/validate`'s slice-1 scope and
+`ValidatedSource.displayName`'s placeholder, both already implemented
+exactly this way since T3); `a7689cdc7a87f93f0ddc8a5c8efd9d9ec7c88eda`
+(2026-09-24) added the OPTIONAL `sourceDefaults` property under
 `HealthReady.components.properties` (DECISIONS #54) -- NOT added to that
 object's `required` list, so `contract_fixtures.json`'s
-`health_ready_component_names` is unchanged; only the file's own sha256
-moved. Do not edit this file directly -- re-vendor from the canonical
-source instead.
+`health_ready_component_names` is unchanged;
+`f84aa1853cf8b3ba2cd4c68be6dca8b997e64731` (2026-09-25) declared
+`POST /sources`' own 503 `ProviderUnavailable` response; this re-vendor
+(`118834c5c4e1611ac51694334feeb93d2b4ae1f2`, 2026-09-25) further declares
+`POST /sources/validate`'s own 503 `ProviderUnavailable` response and
+rewords the shared `ProviderUnavailable` response description (and
+DECISIONS #54) to say MediaNest treats the validate-time 503 as a
+definite, re-submittable failure the user can retry once an operator
+fixes the configuration, while the create-time 503 remains a backstop
+only, reconciled as an unknown outcome (never blind-retried) -- matching
+`views_write.py`'s own `ValidateSourceView`/`CreateSourceView` docstrings.
+Only response/description text changed across these last three
+re-vendors -- no `components.schemas` shape changed, confirmed by
+`test_contract_conformance.py`'s own PyYAML cross-check. Do not edit this
+file directly -- re-vendor from the canonical source instead.
 
 `medianest_bridge/contract/contract_fixtures.json` is a small JSON
 extraction (required fields + enums for the schemas this app exercises)

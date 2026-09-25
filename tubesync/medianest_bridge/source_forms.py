@@ -48,13 +48,19 @@
        operator-configured field overrides (MEDIANEST_BRIDGE_SOURCE_DEFAULTS),
        applied onto default_form_data() before the request's own
        type/key/name/directory. build_synthetic_source_form() and
-       extract_form_errors() below exist so config.validate_source_defaults()
-       can run that same overlay through this module's own validation
-       path (for the `sourceDefaults` readiness component and POST
-       /sources' own pre-check) without a real request or a saved row --
-       see build_synthetic_source_form()'s own docstring for why a
-       synthetic placeholder is acceptable there when it was rejected for
-       /sources/validate above.
+       extract_form_error_codes() below exist so
+       config.load_validated_source_defaults() can run that same overlay
+       through this module's own validation path (for the
+       `sourceDefaults` readiness component and both
+       POST /sources/validate's and POST /sources' own pre-checks)
+       without a real request or a saved row -- see
+       build_synthetic_source_form()'s own docstring for why a synthetic
+       placeholder is acceptable there when it was rejected for
+       /sources/validate above. extract_form_error_codes(), not
+       extract_form_errors(), is the one shared with the config-check
+       path: it reports value-free field/code pairs so a rejected
+       overlay value is never echoed back (extract_form_errors() is
+       real-request-only, see its own docstring).
 '''
 import uuid
 
@@ -256,14 +262,20 @@ def build_synthetic_source_form(*, contract_source_type, overlay):
         this function does not re-check that), plus a synthetic-but-safe
         key/name/directory that is NEVER saved and used for nothing
         beyond satisfying SourceForm's own required-field/clean()
-        machinery. Used only by config.validate_source_defaults() to run
+        machinery. Used by config.load_validated_source_defaults() to run
         a MEDIANEST_BRIDGE_SOURCE_DEFAULTS overlay through the exact same
         field-level checks (is_valid()) plus run_edit_source_checks()
         (media-format-produces-a-filename, directory-traversal) that a
         real POST /sources create applies via build_source_form() above
-        -- so a broken overlay is caught by readiness/create-time
-        validation instead of only failing every subsequent real create
-        one at a time.
+        -- so a broken overlay is caught by readiness and by both
+        POST /sources/validate's and POST /sources' own pre-checks
+        instead of only failing every subsequent real create one at a
+        time. This is not a config-check-only helper: every real create
+        or validate call also runs load_validated_source_defaults()
+        (views_write.py's ValidateSourceView.post and
+        CreateSourceView.post both call it, via
+        _source_defaults_or_error()), so this function's own field/
+        edit-check pass runs on every request, not just readiness polls.
 
         Why a synthetic key/name/directory is acceptable HERE when
         validate_source_type_and_key()'s own docstring explicitly
@@ -303,10 +315,14 @@ def extract_form_errors(form):
         Django's own ErrorDict.get_json_data() -- str(form.errors) would
         render as Django's own HTML (`<ul class="errorlist">...</ul>`),
         which a JSON/API consumer must never receive (T4 verifier MEDIUM
-        finding, reproduced live in a POST /sources response). Shared by
-        views_write.py (a real create's errors) and
-        config.validate_source_defaults() (a synthetic overlay-check
-        form's errors), so both flow through one implementation.
+        finding, reproduced live in a POST /sources response). Used only
+        by views_write.py for a real create's errors, returned straight
+        to the caller that supplied the rejected values -- NOT shared
+        with the config-check path (readiness's `sourceDefaults`
+        component, and both POST /sources/validate's and POST /sources'
+        own MEDIANEST_BRIDGE_SOURCE_DEFAULTS pre-checks), which uses the
+        value-free extract_form_error_codes() below instead so a
+        rejected overlay value is never echoed back to anyone.
     '''
     messages = []
     for field, field_errors in form.errors.get_json_data().items():
