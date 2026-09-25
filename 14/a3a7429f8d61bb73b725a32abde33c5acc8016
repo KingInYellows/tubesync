@@ -1,0 +1,21 @@
+tubesync/sync/models/media.py
+  s_237fbbbabfe3a4::t_24c16fe9420ac8 8,50-65,1022-1023
+tubesync/sync/tests/test_episode_numbering.py
+  s_237fbbbabfe3a4::t_6071593c196791 421-436
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "14a3a7429f8d61bb73b725a32abde33c5acc8016",
+  "prompts": {},
+  "sessions": {
+    "s_237fbbbabfe3a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2373b7aa-381c-4fe7-83a0-be4487388411",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
