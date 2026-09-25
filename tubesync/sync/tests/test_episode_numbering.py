@@ -3,8 +3,9 @@
 
     Covers `Media.episode_date`, `Media.episode_yyyy`/`episode_mmddnn`
     (and their shared `_same_day_index` helper), `Media.title_full_bounded`,
-    the new `nfoxml` season/episode behaviour for non-playlist sources, and
-    that playlists keep the legacy `calculate_episode_number` numbering.
+    the new `nfoxml` season/episode behaviour for non-playlist sources and
+    for playlists filed by the date scheme, and that other playlists keep
+    the legacy `calculate_episode_number` numbering.
 
     Uses the same fixed Source configuration as `test_media.py` /
     `test_filepath.py` (1080p/VP9/OPUS, `prefer_60fps=False`,
@@ -368,13 +369,13 @@ class EpisodeNumberingTestCase(TestCase):
         self.assertEqual(nfo_tree.find('season').text, '2026')
         self.assertEqual(nfo_tree.find('episode').text, '91401')
 
-    def test_playlist_nfo_numbering_is_unchanged(self):
-        playlist_source = Source.objects.create(
+    def make_playlist_source(self, media_format):
+        return Source.objects.create(
             source_type=Val(YouTube_SourceType.PLAYLIST),
             key='playlistkey',
             name='playlistname',
             directory='playlistdirectory',
-            media_format=settings.MEDIA_FORMATSTR_DEFAULT,
+            media_format=media_format,
             index_schedule=3600,
             delete_old_media=False,
             days_to_keep=14,
@@ -384,6 +385,11 @@ class EpisodeNumberingTestCase(TestCase):
             prefer_60fps=False,
             prefer_hdr=False,
             fallback=Val(Fallback.FAIL),
+        )
+
+    def test_playlist_nfo_numbering_is_unchanged(self):
+        playlist_source = self.make_playlist_source(
+            settings.MEDIA_FORMATSTR_DEFAULT,
         )
         first = Media.objects.create(
             key='playlist-1', source=playlist_source, metadata=metadata,
@@ -399,3 +405,16 @@ class EpisodeNumberingTestCase(TestCase):
         self.assertEqual(first_nfo.find('episode').text, '1')
         self.assertEqual(second_nfo.find('season').text, '1')
         self.assertEqual(second_nfo.find('episode').text, '2')
+
+    def test_date_filed_playlist_nfo_matches_its_filename(self):
+        playlist_source = self.make_playlist_source(
+            'Season {episode_yyyy}/s{episode_yyyy}e{episode_mmddnn} - '
+            '{title_full_bounded} [{key}].{ext}',
+        )
+        media = Media.objects.create(
+            key='playlist-1', source=playlist_source, metadata=metadata,
+            published=aware(2026, 9, 14, 10, 0, 0),
+        )
+        nfo_tree = ElementTree.fromstring(media.nfoxml)
+        self.assertEqual(nfo_tree.find('season').text, '2026')
+        self.assertEqual(nfo_tree.find('episode').text, '91401')

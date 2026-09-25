@@ -995,16 +995,22 @@ class Media(models.Model):
         nfo.append(_nfo_element(nfo,
             'showtitle', clean_emoji(str(self.source.name).strip()),
         ))
-        # season = episode_date year (playlists keep the legacy '1')
+        # season = episode_date year, episode = MMDD + same-day index. A
+        # playlist keeps the legacy season '1' and published-order
+        # calculate_episode_number() unless its media_format files videos
+        # by the same date scheme (every bridge-created playlist), so the
+        # NFO always agrees with the Season YYYY/sYYYYeMMDDNN filename.
+        legacy_playlist = (
+            self.source.is_playlist
+            and '{episode_mmddnn}' not in str(self.source.media_format)
+        )
         nfo.append(_nfo_element(nfo,
             'season',
-            '1' if self.source.is_playlist else str(self.episode_date.year),
+            '1' if legacy_playlist else str(self.episode_date.year),
         ))
-        # episode = MMDD + same-day index (playlists keep the legacy
-        # published-order numbering from calculate_episode_number)
         nfo.append(_nfo_element(nfo,
             'episode',
-            self.get_episode_str() if self.source.is_playlist
+            self.get_episode_str() if legacy_playlist
             else str(self.nfo_episode_number),
         ))
         # ratings = media metadata youtube rating

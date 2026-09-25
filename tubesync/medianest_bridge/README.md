@@ -62,9 +62,11 @@ Six upstream files are touched at seven points (`settings.py` twice), five of th
    `Media.episode_yyyy`, `Media.episode_mmddnn` and
    `Media.nfo_episode_number`. Two existing method bodies change:
    `format_dict` gains three new keys, and `nfoxml` computes
-   `<season>`/`<episode>` differently for non-playlist sources only
-   (previously `upload_date.year` / `calculate_episode_number()`).
-   Playlists keep the pre-T1 values: season `1`, episode
+   `<season>`/`<episode>` from the episode date (previously
+   `upload_date.year` / `calculate_episode_number()`) for channels and for
+   playlists whose `media_format` uses `{episode_mmddnn}` (every
+   bridge-created playlist), so the NFO matches the filename. Other
+   playlists keep the pre-T1 values: season `1`, episode
    `calculate_episode_number()`.
 7. `sync/models/source.py` (T1) -- adds the same three keys
    (`episode_yyyy`, `episode_mmddnn`, `title_full_bounded`) to the dict
