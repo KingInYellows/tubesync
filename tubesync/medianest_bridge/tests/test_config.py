@@ -1,5 +1,6 @@
 import json
 import os
+from unittest.mock import patch
 
 from .. import config
 from .base import BridgeTestCase
@@ -206,6 +207,32 @@ class SourceDefaultsConfigTestCase(BridgeTestCase):
         self.assertTrue(defaults['playlist']['write_nfo'])
 
 
+class SourceDefaultsFieldRulesTestCase(BridgeTestCase):
+    '''Forbidden fields, boolean typing and the "*" block check.'''
+
+    def set_defaults(self, value):
+        os.environ['MEDIANEST_BRIDGE_SOURCE_DEFAULTS'] = json.dumps(value)
+
+    def test_target_schedule_is_forbidden(self):
+        self.set_defaults({'*': {'target_schedule': None}})
+        with self.assertRaises(config.SourceDefaultsConfigError):
+            config.source_defaults()
+
+    def test_non_boolean_value_for_a_boolean_field_raises(self):
+        self.set_defaults({'*': {'write_nfo': '0'}})
+        with self.assertRaises(config.SourceDefaultsConfigError) as ctx:
+            config.source_defaults()
+        self.assertIn('write_nfo', str(ctx.exception))
+        self.assertNotIn("'0'", str(ctx.exception))
+
+    def test_star_block_is_checked_even_when_both_types_opt_out(self):
+        self.set_defaults(
+            {'*': {'typo_field': 1}, 'channel': {}, 'playlist': {}},
+        )
+        with self.assertRaises(config.SourceDefaultsConfigError):
+            config.source_defaults()
+
+
 class SourceDefaultsValidationTestCase(BridgeTestCase):
     '''
         config.validate_source_defaults() -- source_defaults() parsing
@@ -275,3 +302,54 @@ class SourceDefaultsValidationTestCase(BridgeTestCase):
         errors = config.validate_source_defaults()
         self.assertTrue(errors)
         self.assertFalse(any(secret_marker in message for message in errors))
+
+
+class SourceDefaultsValidationSafetyTestCase(BridgeTestCase):
+    '''Value-free errors, extra value checks and unexpected failures.'''
+
+    def set_defaults(self, value):
+        os.environ['MEDIANEST_BRIDGE_SOURCE_DEFAULTS'] = json.dumps(value)
+
+    def test_invalid_choice_error_never_echoes_the_configured_value(self):
+        marker = 'SECRET-MARKER-7f3a'
+        self.set_defaults({'*': {'source_resolution': marker}})
+        errors = config.validate_source_defaults()
+        self.assertTrue(errors)
+        self.assertTrue(any('source_resolution' in e for e in errors))
+        self.assertFalse(any(marker in e for e in errors))
+
+    def test_media_format_with_a_parent_segment_is_invalid(self):
+        self.set_defaults(
+            {'*': {'media_format': '../escape/{key}.{ext}'}},
+        )
+        errors = config.validate_source_defaults()
+        self.assertTrue(any('media_format' in e and '..' in e for e in errors))
+
+    def test_invalid_filter_text_regex_is_invalid(self):
+        self.set_defaults({'*': {'filter_text': '(unclosed'}})
+        errors = config.validate_source_defaults()
+        self.assertTrue(any('filter_text' in e for e in errors))
+        self.assertFalse(any('(unclosed' in e for e in errors))
+
+    def test_list_shaped_field_accepts_a_string_or_a_list(self):
+        for value in ('sponsor', ['sponsor']):
+            with self.subTest(value=value):
+                self.set_defaults({'*': {'sponsorblock_categories': value}})
+                self.assertEqual(config.validate_source_defaults(), [])
+
+    def test_unexpected_exception_is_reported_not_raised(self):
+        self.set_defaults({'*': {'write_nfo': True}})
+        with patch(
+            'medianest_bridge.source_forms.build_synthetic_source_form',
+            side_effect=RuntimeError('boom'),
+        ):
+            defaults, errors = config.load_validated_source_defaults()
+        self.assertEqual(len(errors), 2)
+        self.assertTrue(all('unexpected validation failure' in e for e in errors))
+        self.assertIsNotNone(defaults)
+
+    def test_load_returns_the_parsed_overlays(self):
+        self.set_defaults({'*': {'write_nfo': True}})
+        defaults, errors = config.load_validated_source_defaults()
+        self.assertEqual(errors, [])
+        self.assertEqual(defaults['channel'], {'write_nfo': True})
