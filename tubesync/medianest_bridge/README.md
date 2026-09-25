@@ -560,7 +560,7 @@ public), satisfying AGPLv3 §13's network-use clause.
 fork; it is not present in upstream `meeb/tubesync` at the pinned
 upstream-base commit (`medianest_bridge/docs/UPSTREAM_SHA`). It is
 licensed identically to the rest of this repository, AGPLv3, under the
-unmodified `LICENSE` at the repository root. The six upstream files this
+unmodified `LICENSE` at the repository root. The seven upstream files this
 fork's delta touches ("Fork delta" section above) remain licensed as
 upstream TubeSync itself is licensed, modified only as that section
 describes. See `medianest_bridge/docs/agpl-compliance.md` for the full

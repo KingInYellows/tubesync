@@ -210,7 +210,7 @@ class EpisodeNumberingTestCase(TestCase):
         self.assertEqual(early.episode_mmddnn, '091101')
         self.assertEqual(late.episode_mmddnn, '091102')
 
-    def test_reindex_style_published_change_does_not_shift_numbers_once_metadata_is_ingested(self):
+    def test_reindex_published_change_keeps_numbers_once_metadata_ingested(self):
         '''
             sync.tasks.index_source rewrites `Media.published` on every
             re-index (its `db_fields_media` bulk `save_db_batch` includes
@@ -440,7 +440,9 @@ class EpisodeNumberingTestCase(TestCase):
         one_hundred_ten = Media.objects.get(key='boundary-109')  # 110th item
         self.assertEqual(ninety_nine.episode_mmddnn, '020299')
         self.assertEqual(ninety_nine.nfo_episode_number, 202 * 100 + 99)
-        self.assertEqual(int(ninety_nine.episode_mmddnn), ninety_nine.nfo_episode_number)
+        self.assertEqual(
+            int(ninety_nine.episode_mmddnn), ninety_nine.nfo_episode_number,
+        )
         for item, day_index in ((one_hundred, 100), (one_hundred_ten, 110)):
             with self.subTest(day_index=day_index):
                 expected_nfo_number = 10_000_000 + 202 * 10_000 + day_index
