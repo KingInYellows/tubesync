@@ -1041,6 +1041,9 @@ def download_media_metadata(media_id, manual=False):
                  f'{source} / {media}: {media_id}')
     finally:
         metadata_lock.acquired = False
+    # The channel/uploader this media now carries may be the first real
+    # show title the source has; refresh tvshow.nfo (a no-op when unchanged).
+    write_tvshow_nfo(source)
     if (
         manual and
         media.can_download and
