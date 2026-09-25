@@ -10,12 +10,15 @@
     f-string (a literal "&" in a channel name breaks the file). This module
     is the automatic, escaped (via `ElementTree` + `clean_emoji`, matching
     `Media.nfoxml`'s own approach), idempotent writer hooked into
-    `index_source`/`download_source_images` (`sync/tasks.py`).
+    `index_source`, `download_source_images` and `download_media_metadata`
+    (`sync/tasks.py`).
 '''
+import time
 from collections import OrderedDict
 from pathlib import Path
 from xml.etree import ElementTree
 
+from django.db import DatabaseError
 from django.db.models import F
 
 from common.logger import log
@@ -23,6 +26,34 @@ from common.utils import clean_emoji
 
 from .models._private import _nfo_element
 from .utils import write_text_file
+
+
+# resolve_show_title()'s process-local cache: source.pk -> (expires_at, title)
+# where expires_at is a `time.monotonic()` deadline. See resolve_show_title()
+# for the caching rationale.
+_SHOW_TITLE_CACHE_TTL_SECONDS = 60
+_show_title_cache = {}
+
+
+def _clear_show_title_cache():
+    '''
+        Empties the process-local resolve_show_title() cache. Also used by
+        tests (in `setUp`) so a cached entry from one test/source.pk cannot
+        leak into another and make results depend on run order.
+    '''
+    _show_title_cache.clear()
+
+
+def _invalidate_show_title_cache(source):
+    '''
+        Drops `source`'s cached resolve_show_title() entry, if any. Called
+        by `write_tvshow_nfo()` whenever it recomputes the show's data from
+        scratch, so a stale cached title cannot outlive the fresher one
+        `write_tvshow_nfo()` just derived. A no-op for an unsaved source
+        (`pk` is `None`), which `resolve_show_title()` never caches.
+    '''
+    if source.pk is not None:
+        _show_title_cache.pop(source.pk, None)
 
 
 def _cached_channel_metadata(source):
@@ -82,18 +113,12 @@ def _resolve_show_title_from_data(source, cached):
         `resolve_show_title()` falls back to `source.name` (MediaNest sets
         that from the playlist title at creation).
 
-        Not cached: TubeSync's tasks run via huey, potentially across more
-        than one worker process, so a naive process-local cache would not
-        reliably stay fresh or even be shared between the process that last
-        refreshed it and the one rendering a given episode's NFO. Both
-        queries here are either a unique-key lookup or an already-indexed,
-        `LIMIT 1` query -- cheap enough per item that this was judged not
-        worth that risk. (Flagged for the reviewer: `Media.nfoxml` calls
-        this once per episode, including from inside
-        `rename_all_media_for_source`'s loop over every downloaded item of
-        a source -- if that ever shows up as a real cost, a cache keyed by
-        `source.pk` with `write_tvshow_nfo()` as its one refresh point
-        would be the place to add it.)
+        Not cached here: this helper is also called directly by
+        `build_tvshow_nfo()`, which always wants a fresh read. The caching
+        lives one layer up, in `resolve_show_title()` -- see its docstring.
+        Both queries here are either a unique-key lookup or an
+        already-indexed, `LIMIT 1` query -- cheap enough for that caller's
+        one-per-write cost.
     '''
     if cached is not None:
         title = str(cached.value.get('title', '') or '').strip()
@@ -126,9 +151,55 @@ def resolve_show_title(source):
         the episode NFO's <showtitle>): `_resolve_show_title_from_data`,
         falling back to `source.name` (TubeSync's own local, always-present
         name) when nothing more informative is known yet.
+
+        Cached for `_SHOW_TITLE_CACHE_TTL_SECONDS` (60s), process-locally,
+        keyed by `source.pk`. `Media.nfoxml` calls this once per episode,
+        including from inside `rename_all_media_for_source`'s loop over
+        every downloaded item of a source -- uncached, that is 1-3 extra
+        queries (`_cached_channel_metadata` plus the "latest media" lookup)
+        per item. TubeSync's tasks run via huey, potentially across more
+        than one worker process, so this cache is not shared or invalidated
+        across processes -- a stale title can survive up to the TTL in a
+        worker that is not the one `write_tvshow_nfo()` last ran in. That
+        bounded staleness (one channel-name change, one worker, 60 seconds)
+        is judged an acceptable trade for avoiding a shared cache's
+        complexity; `write_tvshow_nfo()` invalidates its own process's entry
+        immediately whenever it recomputes (see
+        `_invalidate_show_title_cache`), so the common case -- one worker,
+        one source, indexed then downloaded -- always sees a fresh value.
+
+        An unsaved source (`pk` is `None`) bypasses the cache entirely: it
+        has no stable key to cache under, and resolving it twice is rare
+        (nothing calls this before a source is saved in normal operation).
+
+        Never raises on a database error: `DatabaseError` is caught, logged
+        with a traceback, and `source.name` is returned instead -- a lookup
+        failure here must not fail the caller. `Media.nfoxml` is invoked
+        from `write_nfo_file` (`sync/models/media__tasks.py`), which upstream
+        only guards against `PermissionError`, and `download_media_file`
+        calls it after the video has already downloaded; letting a DB error
+        propagate from here would fail an otherwise-complete download task.
+        A fallback produced by an error is deliberately not cached, so the
+        next call retries the real lookup rather than pinning the fallback
+        for the TTL.
     '''
-    cached = _cached_channel_metadata(source)
-    return _resolve_show_title_from_data(source, cached) or source.name
+    if source.pk is not None:
+        cached_entry = _show_title_cache.get(source.pk)
+        if cached_entry is not None:
+            expires_at, title = cached_entry
+            if time.monotonic() < expires_at:
+                return title
+    try:
+        cached = _cached_channel_metadata(source)
+        title = _resolve_show_title_from_data(source, cached) or source.name
+    except DatabaseError:
+        log.exception(f'Failed to resolve show title for: {source}')
+        return source.name
+    if source.pk is not None:
+        _show_title_cache[source.pk] = (
+            time.monotonic() + _SHOW_TITLE_CACHE_TTL_SECONDS, title,
+        )
+    return title
 
 
 def resolve_show_studio(source):
@@ -199,16 +270,25 @@ def build_tvshow_nfo(source):
 
 def _foreign_nfo_reason(nfo_path, source):
     '''
-        Why the well-formed file at `nfo_path` is not this writer's to
-        replace, or None when it is (absent, unparseable, or a `<tvshow>`
-        carrying either this source's `<uniqueid type="youtube">` (current
-        `key`) or its `<uniqueid type="tubesync">` (immutable `uuid`
-        primary key) -- only this writer emits either):
+        Why the file at `nfo_path` is not this writer's to replace, or None
+        when it is (absent, empty, or a `<tvshow>` carrying either this
+        source's `<uniqueid type="youtube">` (current `key`) or its
+        `<uniqueid type="tubesync">` (immutable `uuid` primary key) --
+        only this writer emits either):
           - another root, such as a video's own `<episodedetails>` from a
             `media_format` that renders a filename as `tvshow`; overwriting
             it would leave the two writers replacing each other's file;
           - any other `<tvshow>`, such as one written by hand or by the
-            upstream `create-tvshow-nfo` command, which never overwrites.
+            upstream `create-tvshow-nfo` command, which never overwrites;
+          - a non-empty file that does not parse as XML at all, such as a
+            Kodi URL-only/combination NFO (a bare channel URL, no markup)
+            or upstream `create-tvshow-nfo`'s own output when a channel
+            name has a raw, unescaped "&" (the bug F5 left that command
+            for) -- both are real, intentionally-placed files this writer
+            must not silently clobber just because it cannot parse them.
+            A zero-byte file is not treated this way: it carries no
+            content to protect, so it is still replaceable, same as an
+            absent one.
 
         The `tubesync` id is checked so that editing a source's `key`
         through the source-update form does not orphan the file this
@@ -220,10 +300,13 @@ def _foreign_nfo_reason(nfo_path, source):
     '''
     if not nfo_path.exists():
         return None
-    try:
-        root = ElementTree.fromstring(nfo_path.read_bytes())
-    except ElementTree.ParseError:
+    raw = nfo_path.read_bytes()
+    if not raw:
         return None
+    try:
+        root = ElementTree.fromstring(raw)
+    except ElementTree.ParseError:
+        return 'it exists but could not be parsed as XML'
     if root.tag != 'tvshow':
         return (
             'it holds another NFO (does media_format render a video '
@@ -257,6 +340,13 @@ def write_tvshow_nfo(source):
         logged with its traceback instead of failing, and so retrying, the
         calling task.
 
+        Every call recomputes the show's data from scratch and, having done
+        so, drops this source's `resolve_show_title()` cache entry (see
+        `_invalidate_show_title_cache`) -- this is that cache's one refresh
+        point, so a subsequent `resolve_show_title()`/`Media.nfoxml` call in
+        this process picks up the fresh value immediately rather than
+        waiting out the TTL.
+
         Concurrent-write caveat (accepted limitation): two
         `download_media_metadata` tasks for the same source can finish
         concurrently and, if the resolved show title changes between one
@@ -282,6 +372,7 @@ def write_tvshow_nfo(source):
             return
         nfo_path = directory / 'tvshow.nfo'
         content = build_tvshow_nfo(source)
+        _invalidate_show_title_cache(source)
         if nfo_path.exists() and nfo_path.read_bytes() == content.encode('utf-8'):
             return
         reason = _foreign_nfo_reason(nfo_path, source)
