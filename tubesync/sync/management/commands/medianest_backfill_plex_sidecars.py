@@ -18,12 +18,27 @@
     _process_tvshow_and_images()) parameterized by `apply_changes`, so a
     dry-run's counts are computed the same way a real run's are, not by a
     separately-maintained approximation:
-      - In dry-run mode, media.source is pointed at an in-memory-only
-        clone of the real Source with the T3 overlay already applied
-        (_cloned_source_with_overlay()), so `media.filepath`/`media.nfoxml`
-        etc. reflect the WOULD-BE values without saving anything.
-      - In apply mode, the source is actually saved before the per-media
-        loop runs, so the same property reads reflect the real new values.
+      - The T3 overlay is validated through the same SourceForm in both
+        modes (_overlay_form()). Dry-run binds it to an in-memory copy of
+        the source and points media.source at that copy, so
+        `media.filepath`/`media.nfoxml` etc. reflect the WOULD-BE values
+        without saving anything.
+      - In apply mode, the source is saved (only when a field actually
+        changes) before the per-media loop runs, so the same property
+        reads reflect the real new values.
+      - Sidecar paths come from the profile filename in both modes
+        (_sidecar_path()), and tvshow.nfo uses the same
+        tvshow_nfo_needs_write() decision the real write does.
+
+    Failure handling: each media is renamed in its own transaction and
+    its NFO/thumbnail are written afterwards, so a sidecar failure cannot
+    roll back the media_file update of a file that already moved. A
+    missing current file or an occupied target is an error (the media's
+    sidecars are skipped), each source is isolated from the others, and
+    the command exits non-zero when anything errored or was skipped as
+    locked -- re-run it once the cause is fixed. --apply refuses to run
+    unless the effective user owns DOWNLOAD_ROOT, so everything it
+    creates stays writable by TubeSync (`docker exec -u app ...`).
 
     Never deletes any file (grep this module: no unlink/rmtree/os.remove
     call). `Media.rename_files()`'s own empty-directory cleanup (an
@@ -50,9 +65,11 @@
     actually run.
 '''
 import copy
+import os
 from pathlib import Path
 from uuid import UUID
 
+from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.forms.models import model_to_dict
@@ -60,9 +77,7 @@ from django_huey import lock_task as huey_lock_task
 from huey.exceptions import TaskLockedException
 
 from common.logger import log
-from medianest_bridge.config import (
-    SourceDefaultsConfigError, source_defaults, validate_source_defaults,
-)
+from medianest_bridge.config import load_validated_source_defaults
 from medianest_bridge.source_forms import (
     _coerce_list_shaped_fields, extract_form_errors, run_edit_source_checks,
 )
@@ -70,7 +85,7 @@ from sync.choices import TaskQueue, Val, YouTube_SourceType
 from sync.forms import SourceForm
 from sync.models import Media, Source
 from sync.tasks import download_source_images
-from sync.tvshow_nfo import build_tvshow_nfo, write_tvshow_nfo
+from sync.tvshow_nfo import tvshow_nfo_needs_write, write_tvshow_nfo
 from sync.utils import write_text_file
 
 # The prefix MediaNest's acquisition-source-write service gives every
@@ -131,20 +146,15 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         apply_changes = options['apply']
 
-        try:
-            config_errors = validate_source_defaults()
-        except SourceDefaultsConfigError as exc:
-            # source_defaults()/validate_source_defaults() normally
-            # return a list of strings rather than raising -- this is
-            # defensive, in case that contract ever changes underneath
-            # this command.
-            raise CommandError(str(exc)) from exc
+        defaults_by_type, config_errors = load_validated_source_defaults()
         if config_errors:
             raise CommandError(
                 'MEDIANEST_BRIDGE_SOURCE_DEFAULTS is invalid; refusing to '
                 'change anything:\n' +
                 '\n'.join(f'  - {message}' for message in config_errors)
             )
+        if apply_changes:
+            self._check_running_as_download_owner()
 
         sources = self._resolve_sources(options)
         if not sources:
@@ -153,13 +163,49 @@ class Command(BaseCommand):
 
         summary = dict.fromkeys(_SUMMARY_FIELDS, 0)
         for source in sources:
-            self._process_source(source, apply_changes, summary)
+            summary['sources'] += 1
+            try:
+                self._process_source(
+                    source, defaults_by_type, apply_changes, summary,
+                )
+            except Exception:
+                # One source's failure (a DB error saving it, a broker
+                # error enqueueing its images) must not abort the rest
+                # of an --all-bridge-sources run.
+                summary['errors'] += 1
+                log.exception(
+                    f'medianest_backfill_plex_sidecars: error processing {source}'
+                )
+                self.stdout.write(self.style.ERROR(
+                    '  FAILED: unexpected error, see the log',
+                ))
 
         self._print_summary(summary, apply_changes)
-        if summary['errors']:
+        if summary['errors'] or summary['locked']:
             raise CommandError(
-                f'{summary["errors"]} error(s) occurred; see the log '
-                'output above for details.'
+                f'{summary["errors"]} error(s) and {summary["locked"]} '
+                'locked media; see the output above. Nothing was deleted; '
+                're-run once the cause is fixed (locked media are retried '
+                'by the next run).'
+            )
+
+    def _check_running_as_download_owner(self):
+        '''
+            Files and "Season YYYY/" directories this command creates are
+            owned by whoever runs it. Run as root (a plain `docker exec`),
+            they would be root-owned and the app user's huey workers could
+            no longer download or rename into them. Refuse --apply unless
+            the effective user owns DOWNLOAD_ROOT, like the app user does.
+        '''
+        download_root = Path(settings.DOWNLOAD_ROOT)
+        owner = download_root.stat().st_uid
+        if os.geteuid() != owner:
+            raise CommandError(
+                f'--apply must run as the user that owns {download_root} '
+                f'(uid {owner}), not uid {os.geteuid()}, so new files and '
+                'directories stay writable by TubeSync. In the container: '
+                'docker exec -u app <container> python3 /app/manage.py '
+                'medianest_backfill_plex_sidecars ...'
             )
 
     def _resolve_sources(self, options):
@@ -182,8 +228,7 @@ class Command(BaseCommand):
                 raise CommandError(f'No such source: {raw}') from exc
         return sources
 
-    def _process_source(self, source, apply_changes, summary):
-        summary['sources'] += 1
+    def _process_source(self, source, defaults_by_type, apply_changes, summary):
         mode = 'apply' if apply_changes else 'dry-run'
         self.stdout.write(f'[{mode}] {source.name} ({source.uuid})')
 
@@ -198,16 +243,37 @@ class Command(BaseCommand):
             self.stdout.write(self.style.ERROR(f'  SKIPPED: {message}'))
             return
 
-        overlay = source_defaults().get(contract_type, {})
+        overlay = defaults_by_type.get(contract_type, {})
         working_source = source
+        images_already_queued = False
         if overlay:
+            changes = self._overlay_changes(source, overlay)
+            self._describe_overlay_diff(source, changes)
+            # Dry-run validates against a copy, so it reports exactly the
+            # failures --apply would hit without touching `source`.
+            form = self._overlay_form(
+                source if apply_changes else copy.copy(source), overlay,
+            )
+            if not form.is_valid():
+                summary['errors'] += 1
+                messages = '; '.join(extract_form_errors(form))
+                log.error(
+                    f'medianest_backfill_plex_sidecars: {source}: T3 profile '
+                    f'failed validation: {messages}'
+                )
+                self.stdout.write(self.style.ERROR(f'  SKIPPED: {messages}'))
+                return
+            # Turning copy_channel_images on makes source_pre_save enqueue
+            # download_source_images itself.
+            images_already_queued = bool(changes.get('copy_channel_images'))
             if apply_changes:
-                if not self._apply_overlay(source, overlay, summary):
-                    return
-                working_source = source
+                # Saving when no overlay field changes would still fire
+                # source_post_save and its save_all_media_for_source
+                # cascade on every re-run.
+                if changes:
+                    form.save()
             else:
-                self._describe_overlay_diff(source, overlay)
-                working_source = self._cloned_source_with_overlay(source, overlay)
+                working_source = form.instance
 
         downloaded_qs = Media.objects.filter(
             source=source, downloaded=True,
@@ -218,67 +284,54 @@ class Command(BaseCommand):
                 media.source = working_source
             self._process_media(media, apply_changes, summary)
 
-        self._process_tvshow_and_images(working_source, apply_changes, summary)
+        self._process_tvshow_and_images(
+            working_source, apply_changes, summary, images_already_queued,
+        )
 
-    def _apply_overlay(self, source, overlay, summary):
+    def _overlay_form(self, source, overlay):
         '''
-            Applies `overlay` onto `source`'s CURRENT field values (not
-            blank Source() defaults -- unlike
-            medianest_bridge.source_forms.build_source_form(), which only
-            ever builds a brand-new POST /sources create), so an existing
-            operator's own customizations to fields the overlay doesn't
-            touch (filter rules, resolution, days_to_keep, etc.) are
-            preserved. Validated through the same SourceForm +
-            run_edit_source_checks() path a real edit
-            (sync/views/sources.py::EditSourceMixin) uses, reused rather
-            than reimplemented. Returns True on success (and has already
-            saved `source`); False (and already counted/logged as an
-            error) if the overlay does not validate against this
-            particular source.
+            A SourceForm bound to `source` with `overlay` applied onto the
+            source's CURRENT field values (not blank Source() defaults --
+            unlike medianest_bridge.source_forms.build_source_form(), which
+            only ever builds a brand-new POST /sources create), so an
+            existing operator's own customizations to fields the overlay
+            doesn't touch (filter rules, resolution, days_to_keep, etc.)
+            are preserved. Validated through SourceForm plus
+            run_edit_source_checks(), which reproduces (does not share)
+            sync/views/sources.py::EditSourceMixin.form_valid()'s two extra
+            checks -- keep the two in step if that view changes. Binding
+            the form updates `source` in memory (ModelForm validation
+            does), so dry-run passes a copy.
         '''
         data = model_to_dict(source, fields=list(SourceForm.base_fields.keys()))
+        for field, value in data.items():
+            # A saved CommaSepChoiceField (sponsorblock_categories) loads as
+            # a CommaSepChoice tuple, not the list its form field expects.
+            if hasattr(value, 'selected_choices'):
+                data[field] = list(value.selected_choices)
         data.update(overlay)
         _coerce_list_shaped_fields(data)
         form = SourceForm(data=data, instance=source)
         if form.is_valid():
             run_edit_source_checks(form)
-        if not form.is_valid():
-            summary['errors'] += 1
-            messages = '; '.join(extract_form_errors(form))
-            log.error(
-                f'medianest_backfill_plex_sidecars: {source}: T3 profile '
-                f'failed validation: {messages}'
-            )
-            self.stdout.write(self.style.ERROR(f'  SKIPPED: {messages}'))
-            return False
-        form.save()
-        return True
+        return form
 
-    def _describe_overlay_diff(self, source, overlay):
-        changed = {
+    def _overlay_changes(self, source, overlay):
+        '''The overlay fields whose value differs from `source`'s.'''
+        return {
             field: value for field, value in overlay.items()
             if getattr(source, field, None) != value
         }
-        if not changed:
+
+    def _describe_overlay_diff(self, source, changes):
+        if not changes:
             self.stdout.write('  T3 profile already applied (no field changes).')
             return
-        self.stdout.write('  T3 profile would change:')
-        for field in sorted(changed):
+        self.stdout.write('  T3 profile field changes:')
+        for field in sorted(changes):
             self.stdout.write(
-                f'    {field}: {getattr(source, field, None)!r} -> {changed[field]!r}'
+                f'    {field}: {getattr(source, field, None)!r} -> {changes[field]!r}'
             )
-
-    def _cloned_source_with_overlay(self, source, overlay):
-        '''
-            A shallow, never-saved copy of `source` with `overlay`'s
-            fields set directly -- used only so dry-run mode can read
-            media.filepath/media.nfoxml/etc. against the WOULD-BE values
-            (via media.source = this clone) without writing anything.
-        '''
-        clone = copy.copy(source)
-        for field, value in overlay.items():
-            setattr(clone, field, value)
-        return clone
 
     def _process_media(self, media, apply_changes, summary):
         try:
@@ -290,13 +343,17 @@ class Command(BaseCommand):
                     huey_lock_task(
                         f'media:{media.uuid}', queue=Val(TaskQueue.DB),
                     ),
-                    transaction.atomic(durable=False),
                 ):
-                    self._rename_media(media, summary, True)
-                    self._handle_episode_nfo(media, summary, True)
-                    self._handle_thumbnail(media, summary, True)
-            else:
-                self._rename_media(media, summary, False)
+                    # Only the rename is transactional, like upstream's
+                    # rename_all_media_for_source: a later sidecar failure
+                    # must never roll back the media_file update of a file
+                    # that has already moved on disk.
+                    with transaction.atomic(durable=False):
+                        in_place = self._rename_media(media, summary, True)
+                    if in_place:
+                        self._handle_episode_nfo(media, summary, True)
+                        self._handle_thumbnail(media, summary, True)
+            elif self._rename_media(media, summary, False):
                 self._handle_episode_nfo(media, summary, False)
                 self._handle_thumbnail(media, summary, False)
         except TaskLockedException:
@@ -312,43 +369,63 @@ class Command(BaseCommand):
             )
 
     def _rename_media(self, media, summary, apply_changes):
+        '''
+            Moves the video to its profile path (apply) or reports whether
+            it would (dry-run). Returns True when the media is (or would
+            be) at its profile path, so its sidecars can be written there.
+            A missing current file, or a target already occupied by
+            another file, is counted as an error and returns False:
+            rename_files() silently declines to move in both cases, and
+            writing sidecars would then name them after the wrong file.
+        '''
         if not (media.downloaded and media.media_file):
             summary['already_in_place'] += 1
-            return
-        if apply_changes:
-            old_name = str(media.media_file)
-            media.rename_files()
-            changed = str(media.media_file) != old_name
-        else:
-            # Read-only equivalent of rename_files()'s own "would this
-            # move anything" check. media.source has already been pointed
-            # at the overlay-applied clone by the caller (_process_source),
-            # so media.filepath reflects the WOULD-BE target path.
-            changed = str(media.filepath) != str(Path(media.media_file.path))
-        if changed:
-            summary['renamed'] += 1
-        else:
+            return True
+        current = Path(media.media_file.path)
+        target = Path(media.filepath)
+        if current == target:
             summary['already_in_place'] += 1
+            return True
+        problem = None
+        if not current.exists():
+            problem = f'current file {current} is missing'
+        elif target.exists():
+            problem = f'target {target} is already occupied'
+        if problem is None and apply_changes:
+            media.rename_files()
+            if Path(media.media_file.path) != target:
+                problem = f'rename to {target} did not happen'
+        if problem is not None:
+            summary['errors'] += 1
+            log.error(
+                f'medianest_backfill_plex_sidecars: {media}: not renamed '
+                f'({problem}); skipping its NFO and thumbnail'
+            )
+            return False
+        summary['renamed'] += 1
+        return True
+
+    def _sidecar_path(self, media, suffix):
+        '''
+            `media`'s NFO/thumbnail path under its profile filename.
+            Media.nfopath/thumbpath name sidecars after the CURRENT file
+            once downloaded, which in dry-run is still the old name; this
+            uses the profile filename in both modes (identical after a
+            real rename).
+        '''
+        prefix = os.path.splitext(os.path.basename(media.filename))[0]
+        return media.directory_path / f'{prefix}{suffix}'
 
     def _handle_episode_nfo(self, media, summary, apply_changes):
         if not media.source.write_nfo:
             return
-        nfo_path = media.nfopath
+        nfo_path = self._sidecar_path(media, '.nfo')
         content = media.nfoxml
-        existing = nfo_path.read_text(encoding='utf-8') if nfo_path.exists() else None
-        if existing == content:
+        if nfo_path.exists() and nfo_path.read_bytes() == content.encode('utf-8'):
             summary['nfo_unchanged'] += 1
             return
         if apply_changes:
-            try:
-                write_text_file(nfo_path, content)
-            except PermissionError:
-                summary['errors'] += 1
-                log.exception(
-                    'medianest_backfill_plex_sidecars: permissions problem '
-                    f'writing the episode NFO for {media}'
-                )
-                return
+            write_text_file(nfo_path, content)
         summary['nfo_written'] += 1
 
     def _handle_thumbnail(self, media, summary, apply_changes):
@@ -360,29 +437,34 @@ class Command(BaseCommand):
         # which this command must never trigger.
         if not media.thumb_file_exists:
             return
-        if media.thumbpath.exists():
+        if self._sidecar_path(media, '.jpg').exists():
             return
         if apply_changes:
             media.copy_thumbnail()
         summary['thumbs_copied'] += 1
 
-    def _process_tvshow_and_images(self, source, apply_changes, summary):
-        if source.write_nfo:
-            if apply_changes:
-                if write_tvshow_nfo(source):
+    def _process_tvshow_and_images(
+        self, source, apply_changes, summary, images_already_queued=False,
+    ):
+        if apply_changes:
+            try:
+                if write_tvshow_nfo(source, raise_errors=True):
                     summary['tvshow_written'] += 1
-            else:
-                nfo_path = Path(source.directory_path) / 'tvshow.nfo'
-                content = build_tvshow_nfo(source)
-                existing = (
-                    nfo_path.read_text(encoding='utf-8')
-                    if nfo_path.exists() else None
+            except Exception:
+                summary['errors'] += 1
+                log.exception(
+                    'medianest_backfill_plex_sidecars: failed to write '
+                    f'tvshow.nfo for {source}'
                 )
-                if existing != content:
-                    summary['tvshow_written'] += 1
+        elif tvshow_nfo_needs_write(source):
+            summary['tvshow_written'] += 1
 
         poster_path = Path(source.directory_path) / 'poster.jpg'
-        if source.copy_channel_images and not poster_path.exists():
+        if (
+            source.copy_channel_images
+            and not poster_path.exists()
+            and not images_already_queued
+        ):
             if apply_changes:
                 # Enqueues the huey task (django_huey's db_task decorator
                 # makes a normal call schedule it) -- deliberately NOT
