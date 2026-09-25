@@ -30,10 +30,12 @@ from sync.choices import (
 )
 from sync.models import Media, Metadata, Source
 from sync.models._migrations import media_file_storage
+from sync import tvshow_nfo as tvshow_nfo_module
 from sync.tvshow_nfo import (
     _clear_show_title_cache, _invalidate_show_title_cache,
     _show_title_cache, _store_show_title,
-    build_tvshow_nfo, resolve_show_title, write_tvshow_nfo,
+    build_tvshow_nfo, resolve_show_title, tvshow_nfo_needs_write,
+    write_tvshow_nfo,
 )
 
 from .fixtures import all_test_metadata
@@ -301,6 +303,33 @@ class WriteTvshowNfoTestCase(TestCase):
             self._nfo_path().write_text(manual, encoding='utf-8')
             write_tvshow_nfo(self.source)
             self.assertEqual(self._nfo_path().read_text(encoding='utf-8'), manual)
+
+    def test_builds_the_nfo_only_once(self):
+        '''
+            write_tvshow_nfo() used to call tvshow_nfo_needs_write() (which
+            builds the NFO to compare bytes) and then build it AGAIN
+            itself -- doubling the underlying metadata queries on every
+            index_source/download_source_images/download_media_metadata
+            run. Both public functions now share one call through
+            _tvshow_nfo_content_to_write().
+        '''
+        with temp_download_root():
+            self.source.make_directory()
+            with patch.object(
+                tvshow_nfo_module, 'build_tvshow_nfo',
+                wraps=tvshow_nfo_module.build_tvshow_nfo,
+            ) as mock_build:
+                write_tvshow_nfo(self.source)
+            mock_build.assert_called_once()
+
+            # Nothing changed: tvshow_nfo_needs_write() alone also builds
+            # exactly once (to compare against the bytes on disk).
+            with patch.object(
+                tvshow_nfo_module, 'build_tvshow_nfo',
+                wraps=tvshow_nfo_module.build_tvshow_nfo,
+            ) as mock_build_needs:
+                self.assertFalse(tvshow_nfo_needs_write(self.source))
+            mock_build_needs.assert_called_once()
 
     def test_still_owned_and_rewritten_after_the_source_key_changes(self):
         # A source-update form edit to `key` must not orphan a file this

@@ -37,14 +37,21 @@
     transaction (rename_files() saves media_file as soon as the video
     moves) and its NFO/thumbnail are written afterwards, so no later
     failure can roll back the media_file update of a file that already
-    moved. A missing current file, or an occupied target for the video or
-    for any sidecar rename_files() would move, is an error (nothing moves
-    and the media's sidecars are skipped), each source is isolated from
-    the others, and
-    the command exits non-zero when anything errored or was skipped as
-    locked -- re-run it once the cause is fixed. --apply refuses to run
-    unless the effective user owns DOWNLOAD_ROOT, so everything it
-    creates stays writable by TubeSync (`docker exec -u app ...`).
+    moved. A missing current file, an occupied target for the video, an
+    occupied destination for any sidecar rename_files() would move, OR an
+    already-occupied target-side .nfo/.jpg that no move of this media's
+    own would bring (this command's own NFO/thumbnail write would
+    otherwise silently clobber it right after the video moves), is an
+    error (nothing moves and the media's sidecars are skipped). Adopting
+    an earlier half-finished move that left stray same-key sidecars
+    behind is also an error (nothing is adopted, moved or deleted).
+    Every per-media failure is both logged and printed to stdout, so the
+    final "see the output above" is accurate. Each source is isolated
+    from the others, and the command exits non-zero when anything errored
+    or was skipped as locked -- re-run it once the cause is fixed.
+    --apply refuses to run unless the effective user owns DOWNLOAD_ROOT,
+    so everything it creates stays writable by TubeSync
+    (`docker exec -u app ...`).
 
     Never deletes any file (grep this module: no unlink/rmtree/os.remove
     call). `Media.rename_files()`'s own empty-directory cleanup (an
@@ -56,19 +63,43 @@
     TubeSync's own Source post_save signal
     (sync/signals.py::source_post_save), which unconditionally schedules
     save_all_media_for_source -- and that task, if a huey consumer is
-    running and later processes it, schedules rename_all_media_for_source
-    in turn. Both are asynchronous (huey-enqueued, not executed by this
-    command) and both are harmless alongside this command's own
-    synchronous work: rename_all_media_for_source is gated by the
-    RENAME_SOURCES/RENAME_ALL_SOURCES settings before doing anything (most
-    deployments run with neither enabled, so it is a pure no-op), and even
-    where it is enabled, Media.rename_files() is itself idempotent --
-    calling it again after this command already renamed everything simply
-    returns immediately (`old_video_path == new_video_path`). In tests,
-    huey enqueue-without-a-consumer never actually executes anything (see
-    the wider test suite's existing reliance on this same fact for
-    signals.py's own enqueue calls) -- these tests never see this cascade
-    actually run.
+    running and later processes it, always schedules
+    rename_all_media_for_source in turn. Both are asynchronous
+    (huey-enqueued, not executed by this command). Unlike this command,
+    rename_all_media_for_source calls upstream Media.rename_files()
+    directly with none of this command's own refusal checks (occupied
+    target, occupied sidecar destination, claimed prefix, adoption
+    leftovers), and Path.replace() silently overwrites a same-stem
+    sidecar at the destination. rename_all_media_for_source only skips a
+    source when BOTH settings.RENAME_ALL_SOURCES is False AND
+    source.directory is not listed in settings.RENAME_SOURCES --
+    RENAME_ALL_SOURCES defaults to True (tubesync/settings.py,
+    local_settings.py.container), so on a typical deployment the cascade
+    WILL fire a few minutes after this command saves a source, and would
+    silently clobber exactly the media this command itself refused to
+    touch.
+
+    To prevent that, --apply runs the exact same per-media decision logic
+    as a dry-run (see _count_refused_media()) BEFORE saving any source
+    whose overlay would actually change a field: when the cascade is
+    enabled for that source (_cascade_enabled_for(), mirroring
+    rename_all_media_for_source's own gate) and any media would be
+    refused, the source is not saved at all -- nothing for that source is
+    changed, one error is counted, and the operator is told to resolve
+    the conflicts or disable the cascade (TUBESYNC_RENAME_ALL_SOURCES and
+    TUBESYNC_RENAME_SOURCES) before re-running. Dry-run runs the same
+    preflight and reports the same verdict, purely informationally, since
+    it never saves anything anyway. Where the gate lets a save through
+    (or the cascade is disabled/not enabled for that source),
+    Media.rename_files() is itself idempotent -- calling it again after
+    this command already renamed everything simply returns immediately
+    (`old_video_path == new_video_path`) -- so the eventual cascade run is
+    a harmless no-op for every media this command actually completed. In
+    tests, huey enqueue-without-a-consumer never actually executes
+    anything (see the wider test suite's existing reliance on this same
+    fact for signals.py's own enqueue calls) -- these tests never see the
+    cascade itself run; the gate is exercised by asserting the source is
+    (or is not) saved.
 '''
 import copy
 import os
@@ -78,10 +109,12 @@ from uuid import UUID
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.forms.models import model_to_dict
+from django.utils.translation import gettext_lazy as _
 from django_huey import lock_task as huey_lock_task
 from huey.exceptions import TaskLockedException
 
 from common.logger import log
+from common.models import TaskHistory
 from common.utils import directory_and_stem, glob_quote
 from medianest_bridge.config import load_validated_source_defaults
 from medianest_bridge.source_forms import (
@@ -168,6 +201,10 @@ class Command(BaseCommand):
             self.stdout.write('No matching sources found.')
             return
 
+        # _stray_snapshot()'s per-source directory-listing cache, built
+        # lazily (see its own docstring); one Command instance per
+        # call_command() invocation, so this never leaks between runs.
+        self._stray_snapshot_cache = {}
         summary = dict.fromkeys(_SUMMARY_FIELDS, 0)
         for source in sources:
             summary['sources'] += 1
@@ -254,10 +291,15 @@ class Command(BaseCommand):
         working_source = source
         images_already_queued = False
         overlay_changed = False
+        form = None
+        changes = {}
         if overlay:
             original = {field: getattr(source, field, None) for field in overlay}
-            # Dry-run validates against a copy, so it reports exactly the
-            # failures --apply would hit without touching `source`.
+            # Apply binds the form directly to `source` -- ModelForm
+            # validation updates it in memory as soon as is_valid() runs,
+            # well before form.save() persists anything, so working_source
+            # already reflects the would-be values either way. Dry-run
+            # binds a copy, so nothing here mutates the real `source`.
             form = self._overlay_form(
                 source if apply_changes else copy.copy(source), overlay,
             )
@@ -277,30 +319,119 @@ class Command(BaseCommand):
             # download_source_images itself; suppress this command's own
             # direct enqueue below but still count it (both modes).
             images_already_queued = bool(changes.get('copy_channel_images'))
-            if apply_changes:
-                # Saving when no overlay field changes would still fire
-                # source_post_save and its save_all_media_for_source
-                # cascade on every re-run.
-                if changes:
-                    form.save()
-            else:
-                working_source = form.instance
+            working_source = form.instance
 
         downloaded = list(
-            Media.objects.filter(source=source, downloaded=True).order_by('key')
+            Media.objects.filter(source=source, downloaded=True)
+            .select_related('source').order_by('key')
         )
         media_files = {
             Path(media.media_file.path) for media in downloaded if media.media_file
         }
+        # Both modes read media.filepath/media.source.* against the
+        # would-be values from here on: apply's `working_source` either IS
+        # `source` (already mutated in memory by form validation above) or
+        # is `source` unchanged; dry-run's is the unsaved copy.
+        for media in downloaded:
+            media.source = working_source
+
+        # Rename-cascade gate: saving a source whose overlay actually
+        # changes a field fires source_post_save's
+        # save_all_media_for_source -> rename_all_media_for_source cascade
+        # (see the module docstring). When that cascade is enabled for
+        # this source, run the exact same per-media decision logic a
+        # dry-run would (on a scratch copy, touching nothing) BEFORE
+        # deciding whether --apply may save the source at all.
+        cascade_would_fire = overlay_changed and self._cascade_enabled_for(source)
+        if apply_changes:
+            if cascade_would_fire:
+                refused = self._count_refused_media(downloaded, media_files)
+                if refused:
+                    summary['errors'] += 1
+                    message = self._cascade_gate_message(refused)
+                    log.error(
+                        f'medianest_backfill_plex_sidecars: {source}: {message}'
+                    )
+                    self.stdout.write(self.style.ERROR(f'  SKIPPED: {message}'))
+                    return
+            if changes:
+                # Saving when no overlay field changes would still fire
+                # source_post_save and its save_all_media_for_source
+                # cascade on every re-run.
+                form.save()
+        elif cascade_would_fire:
+            refused = self._count_refused_media(downloaded, media_files)
+            if refused:
+                self.stdout.write(self.style.WARNING(
+                    f'  NOTE: --apply would skip this source without '
+                    f'saving it: {self._cascade_gate_message(refused)}'
+                ))
+
         for media in downloaded:
             summary['media_seen'] += 1
-            if not apply_changes:
-                media.source = working_source
             self._process_media(media, apply_changes, summary, media_files)
 
         self._process_tvshow_and_images(
             working_source, apply_changes, summary, images_already_queued,
             overlay_changed,
+        )
+
+    def _cascade_enabled_for(self, source):
+        '''
+            True when saving `source` would leave the unguarded upstream
+            rename_all_media_for_source cascade able to do something a
+            few minutes later -- mirrors sync/tasks.py's own
+            rename_all_media_for_source gate (RENAME_SOURCES /
+            RENAME_ALL_SOURCES) exactly, so this predicts precisely when
+            that task would touch this source's media.
+        '''
+        rename_sources = getattr(settings, 'RENAME_SOURCES', None) or ()
+        return bool(
+            (source.directory and source.directory in rename_sources) or
+            getattr(settings, 'RENAME_ALL_SOURCES', False)
+        )
+
+    def _count_refused_media(self, downloaded, media_files):
+        '''
+            How many of `downloaded` would be refused by _rename_media()
+            right now, using the exact same dry-run (apply_changes=False)
+            decision logic a real dry-run uses -- the preflight the
+            rename-cascade gate runs before letting --apply save a source
+            whose overlay changed a field. Callers must already have set
+            each media's `.source` to the would-be source, same as the
+            real dry-run loop does. Works on a COPY of `media_files` and a
+            scratch summary dict, so this preflight cannot itself affect
+            the real run that follows it when nothing is refused.
+        '''
+        scratch_summary = dict.fromkeys(_SUMMARY_FIELDS, 0)
+        scratch_media_files = set(media_files)
+        refused = 0
+        for media in downloaded:
+            try:
+                renamed_ok = self._rename_media(
+                    media, scratch_summary, False, scratch_media_files,
+                )
+            except Exception:
+                renamed_ok = False
+                log.exception(
+                    'medianest_backfill_plex_sidecars: cascade-gate '
+                    f'preflight error for {media}'
+                )
+            if not renamed_ok:
+                refused += 1
+        return refused
+
+    def _cascade_gate_message(self, refused):
+        return (
+            f'{refused} already-downloaded media item(s) would be refused '
+            'by the rename (re-run without --apply to see which ones and '
+            "why); saving this source would fire TubeSync's own "
+            'rename_all_media_for_source cascade a few minutes later, '
+            "which has none of this command's own refusal checks and "
+            'would silently overwrite those same-stem sidecars. Not '
+            'saving this source. Resolve the conflicts and re-run, or set '
+            'TUBESYNC_RENAME_ALL_SOURCES=false (and remove this '
+            "source's directory from TUBESYNC_RENAME_SOURCES) first."
         )
 
     def _overlay_form(self, source, overlay):
@@ -399,11 +530,18 @@ class Command(BaseCommand):
                 f'medianest_backfill_plex_sidecars: {media} is locked by '
                 'another task; skipping it this run.'
             )
+            self.stdout.write(self.style.WARNING(
+                f'  LOCKED: {media} is locked by another task; will be '
+                'retried next run.'
+            ))
         except Exception:
             summary['errors'] += 1
             log.exception(
                 f'medianest_backfill_plex_sidecars: error processing {media}'
             )
+            self.stdout.write(self.style.ERROR(
+                f'  FAILED: {media}: unexpected error, see the log'
+            ))
 
     def _rename_media(self, media, summary, apply_changes, media_files):
         '''
@@ -423,45 +561,74 @@ class Command(BaseCommand):
             Counted as an error, returning False: a downloaded row with no
             media_file; a missing current file with nothing to adopt; a
             target video that already exists; a sidecar destination that
-            already exists (rename_files() would overwrite it); a
-            "sidecar" that is another media's own video (rename_files()
+            already exists -- either one rename_files() would overwrite
+            directly, or a target-side .nfo/.jpg no move of this media's
+            own would bring, which this command's own NFO/thumbnail write
+            would otherwise silently clobber right after the video moves;
+            a "sidecar" that is another media's own video (rename_files()
             would move it without updating that media's row); an
-            already-in-place row whose video file is actually missing; or
-            an already-in-place row with a same-key sidecar left behind
-            outside its target directory (see _stray_sidecars()).
+            already-in-place row whose video file is actually missing; an
+            already-in-place row, or an adopted half-finished move, with a
+            same-key sidecar left behind outside its target directory
+            (see _stray_sidecars()).
         '''
         if not media.media_file:
             summary['errors'] += 1
-            log.error(
-                f'medianest_backfill_plex_sidecars: {media}: marked downloaded '
-                'but has no media file; skipping its NFO and thumbnail'
+            message = (
+                f'{media}: marked downloaded but has no media file; '
+                'skipping its NFO and thumbnail'
             )
+            log.error(f'medianest_backfill_plex_sidecars: {message}')
+            self.stdout.write(self.style.ERROR(f'  FAILED: {message}'))
             return False
         current = Path(media.media_file.path)
         target = Path(media.filepath)
         if current == target:
             if not current.exists():
                 summary['errors'] += 1
-                log.error(
-                    f'medianest_backfill_plex_sidecars: {media}: already at '
-                    f'its target path but the file is missing: {current}'
+                message = (
+                    f'{media}: already at its target path but the file is '
+                    f'missing: {current}'
                 )
+                log.error(f'medianest_backfill_plex_sidecars: {message}')
+                self.stdout.write(self.style.ERROR(f'  FAILED: {message}'))
                 return False
-            stray = self._stray_sidecars(media, target)
+            stray = self._stray_sidecars(
+                media, target, self._stray_snapshot(media.source),
+            )
             if stray:
                 summary['errors'] += 1
-                log.error(
-                    f'medianest_backfill_plex_sidecars: {media}: leftover '
-                    'sidecar(s) outside its target directory, likely from a '
-                    'prior run that renamed the video but failed partway '
-                    'through its own sidecar moves (nothing moved or '
-                    'deleted; move or remove them by hand once checked): ' +
+                message = (
+                    f'{media}: leftover sidecar(s) outside its target '
+                    'directory, likely from a prior run that renamed the '
+                    'video but failed partway through its own sidecar '
+                    'moves (nothing moved or deleted; move or remove them '
+                    'by hand once checked): ' +
                     ', '.join(str(path) for path in stray)
                 )
+                log.error(f'medianest_backfill_plex_sidecars: {message}')
+                self.stdout.write(self.style.ERROR(f'  FAILED: {message}'))
                 return False
             summary['already_in_place'] += 1
             return True
         if not current.exists() and target.exists() and target not in media_files:
+            stray = self._stray_sidecars(
+                media, target, self._stray_snapshot(media.source),
+            )
+            if stray:
+                summary['errors'] += 1
+                message = (
+                    f'{media}: leftover sidecar(s) outside its target '
+                    f'directory while adopting {target} (already moved '
+                    f'from {current} by an earlier run that then failed '
+                    'partway through its own sidecar moves; nothing '
+                    'adopted, moved or deleted; move or remove them by '
+                    'hand once checked): ' +
+                    ', '.join(str(path) for path in stray)
+                )
+                log.error(f'medianest_backfill_plex_sidecars: {message}')
+                self.stdout.write(self.style.ERROR(f'  FAILED: {message}'))
+                return False
             if apply_changes:
                 media.media_file.name = str(
                     target.relative_to(media.media_file.storage.location)
@@ -482,6 +649,22 @@ class Command(BaseCommand):
             destination for other, destination in moves
             if destination != other and destination.exists()
         ]
+        # A sidecar this media's own move does NOT bring (no matching
+        # old-name file exists beside `current`) can still already sit at
+        # the target name -- rename_files() itself would not touch it,
+        # but this command's own _handle_episode_nfo()/_handle_thumbnail()
+        # would silently overwrite it right after the video moves. Treat
+        # it the same as any other occupied destination.
+        move_destinations = {destination for _, destination in moves}
+        expected_sidecars = []
+        if media.source.write_nfo:
+            expected_sidecars.append(self._sidecar_path(media, '.nfo'))
+        if media.source.copy_thumbnails:
+            expected_sidecars.append(self._sidecar_path(media, '.jpg'))
+        occupied += [
+            path for path in expected_sidecars
+            if path not in move_destinations and path.exists()
+        ]
         claimed = [other for other, _ in moves if other in media_files]
         if not current.exists():
             problem = f'current file {current} is missing'
@@ -501,37 +684,72 @@ class Command(BaseCommand):
                 problem = f'rename to {target} did not happen'
         if problem is not None:
             summary['errors'] += 1
-            log.error(
-                f'medianest_backfill_plex_sidecars: {media}: not renamed '
-                f'({problem}); skipping its NFO and thumbnail'
+            message = (
+                f'{media}: not renamed ({problem}); skipping its NFO and thumbnail'
             )
+            log.error(f'medianest_backfill_plex_sidecars: {message}')
+            self.stdout.write(self.style.ERROR(f'  FAILED: {message}'))
             return False
         summary['renamed'] += 1
         media_files.discard(current)
         media_files.add(target)
         return True
 
-    def _stray_sidecars(self, media, target):
+    def _stray_snapshot(self, source):
         '''
-            Files elsewhere under the source directory whose name contains
-            this media's own `key` -- left behind when a prior run's
-            rename_files() moved the video, saved media_file, and then
-            raised partway through moving an old-name sidecar (a subtitle,
-            a JSON file, or a bare thumbnail with no cache record). Once
-            media_file already points at `target`, the old path (and the
-            media_format that produced it, bracketed or not) is no longer
-            known, so this is a best-effort, name-based scan rather than a
-            move: it makes the leftover loudly visible (counted as an
-            error) instead of silently leaving it orphaned under the old
-            name forever.
+            A one-time snapshot (a list of every file Path under
+            `source`'s directory) reused by every already-in-place/adopted
+            media of this SAME source in this run, instead of walking the
+            whole tree (Path.rglob) again for each one -- one tree walk
+            per source instead of one per already-in-place/adopted media.
+
+            Safe: _stray_sidecars() finds a media's own leftovers by a
+            substring match on THAT media's own `key`, and processing a
+            DIFFERENT media in this same run never creates or removes a
+            file carrying this media's key -- only that media's own
+            processing could do that, and _stray_sidecars() is only ever
+            consulted for a media before anything of ITS OWN has moved
+            (the already-in-place branch moves nothing; the adopted
+            branch's own action, once this check clears, is a DB update,
+            not a filesystem move). So a snapshot taken once, lazily, the
+            first time any media of this source needs it stays accurate
+            for the rest of the source's per-media loop.
+
+            Cached by `source.pk` (built only on first use, so a source
+            whose media are all being renamed for the first time -- never
+            hitting the already-in-place/adopted branches -- pays
+            nothing).
         '''
-        marker = glob_quote(str(media.key))
-        source_dir = Path(media.source.directory_path)
-        if not source_dir.is_dir():
-            return []
+        cached = self._stray_snapshot_cache.get(source.pk)
+        if cached is not None:
+            return cached
+        source_dir = Path(source.directory_path)
+        snapshot = (
+            [path for path in source_dir.rglob('*') if path.is_file()]
+            if source_dir.is_dir() else []
+        )
+        self._stray_snapshot_cache[source.pk] = snapshot
+        return snapshot
+
+    def _stray_sidecars(self, media, target, snapshot):
+        '''
+            Files elsewhere under the source directory (from `snapshot`,
+            a pre-built per-source listing -- see _stray_snapshot()) whose
+            name contains this media's own `key` -- left behind when a
+            prior run's rename_files() moved the video, saved media_file,
+            and then raised partway through moving an old-name sidecar (a
+            subtitle, a JSON file, or a bare thumbnail with no cache
+            record). Once media_file already points at `target`, the old
+            path (and the media_format that produced it, bracketed or
+            not) is no longer known, so this is a best-effort, name-based
+            scan rather than a move: it makes the leftover loudly visible
+            (counted as an error) instead of silently leaving it orphaned
+            under the old name forever.
+        '''
+        key = str(media.key)
         return sorted(
-            path for path in source_dir.rglob(f'*{marker}*')
-            if path.is_file() and path.parent != target.parent and path != target
+            path for path in snapshot
+            if key in path.name and path.parent != target.parent and path != target
         )
 
     def _sidecar_moves(self, current, target):
@@ -591,16 +809,26 @@ class Command(BaseCommand):
         self, source, apply_changes, summary, images_already_queued=False,
         overlay_changed=False,
     ):
+        '''
+            Writes (apply) or predicts (dry-run) `source`'s tvshow.nfo,
+            then enqueues (or predicts enqueueing) `download_source_images`
+            when `copy_channel_images` is on and poster.jpg is still
+            missing -- unless `images_already_queued` says
+            source_pre_save's own copy_channel_images-turned-on check
+            already scheduled it for this same save, in which case this
+            command must not also schedule a second job, but still counts
+            it either way so dry-run's prediction and apply's actual
+            behaviour report the same `images_enqueued` count.
+        '''
         if apply_changes:
             try:
                 if write_tvshow_nfo(source, raise_errors=True):
                     summary['tvshow_written'] += 1
             except Exception:
                 summary['errors'] += 1
-                log.exception(
-                    'medianest_backfill_plex_sidecars: failed to write '
-                    f'tvshow.nfo for {source}'
-                )
+                message = f'{source}: failed to write tvshow.nfo, see the log'
+                log.exception(f'medianest_backfill_plex_sidecars: {message}')
+                self.stdout.write(self.style.ERROR(f'  FAILED: {message}'))
         else:
             # An overlay field change means apply's form.save() below would
             # fire source_pre_save, which synchronously creates a missing
@@ -618,17 +846,26 @@ class Command(BaseCommand):
         if source.copy_channel_images and not poster_path.exists():
             if apply_changes:
                 if not images_already_queued:
-                    # Enqueues the huey task (django_huey's db_task
-                    # decorator makes a normal call schedule it) --
-                    # deliberately NOT .call_local(), which would run the
+                    # TaskHistory.schedule(..., remove_duplicates=True) --
+                    # same mechanism sync/signals.py's own
+                    # save_all_media_for_source/index_source scheduling
+                    # uses -- rather than calling download_source_images()
+                    # directly, so a job already pending for this source
+                    # (from a previous --apply re-run against a still-
+                    # missing poster.jpg, or from source_pre_save's own
+                    # enqueue) is revoked instead of piling up a duplicate
+                    # (common/huey.py::on_executing_remove_duplicates()).
+                    # Deliberately NOT .call_local(), which would run the
                     # real network image fetch synchronously inside this
-                    # command. Skipped when source_pre_save's own
+                    # command. Skipped entirely when source_pre_save's own
                     # copy_channel_images-turned-on check already enqueued
-                    # it, to avoid a duplicate job -- but still counted
-                    # below either way.
-                    download_source_images(
+                    # it this save -- but still counted below either way.
+                    TaskHistory.schedule(
+                        download_source_images,
                         str(source.pk),
-                        delay=download_source_images.settings.get('delay'),
+                        remove_duplicates=True,
+                        vn_fmt=_('Downloading images for source "{}"'),
+                        vn_args=(source.name,),
                     )
             summary['images_enqueued'] += 1
 
