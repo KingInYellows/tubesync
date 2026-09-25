@@ -253,6 +253,18 @@ class WriteTvshowNfoTestCase(TestCase):
             write_tvshow_nfo(self.source)
             self.assertIn('Manual', self._nfo_path().read_text(encoding='utf-8'))
 
+    def test_an_episode_nfo_at_the_same_path_is_left_alone(self):
+        episode = '<episodedetails><title>Video</title></episodedetails>'
+        with temp_download_root():
+            self.source.make_directory()
+            self._nfo_path().write_text(episode, encoding='utf-8')
+            with patch('sync.tvshow_nfo.log') as mock_log:
+                write_tvshow_nfo(self.source)
+            mock_log.warning.assert_called_once()
+            self.assertEqual(
+                self._nfo_path().read_text(encoding='utf-8'), episode,
+            )
+
     def test_missing_directory_is_skipped_without_raising(self):
         with temp_download_root():
             self.assertFalse(self.source.directory_path.exists())
