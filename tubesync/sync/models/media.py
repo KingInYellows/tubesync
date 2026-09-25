@@ -46,6 +46,13 @@ from .media__tasks import (
 from .source import Source
 
 
+def _aware_utc(value):
+    '''Returns `value` as a timezone-aware datetime in UTC (naive = UTC).'''
+    if timezone.is_naive(value):
+        value = timezone.make_aware(value, tz.utc)
+    return value.astimezone(tz.utc)
+
+
 class Media(models.Model):
     '''
         Media is a single piece of media, such as a single YouTube video linked to a
@@ -773,7 +780,7 @@ class Media(models.Model):
             at most 150 UTF-8 bytes, truncated at a character boundary so a
             multibyte character is never split, then stripped. Keeps a long
             multibyte/emoji title from pushing a filename's directory
-            component past common filesystem length limits (N3) when
+            component past common filesystem length limits when
             combined with the rest of `media_format`.
         '''
         cleaned = clean_filename(self.title)
@@ -811,8 +818,8 @@ class Media(models.Model):
         '''
             The single date source for date-based episode numbering
             (`episode_yyyy`, `episode_mmddnn`, and the non-playlist NFO
-            <season>/<episode>): `published` when set (normalized to UTC),
-            else `upload_date`, else `created`.
+            <season>/<episode>): `published` when set, else `upload_date`,
+            else `created` -- always returned as an aware UTC datetime.
 
             This is deliberately its own date source rather than reusing
             `calculate_episode_number` (which only ever looks at
@@ -826,14 +833,13 @@ class Media(models.Model):
             to the current time rather than `None`.
         '''
         if self.published:
-            published = self.published
-            if timezone.is_naive(published):
-                published = timezone.make_aware(published, tz.utc)
-            return published.astimezone(tz.utc)
+            return _aware_utc(self.published)
         upload_date = self.upload_date
         if upload_date:
-            return upload_date
-        return self.created if self.created is not None else timezone.now()
+            return _aware_utc(upload_date)
+        return _aware_utc(
+            self.created if self.created is not None else timezone.now()
+        )
 
     @property
     def metadata_duration(self):
@@ -1130,25 +1136,31 @@ class Media(models.Model):
     def _same_day_index(self):
         '''
             Returns the 1-based position of this Media among its source's
-            other media that fall on the same UTC calendar day, ordered by
-            (`published`, `created`, `key`) -- the same tie-break
-            `calculate_episode_number` uses. Membership is never filtered by
-            metadata presence, `skip`, or download state, so the index a
-            media item gets does not change as metadata arrives later.
+            other media whose `episode_date` falls on the same UTC calendar
+            day, ordered by (`episode_date`, `created`, `key`) -- the same
+            tie-break `calculate_episode_number` uses. Membership is never
+            filtered by `skip` or download state.
 
-            Unlike `episode_date`, media with `published` unset are grouped
-            by `created`'s UTC day, not by `upload_date`'s day -- `created`
-            is a real column this can query directly, while `upload_date`
-            lives in metadata JSON. Deriving membership from it here would
-            need per-row metadata parsing, defeating the point of a single
-            COUNT query.
+            Membership and ordering use `episode_date` itself, so the MMDD
+            that `episode_mmddnn` encodes and the day an item is counted in
+            can never disagree (two items with the same encoded date always
+            get distinct indexes). The rows are counted in three groups:
 
-            Computed as one COUNT of the items that sort strictly before
-            this one (unique per source by `key`, so a strict "less than"
-            match on the full tuple can never include this item itself).
-            This replaces `calculate_episode_number`'s approach of iterating
-            every candidate row in Python, which is an O(n) query cost paid
-            on every call -- `format_dict` calls the equivalent of this once
+            - `published` set: `episode_date` is `published`, one COUNT.
+            - `published` unset, no metadata: `upload_date` is unknown, so
+              `episode_date` is `created`, one COUNT.
+            - `published` unset, metadata present: `episode_date` may come
+              from metadata's `upload_date`, which is not a column, so these
+              are evaluated in Python. Fetching metadata sets `published`
+              whenever it has an `upload_date`, so this group is normally
+              empty or tiny.
+
+            Each COUNT matches the items that sort strictly before this one
+            (unique per source by `key`, so a strict "less than" on the full
+            tuple never includes this item itself). This replaces
+            `calculate_episode_number`'s approach of iterating every
+            candidate row in Python, which is an O(n) query cost paid on
+            every call -- `format_dict` calls the equivalent of this once
             per filename evaluation, so that cost is effectively O(n^2) per
             source rename.
 
@@ -1157,41 +1169,40 @@ class Media(models.Model):
             to the current time rather than passing `None` into an `__lt`
             query lookup, which Django raises on.
         '''
-        created = self.created
-        if created is None:
-            created = timezone.now()
-        elif timezone.is_naive(created):
-            created = timezone.make_aware(created, tz.utc)
-        if self.published:
-            published = self.published
-            if timezone.is_naive(published):
-                published = timezone.make_aware(published, tz.utc)
-            published = published.astimezone(tz.utc)
-            day_start = published.replace(
-                hour=0, minute=0, second=0, microsecond=0,
+        date = self.episode_date
+        created = _aware_utc(
+            self.created if self.created is not None else timezone.now()
+        )
+        day_start = date.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
+
+        def sorts_before(field):
+            return (
+                models.Q(**{f'{field}__lt': date}) |
+                models.Q(**{field: date, 'created__lt': created}) |
+                models.Q(**{field: date, 'created': created, 'key__lt': self.key})
             )
-            before = Media.objects.filter(
-                source_id=self.source_id,
-                published__gte=day_start,
-                published__lt=day_start + timedelta(days=1),
-            ).filter(
-                models.Q(published__lt=published) |
-                models.Q(published=published, created__lt=created) |
-                models.Q(published=published, created=created, key__lt=self.key)
-            ).count()
-        else:
-            day_start = created.astimezone(tz.utc).replace(
-                hour=0, minute=0, second=0, microsecond=0,
-            )
-            before = Media.objects.filter(
-                source_id=self.source_id,
-                published__isnull=True,
-                created__gte=day_start,
-                created__lt=day_start + timedelta(days=1),
-            ).filter(
-                models.Q(created__lt=created) |
-                models.Q(created=created, key__lt=self.key)
-            ).count()
+
+        others = Media.objects.filter(source_id=self.source_id)
+        if self.pk is not None:
+            others = others.exclude(pk=self.pk)
+        before = others.filter(
+            published__gte=day_start,
+            published__lt=day_end,
+        ).filter(sorts_before('published')).count()
+        unpublished = others.filter(published__isnull=True)
+        before += unpublished.filter(
+            metadata__isnull=True,
+            created__gte=day_start,
+            created__lt=day_end,
+        ).filter(sorts_before('created')).count()
+        this_item = (date, created, self.key)
+        for other in unpublished.filter(metadata__isnull=False):
+            other_date = other.episode_date
+            if day_start <= other_date < day_end and (
+                (other_date, _aware_utc(other.created), other.key) < this_item
+            ):
+                before += 1
         return before + 1
 
     @property

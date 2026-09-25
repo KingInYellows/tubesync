@@ -120,7 +120,7 @@ class EpisodeNumberingTestCase(TestCase):
         self.assertEqual(morning.episode_mmddnn, '020102')
         self.assertEqual(evening.episode_mmddnn, '020103')
 
-    def test_published_none_falls_back_to_upload_date_but_groups_by_created_day(self):
+    def test_published_none_groups_by_the_upload_date_it_encodes(self):
         # Two items with published=NULL, different metadata (different
         # upload_date), forced onto the same `created` UTC calendar day.
         first = Media.objects.create(
@@ -131,7 +131,9 @@ class EpisodeNumberingTestCase(TestCase):
         )
         shared_day = aware(2026, 4, 1, 6, 0, 0)
         Media.objects.filter(pk=first.pk).update(created=shared_day)
-        Media.objects.filter(pk=second.pk).update(created=shared_day + timedelta(hours=6))
+        Media.objects.filter(pk=second.pk).update(
+            created=shared_day + timedelta(hours=6),
+        )
         first.refresh_from_db()
         second.refresh_from_db()
         self.assertIsNone(first.published)
@@ -139,11 +141,82 @@ class EpisodeNumberingTestCase(TestCase):
         # episode_date/episode_yyyy fall back to each item's own upload_date.
         self.assertEqual(first.episode_yyyy, '2017')
         self.assertEqual(second.episode_yyyy, '2016')
-        # The same-day INDEX groups both by `created`'s shared calendar day,
-        # not by their (different) upload_date days -- MMDD still comes
-        # from each item's own upload_date, only the counter is shared.
+        # The same-day index groups by that same upload_date, not by the
+        # shared `created` day, so each is first on its own day.
         self.assertEqual(first.episode_mmddnn, '091101')
-        self.assertEqual(second.episode_mmddnn, '110902')
+        self.assertEqual(second.episode_mmddnn, '110901')
+
+    def test_same_encoded_date_never_shares_an_index(self):
+        # Same upload_date (2017-09-11), published=NULL, created on
+        # different days: must not both be '01'.
+        early = Media.objects.create(
+            key='samedate-1', source=self.source, metadata=metadata,
+        )
+        late = Media.objects.create(
+            key='samedate-2', source=self.source, metadata=metadata,
+        )
+        Media.objects.filter(pk=early.pk).update(created=aware(2026, 4, 1))
+        Media.objects.filter(pk=late.pk).update(created=aware(2026, 5, 1))
+        # A published item on the same UTC day shares the same counter.
+        published = Media.objects.create(
+            key='samedate-3', source=self.source,
+            published=aware(2017, 9, 11, 12, 0, 0),
+        )
+        early.refresh_from_db()
+        late.refresh_from_db()
+        self.assertEqual(
+            sorted([
+                early.episode_mmddnn,
+                late.episode_mmddnn,
+                published.episode_mmddnn,
+            ]),
+            ['091101', '091102', '091103'],
+        )
+        # Unpublished items are dated midnight UTC, so they sort first.
+        self.assertEqual(early.episode_mmddnn, '091101')
+        self.assertEqual(late.episode_mmddnn, '091102')
+        self.assertEqual(published.episode_mmddnn, '091103')
+
+    def test_identical_published_ties_break_by_created_then_key(self):
+        when = aware(2026, 6, 2, 12, 0, 0)
+        b_item = Media.objects.create(
+            key='tie-b', source=self.source, published=when,
+        )
+        a_item = Media.objects.create(
+            key='tie-a', source=self.source, published=when,
+        )
+        Media.objects.filter(pk=b_item.pk).update(created=aware(2026, 6, 1))
+        Media.objects.filter(pk=a_item.pk).update(created=aware(2026, 6, 2))
+        a_item.refresh_from_db()
+        b_item.refresh_from_db()
+        # Same published: the earlier `created` wins.
+        self.assertEqual(b_item.episode_mmddnn, '060201')
+        self.assertEqual(a_item.episode_mmddnn, '060202')
+        # Same published and created: `key` decides.
+        Media.objects.filter(pk=a_item.pk).update(created=b_item.created)
+        a_item.refresh_from_db()
+        b_item.refresh_from_db()
+        self.assertEqual(a_item.episode_mmddnn, '060201')
+        self.assertEqual(b_item.episode_mmddnn, '060202')
+
+    def test_same_day_index_is_per_source(self):
+        other_source = Source.objects.create(
+            source_type=Val(YouTube_SourceType.CHANNEL),
+            key='otherkey',
+            name='othername',
+            directory='otherdirectory',
+            media_format=settings.MEDIA_FORMATSTR_DEFAULT,
+            index_schedule=3600,
+        )
+        when = aware(2026, 7, 3, 9, 0, 0)
+        mine = Media.objects.create(
+            key='per-source-1', source=self.source,
+            published=when + timedelta(hours=1),
+        )
+        Media.objects.create(
+            key='per-source-2', source=other_source, published=when,
+        )
+        self.assertEqual(mine.episode_mmddnn, '070301')
 
     def test_more_than_99_same_day_items_logs_a_warning_and_uses_3_digits(self):
         base = aware(2026, 8, 1, 0, 0, 0)
@@ -195,7 +268,9 @@ class EpisodeNumberingTestCase(TestCase):
 
     def test_title_full_bounded_respects_byte_limit_and_strips_slash(self):
         title = 'café🎉/' * 40
-        media = Media(source=self.source, key='longtitle', metadata=metadata, title=title)
+        media = Media(
+            source=self.source, key='longtitle', metadata=metadata, title=title,
+        )
         bounded = media.title_full_bounded
         self.assertNotIn('/', bounded)
         self.assertLessEqual(len(bounded.encode('utf-8')), 150)
@@ -204,7 +279,10 @@ class EpisodeNumberingTestCase(TestCase):
         self.assertEqual(bounded, bounded.strip())
 
     def test_title_full_bounded_short_title_is_unchanged_but_stripped(self):
-        media = Media(source=self.source, key='shorttitle', metadata=metadata, title='  Some Title  ')
+        media = Media(
+            source=self.source, key='shorttitle', metadata=metadata,
+            title='  Some Title  ',
+        )
         self.assertEqual(media.title_full_bounded, 'Some Title')
 
     def test_unsaved_media_does_not_crash_on_missing_created(self):
@@ -223,7 +301,9 @@ class EpisodeNumberingTestCase(TestCase):
         after = timezone.now()
         self.assertTrue(before <= episode_date <= after)
         # Must not raise, and must use "now"'s MMDD with a same-day index.
-        self.assertEqual(unsaved.episode_mmddnn, episode_date.strftime('%m%d') + '01')
+        self.assertEqual(
+            unsaved.episode_mmddnn, episode_date.strftime('%m%d') + '01',
+        )
 
     def test_new_format_keys_pass_bridge_media_format_validation(self):
         media_format = (

@@ -56,18 +56,22 @@ Six upstream files are touched at seven points (`settings.py` twice), five of th
    an existing multi-line `ENV`, no new `ENV` instruction). Empty by
    default, so every image build that doesn't pass the build-arg behaves
    identically to every pre-T5 build. See "Compatibility reporting" below.
-6. `sync/models/media.py` (T1) -- adds `Media.episode_date`,
-   `Media.title_full_bounded`, `Media._same_day_index`,
-   `Media.episode_yyyy` and `Media.episode_mmddnn` (new properties/method,
-   no existing method bodies changed), three new keys in `format_dict`, and
-   changes `nfoxml`'s `<season>`/`<episode>` computation for non-playlist
-   sources only -- playlists keep the pre-T1 `upload_date.year` /
-   `calculate_episode_number()` values unchanged.
+6. `sync/models/media.py` (T1) -- adds a module-level `_aware_utc`
+   helper and new members `Media.episode_date`, `Media.title_full_bounded`,
+   `Media._same_day_index`, `Media._episode_mmdd_and_index`,
+   `Media.episode_yyyy`, `Media.episode_mmddnn` and
+   `Media.nfo_episode_number`. Two existing method bodies change:
+   `format_dict` gains three new keys, and `nfoxml` computes
+   `<season>`/`<episode>` differently for non-playlist sources only
+   (previously `upload_date.year` / `calculate_episode_number()`).
+   Playlists keep the pre-T1 values: season `1`, episode
+   `calculate_episode_number()`.
 7. `sync/models/source.py` (T1) -- adds the same three keys
-   (`episode_yyyy`, `episode_mmddnn`, `title_full_bounded`) to
-   `example_media_format_dict`, required for `get_example_media_format()`
-   (and so `run_edit_source_checks`) to accept a `media_format` that uses
-   them; no existing keys or method bodies changed.
+   (`episode_yyyy`, `episode_mmddnn`, `title_full_bounded`) to the dict
+   `example_media_format_dict` returns, required for
+   `get_example_media_format()` (and so `run_edit_source_checks`) to accept
+   a `media_format` that uses them. That is the only change to its body;
+   no existing keys change.
 
 Everything else the bridge needs is imported (models,
 `common.utils.getenv`, `common.logger.log`, `sync.tasks` helpers), never
