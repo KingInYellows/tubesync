@@ -1,0 +1,23 @@
+tubesync/medianest_bridge/README.md
+  s_237fbbbabfe3a4::t_aba773f786b568 65-69
+tubesync/sync/models/media.py
+  s_237fbbbabfe3a4::t_3e90b38047a1da 998-1006,1009,1013
+tubesync/sync/tests/test_episode_numbering.py
+  s_237fbbbabfe3a4::t_8ea4f646c6fe3e 6-8,372-373,378,389-393,408-420
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "eb2f4a56998958c8f2c3042b740b2b511ca7eff5",
+  "prompts": {},
+  "sessions": {
+    "s_237fbbbabfe3a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2373b7aa-381c-4fe7-83a0-be4487388411",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
