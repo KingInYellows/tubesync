@@ -16,6 +16,7 @@ from xml.etree import ElementTree
 
 from django.conf import settings
 from django.test import TestCase, override_settings
+from django.utils import timezone
 
 from sync.choices import (
     Val, Fallback, SourceResolution,
@@ -31,7 +32,8 @@ from sync.tvshow_nfo import (
 
 from .fixtures import all_test_metadata
 
-metadata = all_test_metadata['boring']  # uploader='test uploader', playlist_title='test playlist'
+# uploader='test uploader', playlist_title='test playlist'
+metadata = all_test_metadata['boring']
 
 
 @contextmanager
@@ -39,7 +41,7 @@ def temp_download_root():
     '''
         Points Source.directory_path (via media_file_storage.location) AND
         settings.DOWNLOAD_ROOT (which write_text_file's file_is_editable
-        allow-list checks separately -- see common/utils.py) at the same
+        allow-list checks separately -- see sync/utils.py) at the same
         temporary directory, so a write_tvshow_nfo() call in a test lands
         entirely inside it and is never mistaken for a write outside the
         allowed paths. Never touches the real DOWNLOAD_ROOT/downloads.
@@ -104,7 +106,10 @@ class ResolveShowTitleTestCase(TestCase):
         Media.objects.create(key='m1', source=self.source, metadata=metadata)
         Metadata.objects.create(
             site='Youtube', key=self.source.key,
-            value={'title': 'Cached Channel Title', 'description': 'Cached channel plot'},
+            value={
+                'title': 'Cached Channel Title',
+                'description': 'Cached channel plot',
+            },
         )
         self.assertEqual(resolve_show_title(self.source), 'Cached Channel Title')
         self.assertEqual(resolve_show_studio(self.source), 'Cached Channel Title')
@@ -118,6 +123,17 @@ class ResolveShowTitleTestCase(TestCase):
             site='Youtube', key='UCsomeotherid',
             value={'title': 'Wrong Channel'},
         )
+        self.assertEqual(resolve_show_title(self.source), 'test uploader')
+
+    def test_unpublished_media_without_metadata_does_not_mask_the_uploader(self):
+        # A freshly indexed row (published NULL, no metadata) must not win
+        # the "latest media" lookup -- on PostgreSQL a plain DESC sort puts
+        # NULLs first.
+        Media.objects.create(
+            key='m1', source=self.source, metadata=metadata,
+            published=timezone.now(),
+        )
+        Media.objects.create(key='m2', source=self.source)
         self.assertEqual(resolve_show_title(self.source), 'test uploader')
 
 
@@ -224,6 +240,38 @@ class WriteTvshowNfoTestCase(TestCase):
             self.assertFalse(self._nfo_path().exists())
             # Simulate a pre-existing manually-placed file, then confirm
             # a disabled write_nfo still leaves it alone.
-            self._nfo_path().write_text('<tvshow><title>Manual</title></tvshow>', encoding='utf-8')
+            self._nfo_path().write_text(
+                '<tvshow><title>Manual</title></tvshow>', encoding='utf-8',
+            )
             write_tvshow_nfo(self.source)
             self.assertIn('Manual', self._nfo_path().read_text(encoding='utf-8'))
+
+    def test_missing_directory_is_skipped_without_raising(self):
+        with temp_download_root():
+            self.assertFalse(self.source.directory_path.exists())
+            write_tvshow_nfo(self.source)
+            self.assertFalse(self._nfo_path().exists())
+
+    def test_non_utf8_existing_file_is_replaced_without_raising(self):
+        with temp_download_root():
+            self.source.make_directory()
+            self._nfo_path().write_bytes(b'\xff\xfe not utf-8')
+            write_tvshow_nfo(self.source)
+            tree = ElementTree.fromstring(
+                self._nfo_path().read_text(encoding='utf-8'),
+            )
+            self.assertEqual(tree.find('title').text, 'testname')
+
+    def test_write_errors_are_logged_not_raised(self):
+        with temp_download_root():
+            self.source.make_directory()
+            with (
+                patch(
+                    'sync.tvshow_nfo.write_text_file',
+                    side_effect=OSError('disk full'),
+                ),
+                patch('sync.tvshow_nfo.log') as mock_log,
+            ):
+                write_tvshow_nfo(self.source)
+            mock_log.exception.assert_called_once()
+            self.assertFalse(self._nfo_path().exists())
