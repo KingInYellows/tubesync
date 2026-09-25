@@ -35,7 +35,9 @@ owner. This file records what the tag would contain and what was verified.
      channel or playlist title, the description when known, and
      `<uniqueid type="youtube">`.
    - Writing it is best-effort: a missing source directory is skipped and
-     any other error is logged, never failing or retrying the task.
+     any other error is logged, never failing or retrying the task. A path
+     that already holds a video's own NFO (a `media_format` rendering to
+     `tvshow`) is left alone with a warning.
    - The episode `<showtitle>` uses the same resolved title.
    - Writes are escaped via ElementTree and happen only when the content
      changed.
@@ -63,10 +65,12 @@ owner. This file records what the tag would contain and what was verified.
    - `--apply` must run as the user that owns `DOWNLOAD_ROOT` (`docker exec
      -u app ...`), otherwise new `Season YYYY/` directories would be
      root-owned and unwritable by TubeSync. It refuses otherwise.
-   - Each video is renamed in its own transaction before its NFO and
-     thumbnail are written. A missing file or an occupied target is an
-     error, and the command exits non-zero when anything errored or was
-     skipped as locked, so the operator re-runs it.
+   - Each video's database record is saved as soon as the file moves, before
+     its NFO and thumbnail are written, so a later failure never leaves the
+     database behind the file. A missing file, or an occupied target for the
+     video or any of its sidecars, is an error and nothing moves. The command
+     exits non-zero when anything errored or was skipped as locked, so the
+     operator re-runs it.
 
 ## Contract
 
@@ -86,7 +90,7 @@ The contract gains one additive, optional component, `HealthReady.components.sou
 
 ## Verification (2026-09-25, stack tip T4, after the review sweep)
 
-- `manage.py test sync medianest_bridge`: 446 tests OK. They ran inside `ghcr.io/kinginyellows/tubesync:bridge-v1.0.0` with the worktree mounted and `local_settings.py` copied from `.example`, as CI does.
+- `manage.py test sync medianest_bridge`: 450 tests OK. They ran inside `ghcr.io/kinginyellows/tubesync:bridge-v1.0.0` with the worktree mounted and `local_settings.py` copied from `.example`, as CI does.
 - `ruff check` with the CI rule set: clean. `makemigrations --check`: no changes.
 - Manual end-to-end smoke: a throwaway SQLite DB and scratch `DOWNLOAD_ROOT`, with fixture metadata and no network. `--all-bridge-sources --apply` produced `video/acq-src-*/tvshow.nfo` and `Season 2017/s2017e091101 - <title> [<key>].mkv|.nfo` for a channel and a playlist source. A non-`acq-src-` source was untouched. Every `.nfo` parsed with ElementTree (`xmllint` is not in the image).
 - Not verifiable offline: Plex's actual NFO-agent parsing, which should be confirmed on the pilot source during the migration runbook.
