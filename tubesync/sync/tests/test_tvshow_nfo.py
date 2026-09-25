@@ -187,6 +187,19 @@ class BuildTvshowNfoTestCase(TestCase):
         self.assertIsNone(tree.find('plot'))
         self.assertIsNone(tree.find('studio'))
 
+    def test_tubesync_ownership_marker_uses_the_immutable_uuid(self):
+        # A second, non-default uniqueid tied to the source's immutable
+        # pk -- ignored by Kodi/Plex/Jellyfin, but lets this writer keep
+        # recognising the file after a source-key edit.
+        xml_str = build_tvshow_nfo(self.source)
+        tree = ElementTree.fromstring(xml_str)
+        ids = tree.findall('uniqueid')
+        self.assertEqual(len(ids), 2)
+        tubesync_id = ids[1]
+        self.assertEqual(tubesync_id.get('type'), 'tubesync')
+        self.assertIsNone(tubesync_id.get('default'))
+        self.assertEqual(tubesync_id.text, str(self.source.uuid))
+
     def test_studio_present_once_known(self):
         Media.objects.create(key='m1', source=self.source, metadata=metadata)
         xml_str = build_tvshow_nfo(self.source)
@@ -270,6 +283,44 @@ class WriteTvshowNfoTestCase(TestCase):
         with temp_download_root():
             self.source.make_directory()
             self._nfo_path().write_text(manual, encoding='utf-8')
+            write_tvshow_nfo(self.source)
+            self.assertEqual(self._nfo_path().read_text(encoding='utf-8'), manual)
+
+    def test_still_owned_and_rewritten_after_the_source_key_changes(self):
+        # A source-update form edit to `key` must not orphan a file this
+        # writer already created for it -- the `tubesync`/uuid marker
+        # keeps it recognised as owned so it gets refreshed instead of
+        # being frozen with a stale youtube uniqueid/title forever.
+        with temp_download_root():
+            self.source.make_directory()
+            write_tvshow_nfo(self.source)
+            nfo_path = self._nfo_path()
+            first_content = nfo_path.read_text(encoding='utf-8')
+
+            self.source.key = 'UCnewkeyabcdefghijklmnop'
+            self.source.name = 'renamedname'
+            self.source.save()
+            with patch('sync.tvshow_nfo.log') as mock_log:
+                write_tvshow_nfo(self.source)
+            mock_log.warning.assert_not_called()
+
+            second_content = nfo_path.read_text(encoding='utf-8')
+            self.assertNotEqual(second_content, first_content)
+            tree = ElementTree.fromstring(second_content)
+            self.assertEqual(tree.find('title').text, 'renamedname')
+            ids = {u.get('type'): u.text for u in tree.findall('uniqueid')}
+            self.assertEqual(ids['youtube'], 'UCnewkeyabcdefghijklmnop')
+            self.assertEqual(ids['tubesync'], str(self.source.uuid))
+
+    def test_a_foreign_tvshow_nfo_is_still_left_alone_after_a_key_change(self):
+        # A hand-written (or other-writer) file with neither marker must
+        # stay foreign even once the source's key happens to change.
+        manual = '<tvshow><title>Hand written</title></tvshow>'
+        with temp_download_root():
+            self.source.make_directory()
+            self._nfo_path().write_text(manual, encoding='utf-8')
+            self.source.key = 'UCnewkeyabcdefghijklmnop'
+            self.source.save()
             write_tvshow_nfo(self.source)
             self.assertEqual(self._nfo_path().read_text(encoding='utf-8'), manual)
 
