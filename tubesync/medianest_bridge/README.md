@@ -725,9 +725,15 @@ Dry-run by default; `--apply` is required to change anything on disk or
 in the DB. `--source <uuid>` (repeatable) or `--all-bridge-sources`
 (every source whose `directory` AND `name` both start with `acq-src-`)
 selects which sources to process; exactly one of the two is required.
-Never deletes a file. Resumable: a second `--apply` is a no-op (content
-is compared before any write), and per-media failures are counted and
-logged without aborting the rest of the run. See the command's own
+Never deletes a file. Resumable: a second `--apply` changes nothing
+(content is compared before any write, and a source is saved only when a
+field actually changes). Per-media and per-source failures are counted
+and logged without aborting the rest of the run, but the command then
+exits non-zero, as it does when media were skipped as locked or a
+selected source has no T3 profile (a handle-based channel), so re-run it
+once the cause is fixed. `--apply` refuses to run unless the effective
+user owns `DOWNLOAD_ROOT`, so new files and `Season YYYY/` directories
+stay writable by TubeSync. See the command's own
 module docstring for the full per-media/per-source decision logic (it is
 long enough that duplicating it here would just drift out of sync), and
 `sync/tests/test_backfill_plex_sidecars.py` (not
@@ -741,9 +747,10 @@ second `--apply`, non-bridge sources left untouched by
 `--all-bridge-sources`, and a `CommandError` (nothing changed) for an
 invalid `MEDIANEST_BRIDGE_SOURCE_DEFAULTS`.
 
-Run with:
+Run as the app user, dry-run first:
 ```
-python3 manage.py medianest_backfill_plex_sidecars --all-bridge-sources --apply
+docker exec -u app <container> python3 /app/manage.py medianest_backfill_plex_sidecars --all-bridge-sources
+docker exec -u app <container> python3 /app/manage.py medianest_backfill_plex_sidecars --all-bridge-sources --apply
 ```
 
 ## License
