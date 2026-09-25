@@ -11,11 +11,13 @@
 import json
 import logging
 import tempfile
+import time
 from contextlib import contextmanager
 from unittest.mock import patch
 from xml.etree import ElementTree
 
 from django.conf import settings
+from django.db import DatabaseError
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -27,6 +29,7 @@ from sync.choices import (
 from sync.models import Media, Metadata, Source
 from sync.models._migrations import media_file_storage
 from sync.tvshow_nfo import (
+    _clear_show_title_cache, _show_title_cache,
     build_tvshow_nfo, resolve_show_plot, resolve_show_studio,
     resolve_show_title, write_tvshow_nfo,
 )
@@ -81,7 +84,11 @@ class ResolveShowTitleTestCase(TestCase):
 
     def setUp(self):
         logging.disable(logging.CRITICAL)
+        _clear_show_title_cache()
         self.source = make_source()
+
+    def tearDown(self):
+        _clear_show_title_cache()
 
     def test_falls_back_to_source_name_with_no_data(self):
         self.assertEqual(resolve_show_title(self.source), 'testname')
@@ -211,7 +218,11 @@ class WriteTvshowNfoTestCase(TestCase):
 
     def setUp(self):
         logging.disable(logging.CRITICAL)
+        _clear_show_title_cache()
         self.source = make_source()
+
+    def tearDown(self):
+        _clear_show_title_cache()
 
     def _nfo_path(self):
         return self.source.directory_path / 'tvshow.nfo'
@@ -330,10 +341,41 @@ class WriteTvshowNfoTestCase(TestCase):
             write_tvshow_nfo(self.source)
             self.assertFalse(self._nfo_path().exists())
 
-    def test_non_utf8_existing_file_is_replaced_without_raising(self):
+    def test_non_utf8_existing_file_is_left_alone_without_raising(self):
+        # An unparseable but non-empty file is now treated as foreign (a
+        # Kodi URL-only/combination NFO or upstream create-tvshow-nfo's
+        # unescaped "&" output can both look like this) -- it must not be
+        # silently replaced just because ElementTree cannot parse it.
         with temp_download_root():
             self.source.make_directory()
-            self._nfo_path().write_bytes(b'\xff\xfe not utf-8')
+            raw = b'\xff\xfe not utf-8'
+            self._nfo_path().write_bytes(raw)
+            with patch('sync.tvshow_nfo.log') as mock_log:
+                write_tvshow_nfo(self.source)
+            mock_log.warning.assert_called_once()
+            self.assertEqual(self._nfo_path().read_bytes(), raw)
+
+    def test_url_only_nfo_is_left_alone(self):
+        # A Kodi "URL-only" NFO: a single line with no XML markup at all.
+        # Not well-formed XML, so ElementTree.fromstring raises ParseError
+        # -- must still be treated as foreign, not overwritten.
+        url_only = 'https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv\n'
+        with temp_download_root():
+            self.source.make_directory()
+            self._nfo_path().write_text(url_only, encoding='utf-8')
+            with patch('sync.tvshow_nfo.log') as mock_log:
+                write_tvshow_nfo(self.source)
+            mock_log.warning.assert_called_once()
+            self.assertEqual(
+                self._nfo_path().read_text(encoding='utf-8'), url_only,
+            )
+
+    def test_zero_byte_existing_file_is_still_replaced(self):
+        # Unlike a non-empty unparseable file, a zero-byte file carries no
+        # content to protect and remains replaceable, same as an absent one.
+        with temp_download_root():
+            self.source.make_directory()
+            self._nfo_path().write_bytes(b'')
             write_tvshow_nfo(self.source)
             tree = ElementTree.fromstring(
                 self._nfo_path().read_text(encoding='utf-8'),
@@ -353,3 +395,123 @@ class WriteTvshowNfoTestCase(TestCase):
                 write_tvshow_nfo(self.source)
             mock_log.exception.assert_called_once()
             self.assertFalse(self._nfo_path().exists())
+
+
+class ResolveShowTitleCacheTestCase(TestCase):
+    '''
+        resolve_show_title()'s process-local TTL cache: hit/expiry/
+        invalidation/bypass/error-fallback behaviour. `build_tvshow_nfo()`
+        and `resolve_show_studio()`/`resolve_show_plot()` are untouched by
+        this cache -- only `resolve_show_title()` (and, through it,
+        `Media.nfoxml`) is covered here.
+    '''
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+        _clear_show_title_cache()
+        self.source = make_source()
+        Metadata.objects.create(
+            site='Youtube', key=self.source.key,
+            value={'title': 'Cached Channel Title'},
+        )
+
+    def tearDown(self):
+        _clear_show_title_cache()
+
+    def test_second_call_within_the_ttl_is_served_from_cache(self):
+        self.assertEqual(resolve_show_title(self.source), 'Cached Channel Title')
+        # Populating the cache above already queried the DB once; a second
+        # call within the TTL must not query at all.
+        with self.assertNumQueries(0):
+            self.assertEqual(
+                resolve_show_title(self.source), 'Cached Channel Title',
+            )
+
+    def test_cache_expires_after_the_ttl(self):
+        self.assertEqual(resolve_show_title(self.source), 'Cached Channel Title')
+        # Change the underlying data, then simulate the clock moving past
+        # the TTL -- the next call must re-query rather than keep serving
+        # the value cached above.
+        Metadata.objects.filter(key=self.source.key).update(
+            value={'title': 'Updated Channel Title'},
+        )
+        with patch(
+            'sync.tvshow_nfo.time.monotonic',
+            return_value=time.monotonic() + 61,
+        ):
+            self.assertEqual(
+                resolve_show_title(self.source), 'Updated Channel Title',
+            )
+
+    def test_write_tvshow_nfo_invalidates_the_cache(self):
+        self.assertEqual(resolve_show_title(self.source), 'Cached Channel Title')
+        Metadata.objects.filter(key=self.source.key).update(
+            value={'title': 'Refreshed Channel Title'},
+        )
+        with temp_download_root():
+            self.source.make_directory()
+            # Still within the TTL: without invalidation this would keep
+            # returning the stale cached value.
+            write_tvshow_nfo(self.source)
+        self.assertEqual(
+            resolve_show_title(self.source), 'Refreshed Channel Title',
+        )
+
+    def test_unsaved_source_bypasses_the_cache(self):
+        unsaved = Source(
+            source_type=Val(YouTube_SourceType.CHANNEL_ID),
+            key='UCunsavedabcdefghijklmno',
+            name='unsavedname',
+            directory='unsaveddirectory',
+            media_format=settings.MEDIA_FORMATSTR_DEFAULT,
+            source_resolution=Val(SourceResolution.VIDEO_1080P),
+            source_vcodec=Val(YouTube_VideoCodec.VP9),
+            source_acodec=Val(YouTube_AudioCodec.OPUS),
+        )
+        # Source.uuid (its pk) has a client-side `default=uuid.uuid4`, so a
+        # freshly constructed instance already carries a pk before it is
+        # ever saved. Force the actual "never persisted, no stable key"
+        # state resolve_show_title()'s cache bypass guards against.
+        unsaved.pk = None
+        self.assertIsNone(unsaved.pk)
+        with (
+            patch(
+                'sync.tvshow_nfo._cached_channel_metadata', return_value=None,
+            ),
+            patch(
+                'sync.tvshow_nfo._resolve_show_title_from_data',
+                return_value='Live Title',
+            ) as mock_resolve,
+        ):
+            self.assertEqual(resolve_show_title(unsaved), 'Live Title')
+            # A second call must resolve again, not serve a cached value --
+            # an unsaved source has no stable key to cache under.
+            self.assertEqual(resolve_show_title(unsaved), 'Live Title')
+        self.assertEqual(mock_resolve.call_count, 2)
+        self.assertEqual(_show_title_cache, {})
+
+    def test_database_error_falls_back_to_source_name(self):
+        with (
+            patch(
+                'sync.tvshow_nfo._cached_channel_metadata',
+                side_effect=DatabaseError('boom'),
+            ),
+            patch('sync.tvshow_nfo.log') as mock_log,
+        ):
+            self.assertEqual(resolve_show_title(self.source), self.source.name)
+        mock_log.exception.assert_called_once()
+        # A fallback produced by an error must not be cached -- otherwise a
+        # transient DB error would pin `source.name` for the whole TTL.
+        self.assertEqual(_show_title_cache, {})
+
+    def test_nfoxml_still_renders_when_show_title_resolution_fails(self):
+        media = Media.objects.create(
+            key='m1', source=self.source, metadata=metadata,
+        )
+        with patch(
+            'sync.tvshow_nfo._cached_channel_metadata',
+            side_effect=DatabaseError('boom'),
+        ):
+            xml_str = media.nfoxml
+        tree = ElementTree.fromstring(xml_str)
+        self.assertEqual(tree.find('showtitle').text, self.source.name)
