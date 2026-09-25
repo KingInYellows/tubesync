@@ -28,7 +28,10 @@
         reads reflect the real new values.
       - Sidecar paths come from the profile filename in both modes
         (_sidecar_path()), and tvshow.nfo uses the same
-        tvshow_nfo_needs_write() decision the real write does.
+        tvshow_nfo_needs_write() decision the real write does -- including,
+        in dry-run, assuming a still-missing source directory would exist
+        by then, when an overlay change means apply's save would create it
+        first (source_pre_save's own check_source_directory_exists call).
 
     Failure handling: each media is renamed without a wrapping
     transaction (rename_files() saves media_file as soon as the video
@@ -250,6 +253,7 @@ class Command(BaseCommand):
         overlay = defaults_by_type.get(contract_type, {})
         working_source = source
         images_already_queued = False
+        overlay_changed = False
         if overlay:
             original = {field: getattr(source, field, None) for field in overlay}
             # Dry-run validates against a copy, so it reports exactly the
@@ -268,8 +272,10 @@ class Command(BaseCommand):
                 return
             changes = self._overlay_changes(original, form.cleaned_data, overlay)
             self._describe_overlay_diff(original, changes)
+            overlay_changed = bool(changes)
             # Turning copy_channel_images on makes source_pre_save enqueue
-            # download_source_images itself.
+            # download_source_images itself; suppress this command's own
+            # direct enqueue below but still count it (both modes).
             images_already_queued = bool(changes.get('copy_channel_images'))
             if apply_changes:
                 # Saving when no overlay field changes would still fire
@@ -294,6 +300,7 @@ class Command(BaseCommand):
 
         self._process_tvshow_and_images(
             working_source, apply_changes, summary, images_already_queued,
+            overlay_changed,
         )
 
     def _overlay_form(self, source, overlay):
@@ -407,14 +414,21 @@ class Command(BaseCommand):
             When the current file is gone but the profile path holds a
             file no other media claims, an earlier run moved it and then
             failed to save media_file (rename_files() moves before it
-            saves), so the row is pointed at it ("adopted").
+            saves), so the row is pointed at it ("adopted"). `media_files`
+            is updated after every successful rename/adoption (both
+            modes), so a later media processed in this same run cannot
+            adopt a target an earlier one just claimed here -- only the
+            initial per-source snapshot taken before this loop started.
 
             Counted as an error, returning False: a downloaded row with no
             media_file; a missing current file with nothing to adopt; a
             target video that already exists; a sidecar destination that
-            already exists (rename_files() would overwrite it); or a
+            already exists (rename_files() would overwrite it); a
             "sidecar" that is another media's own video (rename_files()
-            would move it without updating that media's row).
+            would move it without updating that media's row); an
+            already-in-place row whose video file is actually missing; or
+            an already-in-place row with a same-key sidecar left behind
+            outside its target directory (see _stray_sidecars()).
         '''
         if not media.media_file:
             summary['errors'] += 1
@@ -426,6 +440,25 @@ class Command(BaseCommand):
         current = Path(media.media_file.path)
         target = Path(media.filepath)
         if current == target:
+            if not current.exists():
+                summary['errors'] += 1
+                log.error(
+                    f'medianest_backfill_plex_sidecars: {media}: already at '
+                    f'its target path but the file is missing: {current}'
+                )
+                return False
+            stray = self._stray_sidecars(media, target)
+            if stray:
+                summary['errors'] += 1
+                log.error(
+                    f'medianest_backfill_plex_sidecars: {media}: leftover '
+                    'sidecar(s) outside its target directory, likely from a '
+                    'prior run that renamed the video but failed partway '
+                    'through its own sidecar moves (nothing moved or '
+                    'deleted; move or remove them by hand once checked): ' +
+                    ', '.join(str(path) for path in stray)
+                )
+                return False
             summary['already_in_place'] += 1
             return True
         if not current.exists() and target.exists() and target not in media_files:
@@ -440,6 +473,8 @@ class Command(BaseCommand):
                 f'already moved from {current} by an earlier run'
             )
             summary['adopted'] += 1
+            media_files.discard(current)
+            media_files.add(target)
             return True
         problem = None
         moves = self._sidecar_moves(current, target)
@@ -472,7 +507,32 @@ class Command(BaseCommand):
             )
             return False
         summary['renamed'] += 1
+        media_files.discard(current)
+        media_files.add(target)
         return True
+
+    def _stray_sidecars(self, media, target):
+        '''
+            Files elsewhere under the source directory whose name contains
+            this media's own `key` -- left behind when a prior run's
+            rename_files() moved the video, saved media_file, and then
+            raised partway through moving an old-name sidecar (a subtitle,
+            a JSON file, or a bare thumbnail with no cache record). Once
+            media_file already points at `target`, the old path (and the
+            media_format that produced it, bracketed or not) is no longer
+            known, so this is a best-effort, name-based scan rather than a
+            move: it makes the leftover loudly visible (counted as an
+            error) instead of silently leaving it orphaned under the old
+            name forever.
+        '''
+        marker = glob_quote(str(media.key))
+        source_dir = Path(media.source.directory_path)
+        if not source_dir.is_dir():
+            return []
+        return sorted(
+            path for path in source_dir.rglob(f'*{marker}*')
+            if path.is_file() and path.parent != target.parent and path != target
+        )
 
     def _sidecar_moves(self, current, target):
         '''
@@ -529,6 +589,7 @@ class Command(BaseCommand):
 
     def _process_tvshow_and_images(
         self, source, apply_changes, summary, images_already_queued=False,
+        overlay_changed=False,
     ):
         if apply_changes:
             try:
@@ -540,24 +601,35 @@ class Command(BaseCommand):
                     'medianest_backfill_plex_sidecars: failed to write '
                     f'tvshow.nfo for {source}'
                 )
-        elif tvshow_nfo_needs_write(source):
-            summary['tvshow_written'] += 1
+        else:
+            # An overlay field change means apply's form.save() below would
+            # fire source_pre_save, which synchronously creates a missing
+            # source directory (check_source_directory_exists) before
+            # write_tvshow_nfo() runs -- assume that here too, or a source
+            # whose directory does not exist yet would predict no write
+            # while apply goes on to create one.
+            needs_write = tvshow_nfo_needs_write(
+                source, assume_directory_exists=overlay_changed,
+            )
+            if needs_write:
+                summary['tvshow_written'] += 1
 
         poster_path = Path(source.directory_path) / 'poster.jpg'
-        if (
-            source.copy_channel_images
-            and not poster_path.exists()
-            and not images_already_queued
-        ):
+        if source.copy_channel_images and not poster_path.exists():
             if apply_changes:
-                # Enqueues the huey task (django_huey's db_task decorator
-                # makes a normal call schedule it) -- deliberately NOT
-                # .call_local(), which would run the real network image
-                # fetch synchronously inside this command.
-                download_source_images(
-                    str(source.pk),
-                    delay=download_source_images.settings.get('delay'),
-                )
+                if not images_already_queued:
+                    # Enqueues the huey task (django_huey's db_task
+                    # decorator makes a normal call schedule it) --
+                    # deliberately NOT .call_local(), which would run the
+                    # real network image fetch synchronously inside this
+                    # command. Skipped when source_pre_save's own
+                    # copy_channel_images-turned-on check already enqueued
+                    # it, to avoid a duplicate job -- but still counted
+                    # below either way.
+                    download_source_images(
+                        str(source.pk),
+                        delay=download_source_images.settings.get('delay'),
+                    )
             summary['images_enqueued'] += 1
 
     def _print_summary(self, summary, apply_changes):
