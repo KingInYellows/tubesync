@@ -53,8 +53,8 @@ class SourceDefaultsConfigError(Exception):
         a non-object value, an unknown top-level key, a non-object
         per-type/`*` block, a block that names a forbidden field
         (source_forms.SOURCE_DEFAULTS_FORBIDDEN_FIELDS: source_type, key,
-        name, directory, target_schedule) or one SourceForm does not have
-        at all, or a non-boolean value for a boolean field.
+        name, directory, target_schedule) or a field `SourceForm` does
+        not have at all, or a non-boolean value for a boolean field.
 
         str(exc) is safe to surface directly (after
         errors.error_response()'s own sanitize_error_message() pass, for
@@ -212,7 +212,17 @@ def source_defaults():
         }
     try:
         parsed = json.loads(raw)
-    except json.JSONDecodeError as exc:
+    except (ValueError, RecursionError) as exc:
+        # json.JSONDecodeError (a ValueError subclass) covers ordinary
+        # malformed JSON. A plain ValueError can also come from the
+        # stdlib json module's own int-string-length guard (an
+        # absurdly long integer literal); RecursionError comes from
+        # json's recursive decoder hitting Python's own recursion limit
+        # on a pathologically deeply nested value. All three mean the
+        # same thing to a caller: this env var cannot be parsed --
+        # report it the same way as an ordinary JSONDecodeError rather
+        # than letting an unhandled exception 500 the request (POST
+        # /sources(/validate)) or crash the readiness check.
         raise SourceDefaultsConfigError(
             f'MEDIANEST_BRIDGE_SOURCE_DEFAULTS is not valid JSON: {exc}',
         ) from exc
@@ -339,8 +349,20 @@ def _source_type_errors(source_type, overlay):
         # why (form.save(commit=False) raises unconditionally otherwise).
         run_edit_source_checks(form)
     messages = extract_form_error_codes(form)
-    if not messages:
-        messages = _overlay_value_errors(overlay)
+    # _overlay_value_errors() catches problems the form/edit-check pass
+    # above cannot: a ".." media_format path segment is only caught by
+    # run_edit_source_checks() once the *directory* it's joined against
+    # is known, which a synthetic per-type overlay never supplies (see
+    # build_synthetic_source_form()'s own docstring); filter_text has no
+    # SourceForm-level regex validator at all. Report the UNION of both
+    # sources, deduped (form/edit-check codes first, stable order) --
+    # running the value-free checks only when `messages` was still empty
+    # (the old behavior) masked a real ".."/filter_text problem whenever
+    # the form also happened to report an unrelated field error, e.g. a
+    # non-boolean elsewhere in the same overlay.
+    for message in _overlay_value_errors(overlay):
+        if message not in messages:
+            messages.append(message)
     return [f'{source_type}: {message}' for message in messages]
 
 
@@ -387,7 +409,8 @@ def load_validated_source_defaults():
         except Exception:
             log.exception(
                 'medianest_bridge: unexpected error validating '
-                f'MEDIANEST_BRIDGE_SOURCE_DEFAULTS for {source_type!r}',
+                'MEDIANEST_BRIDGE_SOURCE_DEFAULTS for %r',
+                source_type,
             )
             errors.append(
                 f'{source_type}: unexpected validation failure '

@@ -110,13 +110,18 @@
     source_defaults()/validate_source_defaults()) currently parses and
     validates -- "healthy" if so, "unavailable" (with the specific
     error(s) in `detail`, never the env var's own raw value) otherwise.
-    POST /sources' own pre-check uses the exact same
-    validate_source_defaults() function, so this component and that
-    endpoint's 503 can never disagree about whether the configuration is
-    valid. Unlike `youtube`, this has no dedicated cache -- it shares
-    collect_components()'s ordinary 5s TTL, since it's a local
-    env-var/DB-free check (no network call, no subprocess, nothing that
-    benefits from a longer TTL).
+    This component calls config.validate_source_defaults() (the error
+    list alone); POST /sources/validate and POST /sources call the same
+    underlying config.load_validated_source_defaults() directly, via
+    views_write.py's shared _source_defaults_or_error() helper, since
+    they also need its parsed per-type overlays, not just the error
+    list -- validate_source_defaults() is that same function's error
+    list (`load_validated_source_defaults()[1]`), so this component and
+    both endpoints' 503s can never disagree about whether the
+    configuration is valid. Unlike `youtube`, this has no dedicated
+    cache -- it shares collect_components()'s ordinary 5s TTL, since
+    it's a local env-var/DB-free check (no network call, no subprocess,
+    nothing that benefits from a longer TTL).
 
     Failure isolation: every check function is called through
     _run_check(), which converts an unexpected exception into "unknown"

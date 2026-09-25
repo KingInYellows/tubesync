@@ -115,6 +115,39 @@ class SourceDefaultsConfigTestCase(BridgeTestCase):
         with self.assertRaises(config.SourceDefaultsConfigError):
             config.source_defaults()
 
+    def test_value_error_other_than_json_decode_error_raises_config_error(self):
+        '''
+            json.loads() can raise a plain ValueError (json.JSONDecodeError
+            is a ValueError subclass, but this is a DIFFERENT ValueError)
+            from the stdlib's own int-string-length guard on an absurdly
+            long integer literal -- must be treated exactly like an
+            ordinary malformed-JSON error (SourceDefaultsConfigError), not
+            left to propagate as an unhandled 500.
+        '''
+        huge_int = '9' * 5000
+        os.environ['MEDIANEST_BRIDGE_SOURCE_DEFAULTS'] = (
+            '{"*": {"write_nfo": ' + huge_int + '}}'
+        )
+        with self.assertRaises(config.SourceDefaultsConfigError):
+            config.source_defaults()
+
+    def test_recursion_error_raises_config_error(self):
+        '''
+            A pathologically deeply nested value makes json's own
+            recursive decoder hit Python's recursion limit -- must be
+            treated the same as an ordinary malformed-JSON error, not
+            left to propagate and crash readiness/create/validate.
+        '''
+        os.environ['MEDIANEST_BRIDGE_SOURCE_DEFAULTS'] = '[' * 200000
+        with self.assertRaises(config.SourceDefaultsConfigError):
+            config.source_defaults()
+
+    def test_recursion_error_is_unavailable_in_readiness(self):
+        from .. import readiness
+        os.environ['MEDIANEST_BRIDGE_SOURCE_DEFAULTS'] = '[' * 200000
+        component = readiness.check_source_defaults()
+        self.assertEqual(component['status'], 'unavailable')
+
     def test_non_object_top_level_raises(self):
         os.environ['MEDIANEST_BRIDGE_SOURCE_DEFAULTS'] = '[1, 2, 3]'
         with self.assertRaises(config.SourceDefaultsConfigError):
@@ -126,7 +159,9 @@ class SourceDefaultsConfigTestCase(BridgeTestCase):
             config.source_defaults()
 
     def test_non_object_per_type_value_raises(self):
-        os.environ['MEDIANEST_BRIDGE_SOURCE_DEFAULTS'] = json.dumps({'channel': 'nope'})
+        os.environ['MEDIANEST_BRIDGE_SOURCE_DEFAULTS'] = json.dumps(
+            {'channel': 'nope'},
+        )
         with self.assertRaises(config.SourceDefaultsConfigError):
             config.source_defaults()
 
@@ -178,14 +213,22 @@ class SourceDefaultsConfigTestCase(BridgeTestCase):
             everything.
         '''
         os.environ['MEDIANEST_BRIDGE_SOURCE_DEFAULTS'] = json.dumps(
-            {'*': {'write_nfo': True}, 'channel': {'copy_thumbnails': True}, 'playlist': {}},
+            {
+                '*': {'write_nfo': True},
+                'channel': {'copy_thumbnails': True},
+                'playlist': {},
+            },
         )
         defaults = config.source_defaults()
-        self.assertEqual(defaults['channel'], {'write_nfo': True, 'copy_thumbnails': True})
+        self.assertEqual(
+            defaults['channel'], {'write_nfo': True, 'copy_thumbnails': True},
+        )
         self.assertEqual(defaults['playlist'], {})
 
     def test_star_alone_covers_both_types_with_no_per_type_key_at_all(self):
-        os.environ['MEDIANEST_BRIDGE_SOURCE_DEFAULTS'] = json.dumps({'*': {'write_nfo': True}})
+        os.environ['MEDIANEST_BRIDGE_SOURCE_DEFAULTS'] = json.dumps(
+            {'*': {'write_nfo': True}},
+        )
         defaults = config.source_defaults()
         self.assertEqual(defaults['channel'], {'write_nfo': True})
         self.assertEqual(defaults['playlist'], {'write_nfo': True})
@@ -195,7 +238,9 @@ class SourceDefaultsConfigTestCase(BridgeTestCase):
             {'*': {'write_nfo': True}, 'channel': {'copy_thumbnails': True}},
         )
         defaults = config.source_defaults()
-        self.assertEqual(defaults['channel'], {'write_nfo': True, 'copy_thumbnails': True})
+        self.assertEqual(
+            defaults['channel'], {'write_nfo': True, 'copy_thumbnails': True},
+        )
         self.assertEqual(defaults['playlist'], {'write_nfo': True})
 
     def test_per_type_field_wins_over_star_on_conflict(self):
@@ -277,7 +322,9 @@ class SourceDefaultsValidationTestCase(BridgeTestCase):
         )
         self.assertEqual(config.validate_source_defaults(), [])
 
-    def test_invalid_channel_overlay_does_not_block_a_valid_playlist_overlay_check(self):
+    def test_invalid_channel_overlay_does_not_block_a_valid_playlist_overlay_check(
+        self,
+    ):
         # Each type is validated independently -- a broken channel overlay
         # is reported, but validate_source_defaults() still checks (and
         # would report on) playlist too, rather than stopping at the
@@ -297,7 +344,12 @@ class SourceDefaultsValidationTestCase(BridgeTestCase):
     def test_never_echoes_the_raw_env_value(self):
         secret_marker = 'super-secret-path-marker-should-not-leak'
         os.environ['MEDIANEST_BRIDGE_SOURCE_DEFAULTS'] = json.dumps(
-            {'*': {}, 'channel': {'media_format': secret_marker + '-{not_a_real_format_key}'}},
+            {
+                '*': {},
+                'channel': {
+                    'media_format': secret_marker + '-{not_a_real_format_key}',
+                },
+            },
         )
         errors = config.validate_source_defaults()
         self.assertTrue(errors)
@@ -323,6 +375,27 @@ class SourceDefaultsValidationSafetyTestCase(BridgeTestCase):
             {'*': {'media_format': '../escape/{key}.{ext}'}},
         )
         errors = config.validate_source_defaults()
+        self.assertTrue(any('media_format' in e and '..' in e for e in errors))
+
+    def test_form_error_and_media_format_parent_segment_are_both_reported(self):
+        '''
+            A single overlay with BOTH a real SourceForm field error
+            (an invalid `source_resolution` choice) and a `..`
+            media_format path segment must report the UNION of both --
+            not just whichever _source_type_errors() happened to check
+            first. Before this fix, the media_format check only ran when
+            the form itself had produced no errors, so a broken overlay
+            with two independent problems silently under-reported one of
+            them.
+        '''
+        self.set_defaults({
+            '*': {
+                'source_resolution': 'not-a-real-choice',
+                'media_format': '../escape/{key}.{ext}',
+            },
+        })
+        errors = config.validate_source_defaults()
+        self.assertTrue(any('source_resolution' in e for e in errors))
         self.assertTrue(any('media_format' in e and '..' in e for e in errors))
 
     def test_invalid_filter_text_regex_is_invalid(self):
