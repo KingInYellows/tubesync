@@ -420,6 +420,51 @@ class BackfillFailureHandlingTestCase(TestCase):
             self.assertTrue(media.media_file_exists)
             self.assertIn('Season 2017', media.media_file.path)
 
+    def test_an_earlier_half_finished_move_is_adopted(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            target = source.directory_path / 'Season 2017' / (
+                's2017e091101 - no fancy stuff title [vid1].mkv'
+            )
+            target.parent.mkdir(parents=True)
+            old_path.rename(target)
+            output = run_backfill('--source', str(source.uuid), '--apply')
+            self.assertIn('adopted: 1', output)
+            media.refresh_from_db()
+            self.assertEqual(media.media_file.path, str(target))
+            self.assertTrue(target.with_suffix('.nfo').exists())
+
+    def test_another_video_sharing_the_stem_prefix_is_not_moved(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            other_path = old_path.with_name(old_path.stem + 'x.mkv')
+            other_path.write_bytes(b'another video')
+            other = Media.objects.create(
+                key='vid2', source=source, metadata=metadata, downloaded=True,
+            )
+            other.media_file.name = str(
+                other_path.relative_to(media_file_storage.location)
+            )
+            other.save()
+            with self.assertRaises(CommandError):
+                run_backfill('--source', str(source.uuid), '--apply')
+            self.assertTrue(old_path.exists())
+            media.refresh_from_db()
+            self.assertEqual(media.media_file.path, str(old_path))
+
+    def test_downloaded_row_without_a_file_is_an_error(self):
+        with temp_download_root():
+            source = make_bridge_source()
+            source.make_directory()
+            Media.objects.create(
+                key='vid1', source=source, metadata=metadata, downloaded=True,
+            )
+            with self.assertRaises(CommandError):
+                run_backfill('--source', str(source.uuid), '--apply')
+            self.assertEqual(list(source.directory_path.rglob('*.nfo')), [
+                source.directory_path / 'tvshow.nfo',
+            ])
+
     def test_tvshow_nfo_write_failure_is_counted(self):
         with temp_download_root():
             source, media, old_path = self.make_downloaded()
@@ -524,6 +569,23 @@ class BackfillFailureHandlingTestCase(TestCase):
                 sorted(source.sponsorblock_categories.selected_choices),
                 ['selfpromo', 'sponsor'],
             )
+            with patch.object(Source, 'save') as mock_save:
+                run_backfill('--source', str(source.uuid), '--apply')
+            mock_save.assert_not_called()
+
+    def test_a_value_the_form_normalizes_does_not_resave_the_source(self):
+        overlay = (
+            '{"*": {"write_nfo": true, "index_schedule": "3600", '
+            '"media_format": " {key}.{ext} "}}'
+        )
+        with (
+            temp_download_root(),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, media, old_path = self.make_downloaded()
+            run_backfill('--source', str(source.uuid), '--apply')
+            source.refresh_from_db()
+            self.assertEqual(source.media_format, '{key}.{ext}')
             with patch.object(Source, 'save') as mock_save:
                 run_backfill('--source', str(source.uuid), '--apply')
             mock_save.assert_not_called()
