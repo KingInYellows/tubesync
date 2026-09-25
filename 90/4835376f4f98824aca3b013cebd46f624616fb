@@ -1,0 +1,26 @@
+tubesync/sync/models/media.py
+  s_237fbbbabfe3a4::t_d4e87ec8a79038 49-55
+  s_237fbbbabfe3a4::t_d9f9aebb1e4b50 821-822
+  s_237fbbbabfe3a4::t_71d1a114717852 836,839-842
+  s_237fbbbabfe3a4::t_5d0bac466b63a6 783,1003-1004,1008,1139-1163,1172-1183,1185-1205,1213,1215-1217,1226-1257
+tubesync/medianest_bridge/README.md
+  s_237fbbbabfe3a4::t_aba773f786b568 59-68,70-74
+tubesync/sync/tests/test_episode_numbering.py
+  s_237fbbbabfe3a4::t_67aae1d92181d4 123,134-136,144-145,147-219,243-268,271-273,282-285,304-306
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "904835376f4f98824aca3b013cebd46f624616fb",
+  "prompts": {},
+  "sessions": {
+    "s_237fbbbabfe3a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2373b7aa-381c-4fe7-83a0-be4487388411",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
