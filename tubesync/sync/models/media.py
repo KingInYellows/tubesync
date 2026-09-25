@@ -994,12 +994,12 @@ class Media(models.Model):
             'season',
             '1' if self.source.is_playlist else str(self.episode_date.year),
         ))
-        # episode = same-day index for the year (playlists keep the legacy
-        # published-order-in-year numbering from calculate_episode_number)
+        # episode = MMDD + same-day index (playlists keep the legacy
+        # published-order numbering from calculate_episode_number)
         nfo.append(_nfo_element(nfo,
             'episode',
             self.get_episode_str() if self.source.is_playlist
-            else str(int(self.episode_mmddnn)),
+            else str(self.nfo_episode_number),
         ))
         # ratings = media metadata youtube rating
         value = _nfo_element(nfo, 'value', str(self.rating), indent=6)
@@ -1199,20 +1199,11 @@ class Media(models.Model):
         '''4-digit year of `episode_date`, for `media_format`.'''
         return self.episode_date.strftime('%Y')
 
-    @property
-    def episode_mmddnn(self):
+    def _episode_mmdd_and_index(self):
         '''
-            "MMDD" (from `episode_date`) plus the same-day index from
-            `_same_day_index`, zero-padded to two digits, e.g. '091401' for
-            the first item on September 14th.
-
-            More than 99 same-day items logs a warning and falls back to a
-            3-digit index instead of silently wrapping or truncating. Note
-            this does not fully solve the collision this creates for the
-            NFO's <episode> (`str(int(episode_mmddnn))`): a 3-digit day and
-            a 2-digit day can still produce the same integer, e.g. '0101' +
-            '110' and '1011' + '10' both read as 101110. Beyond logging the
-            day that crossed 99 uploads, no further scheme is attempted here.
+            Returns ("MMDD" of `episode_date`, same-day index), logging a
+            warning when the index exceeds the two digits
+            `episode_mmddnn` normally uses.
         '''
         day_index = self._same_day_index()
         if day_index > 99:
@@ -1221,10 +1212,38 @@ class Media(models.Model):
                 f'source {self.source} on {self.episode_date.date()}: '
                 f'{self.key} is number {day_index}'
             )
-            index_str = f'{day_index:03}'
-        else:
-            index_str = f'{day_index:02}'
-        return f'{self.episode_date.strftime("%m%d")}{index_str}'
+        return self.episode_date.strftime('%m%d'), day_index
+
+    @property
+    def episode_mmddnn(self):
+        '''
+            "MMDD" (from `episode_date`) plus the same-day index from
+            `_same_day_index`, zero-padded to two digits, e.g. '091401' for
+            the first item on September 14th. More than 99 same-day items
+            logs a warning and uses the unpadded (3+ digit) index instead
+            of silently wrapping or truncating.
+        '''
+        mmdd, day_index = self._episode_mmdd_and_index()
+        return f'{mmdd}{day_index:02}'
+
+    @property
+    def nfo_episode_number(self):
+        '''
+            The non-playlist NFO <episode> value, derived from
+            `episode_mmddnn` without ever giving two (day, index) pairs the
+            same number:
+
+            - index <= 99: `int(episode_mmddnn)`, e.g. 91401 for '091401'
+              (at most 123199).
+            - index > 99: 10_000_000 + MMDD * 10_000 + index, a range that
+              cannot overlap the first one. `int()` of a variable-width
+              '0101' + '110' would otherwise equal '1011' + '10'. These
+              items sort after the regular episodes of their season.
+        '''
+        mmdd, day_index = self._episode_mmdd_and_index()
+        if day_index <= 99:
+            return int(mmdd) * 100 + day_index
+        return 10_000_000 + int(mmdd) * 10_000 + day_index
 
     def calculate_episode_number(self):
         if self.source.is_playlist:

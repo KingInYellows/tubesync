@@ -167,6 +167,32 @@ class EpisodeNumberingTestCase(TestCase):
         self.assertIn('filler-099', warning_args)
         self.assertIn(str(self.source), warning_args)
 
+    def test_nfo_episode_numbers_never_collide_past_99_same_day_items(self):
+        # '0101' + '110' and '1011' + '10' would both be int() 101110.
+        jan_first = aware(2026, 1, 1, 0, 0, 0)
+        Media.objects.bulk_create([
+            Media(
+                key=f'jan-{i:03}', source=self.source,
+                published=jan_first + timedelta(minutes=i),
+            )
+            for i in range(110)
+        ])
+        oct_eleventh = aware(2026, 10, 11, 0, 0, 0)
+        Media.objects.bulk_create([
+            Media(
+                key=f'oct-{i:03}', source=self.source,
+                published=oct_eleventh + timedelta(minutes=i),
+            )
+            for i in range(10)
+        ])
+        jan_110 = Media.objects.get(key='jan-109')
+        oct_10 = Media.objects.get(key='oct-009')
+        self.assertEqual(jan_110.episode_mmddnn, '0101110')
+        self.assertEqual(oct_10.episode_mmddnn, '101110')
+        self.assertEqual(oct_10.nfo_episode_number, 101110)
+        self.assertEqual(jan_110.nfo_episode_number, 10_000_000 + 101 * 10_000 + 110)
+        self.assertNotEqual(jan_110.nfo_episode_number, oct_10.nfo_episode_number)
+
     def test_title_full_bounded_respects_byte_limit_and_strips_slash(self):
         title = 'café🎉/' * 40
         media = Media(source=self.source, key='longtitle', metadata=metadata, title=title)
