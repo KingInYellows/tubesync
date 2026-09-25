@@ -544,8 +544,8 @@ uuid, none of which can carry either.
 `medianest_bridge/contract/bridge-openapi.v1.yaml` is a vendored, read-only
 copy of the canonical contract (MediaNest repo,
 `docs/planning/tubesync-integration/bridge-openapi.v1.yaml` @
-`a7689cdc7a87f93f0ddc8a5c8efd9d9ec7c88eda`, re-vendored for T3's
-`sourceDefaults` readiness component). **Note:** that SHA is the contract
+`f84aa1853cf8b3ba2cd4c68be6dca8b997e64731`, re-vendored for T3's
+`sourceDefaults` readiness component and `POST /sources`' declared 503). **Note:** that SHA is the contract
 worktree's own local commit on `plex/m3a-contract-source-defaults` as of
 this PR -- a pre-merge branch commit, not yet on the canonical repo's
 `main`. Re-sync this field (and re-verify the sha256 below) once that

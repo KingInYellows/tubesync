@@ -2,9 +2,11 @@
 #
 # Canonical source: KingInYellows/medianest,
 #   docs/planning/tubesync-integration/bridge-openapi.v1.yaml
-#   @ a7689cdc7a87f93f0ddc8a5c8efd9d9ec7c88eda (2026-09-24)
-#   (Previous re-vendor was @ 35a9c069fe4f1512ff7b606c33c0c2a11c7efa76,
-#   2026-08-21, description-only for DECISIONS #27. This update adds one
+#   @ f84aa1853cf8b3ba2cd4c68be6dca8b997e64731 (2026-09-25)
+#   (Previous re-vendors: a7689cdc7a87f93f0ddc8a5c8efd9d9ec7c88eda,
+#   2026-09-24; 35a9c069fe4f1512ff7b606c33c0c2a11c7efa76, 2026-08-21,
+#   description-only for DECISIONS #27. The T3 update also declares
+#   POST /sources' 503 ProviderUnavailable response, and adds one
 #   new OPTIONAL property, `sourceDefaults`, under
 #   components.schemas.HealthReady.properties.components.properties --
 #   NOT added to that object's own `required` list, so
@@ -335,6 +337,8 @@ paths:
                         format: uuid
         "429":
           $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ProviderUnavailable"
 
   /sources/{sourceUuid}:
     get:
@@ -550,6 +554,10 @@ components:
         PROVIDER_UNAVAILABLE — the bridge is disabled (typically because
         MEDIANEST_BRIDGE_TOKEN_FILE is unset, unreadable, or empty). The
         bridge fails closed: an unconfigured bridge is not reachable at all.
+        For POST /sources it also means the bridge's own source-creation
+        defaults failed validation (the `sourceDefaults` readiness component
+        reports "unavailable" with the same cause); nothing is created, and
+        the request can be retried once an operator fixes the configuration.
       content:
         application/json:
           schema:
@@ -688,19 +696,23 @@ components:
             plex:
               $ref: "#/components/schemas/ComponentStatus"
             sourceDefaults:
-              $ref: "#/components/schemas/ComponentStatus"
-              description: >-
-                OPTIONAL (DECISIONS #54). Reports whether a bridge
-                implementation's own configurable source-creation defaults
-                (a fork-local environment setting, not itself a contract
-                field) currently parse and validate. Deliberately excluded
-                from `required` above so a caller pinned against a bridge
-                build that predates this component stays conformant: an
-                absent key means "this bridge build does not report this",
-                not "unhealthy". A bridge that DOES implement configurable
-                source defaults and reports them "unavailable" here is
-                expected to also fail POST /sources with a 5xx rather than
-                silently falling back to undocumented defaults.
+              allOf:
+                - $ref: "#/components/schemas/ComponentStatus"
+                - description: >-
+                    OPTIONAL (DECISIONS #54). Reports whether a bridge
+                    implementation's own configurable source-creation
+                    defaults (a fork-local environment setting, not itself
+                    a contract field) currently parse and validate.
+                    Deliberately excluded from `required` above so a caller
+                    pinned against a bridge build that predates this
+                    component stays conformant: an absent key means "this
+                    bridge build does not report this", not "unhealthy". A
+                    bridge that DOES implement configurable source defaults
+                    and reports them "unavailable" here also fails
+                    POST /sources with 503 PROVIDER_UNAVAILABLE rather than
+                    silently falling back to undocumented defaults. Its
+                    `detail` names failing keys, fields and error codes,
+                    never the configured values.
 
     Meta:
       type: object
