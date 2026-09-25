@@ -5,6 +5,7 @@ from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone as tz
 from pathlib import Path
+from string import Formatter
 from xml.etree import ElementTree
 from django.conf import settings
 from django.db import models
@@ -44,6 +45,22 @@ from .media__tasks import (
     failed_format, refresh_formats, wait_for_premiere, write_nfo_file,
 )
 from .source import Source
+
+
+def _format_field_names(format_str):
+    '''
+        The top-level field names `format_str` substitutes, so
+        `{episode_mmddnn:>8}` and `{episode_mmddnn!s}` count and an escaped
+        `{{episode_mmddnn}}` does not. Empty for an unparseable format.
+    '''
+    try:
+        return {
+            field.split('.', 1)[0].split('[', 1)[0]
+            for _, field, _, _ in Formatter().parse(format_str)
+            if field
+        }
+    except ValueError:
+        return set()
 
 
 def _aware_utc(value):
@@ -1002,7 +1019,8 @@ class Media(models.Model):
         # NFO always agrees with the Season YYYY/sYYYYeMMDDNN filename.
         legacy_playlist = (
             self.source.is_playlist
-            and '{episode_mmddnn}' not in str(self.source.media_format)
+            and 'episode_mmddnn'
+            not in _format_field_names(str(self.source.media_format))
         )
         nfo.append(_nfo_element(nfo,
             'season',

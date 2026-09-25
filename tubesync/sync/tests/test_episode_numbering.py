@@ -418,3 +418,19 @@ class EpisodeNumberingTestCase(TestCase):
         nfo_tree = ElementTree.fromstring(media.nfoxml)
         self.assertEqual(nfo_tree.find('season').text, '2026')
         self.assertEqual(nfo_tree.find('episode').text, '91401')
+
+    def test_playlist_date_scheme_detection_parses_format_fields(self):
+        playlist_source = self.make_playlist_source(settings.MEDIA_FORMATSTR_DEFAULT)
+        media = Media.objects.create(
+            key='playlist-1', source=playlist_source, metadata=metadata,
+            published=aware(2026, 9, 14, 10, 0, 0),
+        )
+        for media_format, expected_season in (
+            ('Season {episode_yyyy}/s{episode_mmddnn:>8} [{key}].{ext}', '2026'),
+            ('Season {episode_yyyy}/s{episode_mmddnn!s} [{key}].{ext}', '2026'),
+            ('{{episode_mmddnn}} {key}.{ext}', '1'),
+        ):
+            with self.subTest(media_format=media_format):
+                media.source.media_format = media_format
+                nfo_tree = ElementTree.fromstring(media.nfoxml)
+                self.assertEqual(nfo_tree.find('season').text, expected_season)
