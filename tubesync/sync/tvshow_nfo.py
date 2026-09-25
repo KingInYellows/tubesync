@@ -67,8 +67,9 @@ def _resolve_show_title_from_data(source, cached):
         2. The media with metadata and the most recent `published` date
            (NULL `published` sorts last, tie-broken by `-created`): its
            `playlist_title` (for a playlist source) or `channel`/`uploader`
-           (for a channel source). Media without metadata are skipped --
-           they cannot supply either value.
+           (for a channel source). Media without metadata (in neither the
+           legacy `metadata` column nor the related `new_metadata` row)
+           are skipped -- they cannot supply either value.
 
         Not cached: TubeSync's tasks run via huey, potentially across more
         than one worker process, so a naive process-local cache would not
@@ -87,8 +88,8 @@ def _resolve_show_title_from_data(source, cached):
         title = str(cached.value.get('title', '') or '').strip()
         if title:
             return title
-    latest_media = source.media_source.filter(
-        metadata__isnull=False,
+    latest_media = source.media_source.exclude(
+        metadata__isnull=True, new_metadata__isnull=True,
     ).order_by(F('published').desc(nulls_last=True), '-created').first()
     if latest_media is not None:
         if source.is_playlist:

@@ -8,6 +8,7 @@
     media_file_storage.location patched to it -- never the real
     DOWNLOAD_ROOT/downloads.
 '''
+import json
 import logging
 import tempfile
 from contextlib import contextmanager
@@ -136,6 +137,12 @@ class ResolveShowTitleTestCase(TestCase):
         Media.objects.create(key='m2', source=self.source)
         self.assertEqual(resolve_show_title(self.source), 'test uploader')
 
+
+    def test_metadata_only_in_the_related_table_is_used(self):
+        media = Media.objects.create(key='m1', source=self.source)
+        media.ingest_metadata(json.loads(metadata))
+        self.assertIsNone(Media.objects.get(pk=media.pk).metadata)
+        self.assertEqual(resolve_show_title(self.source), 'test uploader')
 
 class BuildTvshowNfoTestCase(TestCase):
 
