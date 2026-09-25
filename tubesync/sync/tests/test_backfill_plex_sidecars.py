@@ -196,9 +196,10 @@ class BackfillPlexSidecarsTestCase(TestCase):
             playlist_tree = ElementTree.fromstring(
                 playlist_nfo.read_text(encoding='utf-8'),
             )
-            # Playlist NFO numbering is the legacy scheme, unchanged by T1/T2.
-            self.assertEqual(playlist_tree.find('season').text, '1')
-            self.assertEqual(playlist_tree.find('episode').text, '1')
+            # The playlist is now filed by the date scheme, so its NFO
+            # numbering matches its filename, like a channel's.
+            self.assertEqual(playlist_tree.find('season').text, '2017')
+            self.assertEqual(playlist_tree.find('episode').text, '91101')
 
             # Old paths are gone (files were moved, not copied)...
             self.assertFalse(old_channel_video_path.exists())
