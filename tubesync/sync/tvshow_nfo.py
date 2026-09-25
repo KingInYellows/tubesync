@@ -16,6 +16,8 @@ from collections import OrderedDict
 from pathlib import Path
 from xml.etree import ElementTree
 
+from django.db.models import F
+
 from common.logger import log
 from common.utils import clean_emoji
 
@@ -52,17 +54,21 @@ def _cached_channel_metadata(source):
     ).order_by('-retrieved').first()
 
 
-def _resolve_show_title_from_data(source):
+def _resolve_show_title_from_data(source, cached):
     '''
         Resolves a show title/studio from real channel/media data only (no
         `source.name` fallback) -- shared by `resolve_show_title()` and
         `resolve_show_studio()`, which should not just repeat `source.name`
-        when nothing more informative is available. Returns `None` when
+        when nothing more informative is available. `cached` is
+        `_cached_channel_metadata(source)`, passed in so a caller that
+        needs it for several fields queries it once. Returns `None` when
         nothing was found. Tries, in order:
-        1. The cached channel/playlist `Metadata` row's own `title`
-           (`_cached_channel_metadata`).
-        2. The most recently indexed media's `playlist_title` (for a
-           playlist source) or `channel`/`uploader` (for a channel source).
+        1. The cached channel/playlist `Metadata` row's own `title`.
+        2. The media with metadata and the most recent `published` date
+           (NULL `published` sorts last, tie-broken by `-created`): its
+           `playlist_title` (for a playlist source) or `channel`/`uploader`
+           (for a channel source). Media without metadata are skipped --
+           they cannot supply either value.
 
         Not cached: TubeSync's tasks run via huey, potentially across more
         than one worker process, so a naive process-local cache would not
@@ -77,12 +83,13 @@ def _resolve_show_title_from_data(source):
         `source.pk` with `write_tvshow_nfo()` as its one refresh point
         would be the place to add it.)
     '''
-    cached = _cached_channel_metadata(source)
     if cached is not None:
         title = str(cached.value.get('title', '') or '').strip()
         if title:
             return title
-    latest_media = source.media_source.order_by('-published', '-created').first()
+    latest_media = source.media_source.filter(
+        metadata__isnull=False,
+    ).order_by(F('published').desc(nulls_last=True), '-created').first()
     if latest_media is not None:
         if source.is_playlist:
             title = str(latest_media.playlist_title or '').strip()
@@ -95,6 +102,12 @@ def _resolve_show_title_from_data(source):
     return None
 
 
+def _plot_from(cached):
+    if cached is not None:
+        return str(cached.value.get('description', '') or '').strip()
+    return ''
+
+
 def resolve_show_title(source):
     '''
         Best available display title for a source's tvshow.nfo <title> (and
@@ -102,17 +115,19 @@ def resolve_show_title(source):
         falling back to `source.name` (TubeSync's own local, always-present
         name) when nothing more informative is known yet.
     '''
-    return _resolve_show_title_from_data(source) or source.name
+    cached = _cached_channel_metadata(source)
+    return _resolve_show_title_from_data(source, cached) or source.name
 
 
 def resolve_show_studio(source):
     '''
-        <studio> is only set when a real channel/uploader name is cheaply
-        known (`_resolve_show_title_from_data`) -- studio duplicating
-        `source.name` with no more information than <title> already
-        carries is not worth adding.
+        <studio> is only set when `_resolve_show_title_from_data` finds a
+        real name -- for a channel that is the channel/uploader name, for
+        a playlist it is the playlist's own title (the same value as
+        <title>). Studio duplicating `source.name` with no more
+        information than <title> already carries is not worth adding.
     '''
-    return _resolve_show_title_from_data(source)
+    return _resolve_show_title_from_data(source, _cached_channel_metadata(source))
 
 
 def resolve_show_plot(source):
@@ -123,19 +138,19 @@ def resolve_show_plot(source):
         per-media fallback for this one, unlike title -- a single video's
         description is not a meaningful stand-in for a whole channel's.
     '''
-    cached = _cached_channel_metadata(source)
-    if cached is not None:
-        return str(cached.value.get('description', '') or '').strip()
-    return ''
+    return _plot_from(_cached_channel_metadata(source))
 
 
 def build_tvshow_nfo(source):
     '''
         Returns a Kodi/Plex "tvshow.nfo" formatted (prettified) XML string
-        for `source`.
+        for `source`. Looks the channel cache and latest media up once and
+        derives <title>, <studio> and <plot> from that one snapshot.
     '''
-    title = clean_emoji(resolve_show_title(source))
-    plot = clean_emoji(resolve_show_plot(source))
+    cached = _cached_channel_metadata(source)
+    studio = _resolve_show_title_from_data(source, cached)
+    title = clean_emoji(studio or source.name)
+    plot = clean_emoji(_plot_from(cached))
     nfo = ElementTree.Element('tvshow')
     nfo.text = '\n  '
     nfo.append(_nfo_element(nfo, 'title', title))
@@ -148,7 +163,6 @@ def build_tvshow_nfo(source):
     nfo.append(_nfo_element(
         nfo, 'uniqueid', str(source.key).strip(), attrs=uniqueid_attrs,
     ))
-    studio = resolve_show_studio(source)
     if studio:
         nfo.append(_nfo_element(nfo, 'studio', clean_emoji(studio)))
     nfo[-1].tail = '\n'
@@ -158,25 +172,31 @@ def build_tvshow_nfo(source):
 def write_tvshow_nfo(source):
     '''
         Writes `tvshow.nfo` for `source`, only when `write_nfo` is enabled.
-        Idempotent: skips the filesystem write entirely when the content on
-        disk already matches what would be written, so calling this from
-        both `index_source` and `download_source_images` every run does
-        not churn the file (or its mtime) when nothing has changed. Never
-        deletes anything. Matches `Media.write_nfo_file`'s (F4)
-        PermissionError handling.
+        Idempotent: skips the filesystem write entirely when the bytes on
+        disk already match what would be written, so calling this from
+        `index_source`, `download_source_images` and
+        `download_media_metadata` every run does not churn the file (or
+        its mtime) when nothing has changed. Never deletes anything.
+
+        Best-effort: it runs at the tail of those tasks, after their real
+        work has succeeded, so it never raises. A missing source directory
+        (not created yet by `check_source_directory_exists`) is skipped --
+        creating it is not this function's job -- and any other error is
+        logged with its traceback instead of failing, and so retrying, the
+        calling task.
     '''
     if not source.write_nfo:
         return
-    nfo_path = Path(source.directory_path) / 'tvshow.nfo'
-    content = build_tvshow_nfo(source)
     try:
-        if nfo_path.exists() and nfo_path.read_text(encoding='utf-8') == content:
+        directory = Path(source.directory_path)
+        if not directory.is_dir():
+            log.debug(f'Skipping tvshow.nfo, no directory yet for: {source}')
+            return
+        nfo_path = directory / 'tvshow.nfo'
+        content = build_tvshow_nfo(source)
+        if nfo_path.exists() and nfo_path.read_bytes() == content.encode('utf-8'):
             return
         log.info(f'Writing tvshow.nfo for: {source}')
         write_text_file(nfo_path, content)
-    except PermissionError as e:
-        msg = (
-            'A permissions problem occured when writing'
-            ' the new tvshow.nfo file: {}'
-        )
-        log.exception(msg, e)
+    except Exception:
+        log.exception(f'Failed to write tvshow.nfo for: {source}')
