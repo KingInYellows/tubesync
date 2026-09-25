@@ -170,7 +170,12 @@ def _coerce_list_shaped_fields(data):
     '''
     for field in _LIST_SHAPED_FIELDS:
         if field in data and not isinstance(data[field], list):
-            data[field] = [data[field]] if data[field] else []
+            # The model's own string form is comma-separated
+            # ("sponsor,selfpromo"), one choice per item.
+            data[field] = [
+                choice.strip() for choice in str(data[field] or '').split(',')
+                if choice.strip()
+            ]
     return data
 
 
