@@ -30,11 +30,14 @@
         (_sidecar_path()), and tvshow.nfo uses the same
         tvshow_nfo_needs_write() decision the real write does.
 
-    Failure handling: each media is renamed in its own transaction and
-    its NFO/thumbnail are written afterwards, so a sidecar failure cannot
-    roll back the media_file update of a file that already moved. A
-    missing current file or an occupied target is an error (the media's
-    sidecars are skipped), each source is isolated from the others, and
+    Failure handling: each media is renamed without a wrapping
+    transaction (rename_files() saves media_file as soon as the video
+    moves) and its NFO/thumbnail are written afterwards, so no later
+    failure can roll back the media_file update of a file that already
+    moved. A missing current file, or an occupied target for the video or
+    for any sidecar rename_files() would move, is an error (nothing moves
+    and the media's sidecars are skipped), each source is isolated from
+    the others, and
     the command exits non-zero when anything errored or was skipped as
     locked -- re-run it once the cause is fixed. --apply refuses to run
     unless the effective user owns DOWNLOAD_ROOT, so everything it
@@ -71,15 +74,16 @@ from uuid import UUID
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 from django.forms.models import model_to_dict
 from django_huey import lock_task as huey_lock_task
 from huey.exceptions import TaskLockedException
 
 from common.logger import log
+from common.utils import directory_and_stem, glob_quote
 from medianest_bridge.config import load_validated_source_defaults
 from medianest_bridge.source_forms import (
-    _coerce_list_shaped_fields, extract_form_errors, run_edit_source_checks,
+    _LIST_SHAPED_FIELDS, _coerce_list_shaped_fields, extract_form_errors,
+    run_edit_source_checks,
 )
 from sync.choices import TaskQueue, Val, YouTube_SourceType
 from sync.forms import SourceForm
@@ -320,8 +324,24 @@ class Command(BaseCommand):
         '''The overlay fields whose value differs from `source`'s.'''
         return {
             field: value for field, value in overlay.items()
-            if getattr(source, field, None) != value
+            if self._comparable(field, getattr(source, field, None))
+            != self._comparable(field, value)
         }
+
+    def _comparable(self, field, value):
+        '''
+            A list-shaped field (sponsorblock_categories) is saved as a
+            CommaSepChoice but configured as a string or list, so both
+            sides compare as a sorted list of individual choices.
+        '''
+        if field not in _LIST_SHAPED_FIELDS:
+            return value
+        if hasattr(value, 'selected_choices'):
+            value = list(value.selected_choices)
+        value = _coerce_list_shaped_fields({field: value})[field]
+        return sorted(
+            choice for item in value for choice in str(item).split(',') if choice
+        )
 
     def _describe_overlay_diff(self, source, changes):
         if not changes:
@@ -344,13 +364,12 @@ class Command(BaseCommand):
                         f'media:{media.uuid}', queue=Val(TaskQueue.DB),
                     ),
                 ):
-                    # Only the rename is transactional, like upstream's
-                    # rename_all_media_for_source: a later sidecar failure
-                    # must never roll back the media_file update of a file
-                    # that has already moved on disk.
-                    with transaction.atomic(durable=False):
-                        in_place = self._rename_media(media, summary, True)
-                    if in_place:
+                    # No transaction: rename_files() saves media_file right
+                    # after it moves the video and then keeps going (sidecar
+                    # moves, its own NFO rewrite). Rolling that save back
+                    # on a later failure would leave the database pointing
+                    # at a file that has already moved.
+                    if self._rename_media(media, summary, True):
                         self._handle_episode_nfo(media, summary, True)
                         self._handle_thumbnail(media, summary, True)
             elif self._rename_media(media, summary, False):
@@ -387,10 +406,15 @@ class Command(BaseCommand):
             summary['already_in_place'] += 1
             return True
         problem = None
+        occupied = self._occupied_sidecar_targets(current, target)
         if not current.exists():
             problem = f'current file {current} is missing'
         elif target.exists():
             problem = f'target {target} is already occupied'
+        elif occupied:
+            problem = 'sidecar target(s) already occupied: ' + ', '.join(
+                str(path) for path in occupied
+            )
         if problem is None and apply_changes:
             media.rename_files()
             if Path(media.media_file.path) != target:
@@ -404,6 +428,24 @@ class Command(BaseCommand):
             return False
         summary['renamed'] += 1
         return True
+
+    def _occupied_sidecar_targets(self, current, target):
+        '''
+            The files rename_files() would overwrite: it moves every file
+            next to `current` that shares its stem to the matching name
+            next to `target` with Path.replace(), which silently replaces
+            an existing file there.
+        '''
+        (old_dir, old_stem) = directory_and_stem(current)
+        (new_dir, new_stem) = directory_and_stem(target)
+        occupied = []
+        for other in sorted(old_dir.glob(glob_quote(old_stem) + '*')):
+            if other == current:
+                continue
+            destination = new_dir / (new_stem + other.name[len(old_stem):])
+            if destination != other and destination.exists():
+                occupied.append(destination)
+        return occupied
 
     def _sidecar_path(self, media, suffix):
         '''
