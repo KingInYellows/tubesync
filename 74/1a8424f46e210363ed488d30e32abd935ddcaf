@@ -1,0 +1,26 @@
+tubesync/sync/tvshow_nfo.py
+  s_6790353d565094::t_7282eb564ee290 16-18,23-25,40-56,65-67,72-76,78-80,82-103,113-116,123-125,138-175,179-182,185-195,208-209,211,213-235,240,244-262,265-269,274-285,291-302,304,306-308,314-320,322,324,328,330-331,333-338,341,343-344,346-351,359-360,365-371,375-376,391,396,398-401,407-410,414-415,417-419,445-457,470-473
+  s_6790353d565094::t_0126e850f699a1 474,502,507-508,518
+tubesync/medianest_bridge/README.md
+  s_6790353d565094::t_638a16379c82c5 94-97,122-123,128-133
+tubesync/sync/models/media.py
+  s_6790353d565094::t_fb4c2965d59bc5 1174-1177
+tubesync/sync/tests/test_tvshow_nfo.py
+  s_6790353d565094::t_f4dd5cb04d261b 16-17,21,33-35,96-98,103-104,126-128,408-409,521-859
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "741a8424f46e210363ed488d30e32abd935ddcaf",
+  "prompts": {},
+  "sessions": {
+    "s_6790353d565094": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d88f8383-3f7d-42ae-80fd-a2f5940fe795",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
