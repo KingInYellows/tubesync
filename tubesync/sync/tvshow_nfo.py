@@ -71,6 +71,17 @@ def _resolve_show_title_from_data(source, cached):
            legacy `metadata` column nor the related `new_metadata` row)
            are skipped -- they cannot supply either value.
 
+        Playlist tier-2 caveat (accepted limitation): per-media metadata is
+        fetched from standalone `watch?v=` URLs, so `playlist_title` is
+        usually empty even for playlist sources. We do not read
+        `source.videos` (the indexed playlist payload) here -- that would
+        couple this resolver to the index payload shape for a
+        fallback-of-a-fallback. Bridge-created sources normally never hit
+        this path: their profile sets `copy_channel_images=True`, so tier 1
+        caches the playlist-scoped metadata; when tier 1/2 both miss,
+        `resolve_show_title()` falls back to `source.name` (MediaNest sets
+        that from the playlist title at creation).
+
         Not cached: TubeSync's tasks run via huey, potentially across more
         than one worker process, so a naive process-local cache would not
         reliably stay fresh or even be shared between the process that last
