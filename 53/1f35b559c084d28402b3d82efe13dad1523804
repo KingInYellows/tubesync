@@ -1,0 +1,94 @@
+tubesync/medianest_bridge/source_forms.py
+  s_b051a5e22632b1::t_fa017170d5297c 294-295
+  s_b051a5e22632b1::t_4aa6cd2fc4e488 96-113
+  s_b051a5e22632b1::t_d6a5cd6cdd33a3 165-166
+  s_b051a5e22632b1::t_9f2cfa3a7e32b4 143-153,160-164
+  s_b051a5e22632b1::t_bf6a7db23398a0 196,204-214,217-219,229-293
+  s_b051a5e22632b1::t_92d3833c93d916 59-60
+  s_b051a5e22632b1::t_b92ed48cace518 45-57
+tubesync/medianest_bridge/readiness.py
+  s_b051a5e22632b1::t_b853a7dae0799e 601
+  s_b051a5e22632b1::t_ff6dbb1234afec 565-572
+  s_b051a5e22632b1::t_a6f189c426ad26 105-120
+tubesync/medianest_bridge/tests/test_config.py
+  s_b051a5e22632b1::t_5502aea013f225 239-241,257-259,261-264,273
+  s_b051a5e22632b1::t_4c602a27b81b9e 194,198
+  s_b051a5e22632b1::t_abfed856ca383a 229-236
+  s_b051a5e22632b1::t_0c4f53eaaa21de 1
+  s_00d43670cf2525::t_b42dfbdfde5b47 92-138,144-151,153-156,165-167,182,184,192-193,195-197,199-227,237-238,242-256,260,265-272,274-277
+  s_b051a5e22632b1::t_ad08d621ac72be 139-143,152
+  s_b051a5e22632b1::t_29582292f0b80d 157-164,168-181,183,186-191
+  s_46531fbd404454::t_fb961cafec1496 185,228
+tubesync/medianest_bridge/contract/contract_fixtures.json
+  s_b051a5e22632b1::t_78726fa76d2dc5 5
+tubesync/medianest_bridge/README.md
+  s_b051a5e22632b1::t_bc30a960952569 597-600
+  s_b051a5e22632b1::t_3637fa609be808 455-463,466-467
+  s_b051a5e22632b1::t_51a419f4ab2f3b 578-581
+  s_b051a5e22632b1::t_29e3b57f561ef1 539-546,540-546,548-557
+  s_b051a5e22632b1::t_15bc8dd0e86492 574-577,582-583
+  s_b051a5e22632b1::t_d2e5523da66fca 375-376,380-386
+  s_b051a5e22632b1::t_1ae603445bcaa4 634-638
+  s_b051a5e22632b1::t_ca975268dcde56 312
+tubesync/medianest_bridge/tests/test_readiness.py
+  s_b051a5e22632b1::t_190207b9818e66 678-680
+  s_b051a5e22632b1::t_075281f8758217 649-677,681-692,716-720,722-732
+  s_b051a5e22632b1::t_19478a7b7c998c 693-715,721
+tubesync/medianest_bridge/views_write.py
+  s_b051a5e22632b1::t_d0e28cc61ab89a 15,18,24
+  s_b051a5e22632b1::t_bcdab4399edc03 158-166
+  s_00d43670cf2525::t_49d2820e83d6c6 254,258
+  s_b051a5e22632b1::t_020948866947d4 295-328
+  s_b051a5e22632b1::t_b9253dc19f7ee4 191-210,222,225
+tubesync/medianest_bridge/tests/test_write_sources.py
+  s_b051a5e22632b1::t_211f9519893c98 1037-1162,1167,1169-1175,1194-1198,1200-1204
+  s_b051a5e22632b1::t_99e8ac13131ef3 16
+  s_b051a5e22632b1::t_f6edde4bb8710a 1163-1166,1168,1176-1193,1199
+  s_b051a5e22632b1::t_e1c5e497dd258f 552,560
+tubesync/medianest_bridge/tests/test_endpoints.py
+  s_b051a5e22632b1::t_42a1c9d7e41fca 135-148,150
+tubesync/medianest_bridge/tests/base.py
+  s_b051a5e22632b1::t_e45613e7414373 19
+tubesync/medianest_bridge/config.py
+  s_b051a5e22632b1::t_9fc4c82b345ae6 298-301
+  s_b051a5e22632b1::t_1869a0f2e86248 302
+  s_b051a5e22632b1::t_11e584264f0288 19,29-65
+  s_b051a5e22632b1::t_8c223ac9f048ee 231,241-254,261-270
+  s_b051a5e22632b1::t_bf70dbc4138c78 66
+  s_b051a5e22632b1::t_c70c283a1da947 134-147,152-153,181-188,195-230,232-240,255-260,271-297,303-325
+  s_b051a5e22632b1::t_74cd4b2be4cb8b 148-151,154-180,189-194
+tubesync/medianest_bridge/contract/bridge-openapi.v1.yaml
+  s_b051a5e22632b1::t_16a903c5e9076c 5-15,6-15,690-703
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "531f35b559c084d28402b3d82efe13dad1523804",
+  "prompts": {},
+  "sessions": {
+    "s_00d43670cf2525": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-at1-episode-numbering-db16e3541de496b2",
+        "model": "unknown"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    },
+    "s_46531fbd404454": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-at3-bridge-defaults-be37b2448aebb9f8",
+        "model": "unknown"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    },
+    "s_b051a5e22632b1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "496b6026-d50c-4a57-a621-2cef8811ac26",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": null
+    }
+  }
+}
