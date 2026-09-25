@@ -6,6 +6,22 @@
     adds a separate read-only check.
 
     No deletion of any kind exists in this app, here or elsewhere.
+
+    Both ValidateSourceView.post and CreateSourceView.post check
+    MEDIANEST_BRIDGE_SOURCE_DEFAULTS via _source_defaults_or_error()
+    below, the one shared code path around
+    config.load_validated_source_defaults() -- so the two views' 503
+    PROVIDER_UNAVAILABLE response (envelope, no-echo detail, logging)
+    can never diverge. MediaNest's own create flow calls
+    POST /sources/validate before POST /sources and treats ANY validate
+    failure as a definite, user-retryable failure (never `unknown`) --
+    see acquisition-source-write.dispatch.ts's `validate_source_failed`
+    path in the MediaNest repo. A broken source-defaults configuration
+    therefore fails at validate-time as a real, actionable 503 the user
+    can re-submit once an operator fixes it; the create-time 503 remains
+    a backstop only (MediaNest's own translateBridgeWriteError has no
+    503 case, so that path is reconciled as an unknown outcome instead
+    of retried) -- see DECISIONS #54 on the canonical contract.
 '''
 import json
 
@@ -85,6 +101,24 @@ class ValidateSourceView(BridgeView):
         ReadOnly response (unlike POST /sources and
         POST /sources/{uuid}/sync, which both do) -- see
         BridgeView.read_only_exempt's docstring in views.py.
+
+        T3 (source-defaults): also checks
+        MEDIANEST_BRIDGE_SOURCE_DEFAULTS via the same
+        config.load_validated_source_defaults() CreateSourceView.post
+        uses, returning the identical 503 PROVIDER_UNAVAILABLE response
+        when it's invalid (_source_defaults_or_error() below is the one
+        shared code path both views call, so the two can never diverge).
+        Checked in the same relative position CreateSourceView.post
+        checks it: after the request's own schema/URL-shape errors (a
+        caller-fixable 400 always wins over a bridge-configuration 503
+        for a request that's malformed on its own terms) and before this
+        view's own source_type/key field-level checks (a bridge
+        misconfiguration is diagnosed before spending any more work on
+        the specific request). This is the 503 that matters for
+        MediaNest's own retry semantics: MediaNest calls this endpoint
+        before POST /sources and treats any validate failure as a
+        definite, user-retryable failure, never `unknown` -- see this
+        module's own docstring.
     '''
 
     read_only_exempt = True
@@ -109,6 +143,16 @@ class ValidateSourceView(BridgeView):
         if url_errors:
             return _invalid(request_id, url_errors)
 
+        # T3: see this class's own docstring for why this runs here --
+        # after schema/URL validation, before the field-level checks
+        # below -- and _source_defaults_or_error()'s docstring for why
+        # this is the one code path CreateSourceView.post also uses.
+        _, defaults_error = _source_defaults_or_error(
+            request_id, route='POST /sources/validate',
+        )
+        if defaults_error:
+            return defaults_error
+
         field_errors = validate_source_type_and_key(
             source_type=tubesync_source_type, key=canonical_key,
         )
@@ -125,6 +169,41 @@ class ValidateSourceView(BridgeView):
             'displayName': canonical_key,
             'thumbnailUrl': None,
         })
+
+
+def _source_defaults_or_error(request_id, *, route):
+    '''
+        Runs config.load_validated_source_defaults() and returns
+        (defaults_by_type, None) on success, or (None, error_response)
+        on failure -- the one shared code path ValidateSourceView.post
+        and CreateSourceView.post both call for their
+        MEDIANEST_BRIDGE_SOURCE_DEFAULTS check, so the 503
+        PROVIDER_UNAVAILABLE response (envelope, no-echo detail) and the
+        log line both views emit on failure can never diverge between
+        the two call sites. `route` is only used to label the log line
+        (`route` names which endpoint refused the request); it never
+        affects the returned response body, which is identical either
+        way (_source_defaults_unavailable() below).
+
+        MEDIANEST_BRIDGE_SOURCE_DEFAULTS is this bridge's own
+        configuration, not something the caller can fix by changing
+        their request -- returned as a distinct 5xx (never the
+        caller-error 400 the request-shape checks above each call site
+        use) so "my request is malformed" and "the bridge is
+        misconfigured" are never conflated. Never falls back to plain
+        model defaults silently: a broken overlay blocks every
+        validate/create until an operator fixes it, matching the
+        `sourceDefaults` readiness component reporting the same failure.
+    '''
+    defaults_by_type, defaults_errors = config.load_validated_source_defaults()
+    if defaults_errors:
+        log.error(
+            'medianest_bridge: refusing %s -- '
+            'MEDIANEST_BRIDGE_SOURCE_DEFAULTS is invalid: %s',
+            route, '; '.join(defaults_errors),
+        )
+        return None, _source_defaults_unavailable(request_id)
+    return defaults_by_type, None
 
 
 class CreateSourceView(SourceLookupView):
@@ -162,8 +241,27 @@ class CreateSourceView(SourceLookupView):
         own configured profile (T3: config.source_defaults(), env var
         MEDIANEST_BRIDGE_SOURCE_DEFAULTS) -- see build_source_form()'s
         `defaults_overlay` parameter. A broken profile fails this whole
-        endpoint with 503 PROVIDER_UNAVAILABLE (_source_defaults_unavailable()
-        below) rather than silently reverting to plain model defaults.
+        endpoint with 503 PROVIDER_UNAVAILABLE
+        (_source_defaults_or_error() below, shared with
+        ValidateSourceView.post) rather than silently reverting to plain
+        model defaults.
+
+        This create-time check is a BACKSTOP, not the primary defense:
+        MediaNest calls POST /sources/validate first and that endpoint
+        now runs the identical check (see ValidateSourceView's own
+        docstring), so a broken configuration should already have failed
+        there with a 503 MediaNest treats as a definite, re-submittable
+        failure. This check stays here too because nothing prevents a
+        direct POST /sources call, and because
+        MEDIANEST_BRIDGE_SOURCE_DEFAULTS could theoretically change
+        between a validate call and the create call that follows it --
+        create must never persist under a broken configuration either
+        way. A 503 reaching a caller from *this* check specifically has
+        no dedicated retry semantics on the MediaNest side (its
+        translateBridgeWriteError has no 503 case), so it is reconciled
+        as an unknown outcome rather than retried -- the validate-time
+        503 above is the one that actually gets a clean, user-visible
+        retry.
     '''
 
     def post(self, request, *args, **kwargs):
@@ -188,28 +286,18 @@ class CreateSourceView(SourceLookupView):
         if url_errors:
             return _invalid(request_id, url_errors)
 
-        # T3: MEDIANEST_BRIDGE_SOURCE_DEFAULTS is this bridge's own
-        # configuration, not something the caller can fix by changing
-        # their request -- checked before any DB query below, and
-        # returned as a distinct 5xx (never the caller-error 400 the
-        # checks above use) so "my request is malformed" and "the bridge
-        # is misconfigured" are never conflated. Never falls back to
-        # plain model defaults silently: a broken overlay blocks every
-        # create until an operator fixes it, matching the
-        # `sourceDefaults` readiness component reporting the same
-        # failure (config.py's load_validated_source_defaults() is the
-        # single implementation both call; its parsed overlays are reused
-        # below, so the env var is read once per request).
-        defaults_by_type, defaults_errors = (
-            config.load_validated_source_defaults()
+        # T3: checked before any DB query below -- see
+        # _source_defaults_or_error()'s own docstring (the one shared
+        # code path ValidateSourceView.post also uses) and this class's
+        # docstring for why this create-time check is a backstop behind
+        # ValidateSourceView's own identical check, not the primary
+        # defense. Its parsed overlays are reused below, so the env var
+        # is read once per request.
+        defaults_by_type, defaults_error = _source_defaults_or_error(
+            request_id, route='POST /sources',
         )
-        if defaults_errors:
-            log.error(
-                'medianest_bridge: refusing POST /sources -- '
-                'MEDIANEST_BRIDGE_SOURCE_DEFAULTS is invalid: %s',
-                '; '.join(defaults_errors),
-            )
-            return _source_defaults_unavailable(request_id)
+        if defaults_error:
+            return defaults_error
 
         existing = Source.objects.filter(key=canonical_key).first()
         if existing:
@@ -313,13 +401,19 @@ def _source_defaults_unavailable(request_id):
         contract change for a condition an existing code already
         describes honestly; see this PR's own description for the fuller
         reasoning.
+
+        Shared verbatim by ValidateSourceView.post and
+        CreateSourceView.post (via _source_defaults_or_error() above) --
+        the wording below deliberately says "create or adopt sources",
+        not just "create", since T3 (source-defaults) made this the
+        response for both.
     '''
     return error_response(
         status=503,
         code='PROVIDER_UNAVAILABLE',
         title='Bridge source defaults misconfigured',
         detail=(
-            'The bridge cannot create sources until its own '
+            'The bridge cannot create or adopt sources until its own '
             'MEDIANEST_BRIDGE_SOURCE_DEFAULTS configuration is fixed; see '
             "this bridge's GET /health/ready sourceDefaults component "
             'for the specific error(s).'

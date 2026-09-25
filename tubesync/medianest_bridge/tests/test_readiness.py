@@ -676,7 +676,9 @@ class SourceDefaultsCheckTestCase(SimpleTestCase):
     def test_healthy_when_valid_overlay_configured(self):
         from .base import env_override
         with env_override(
-            MEDIANEST_BRIDGE_SOURCE_DEFAULTS='{"*": {}, "channel": {"write_nfo": true}}',
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=(
+                '{"*": {}, "channel": {"write_nfo": true}}'
+            ),
         ):
             component = readiness.check_source_defaults()
         self.assertEqual(component['status'], 'healthy')
@@ -694,7 +696,10 @@ class SourceDefaultsCheckTestCase(SimpleTestCase):
         # check itself, not the type-coverage requirement (see
         # test_uncovered_type_is_unavailable below).
         with env_override(
-            MEDIANEST_BRIDGE_SOURCE_DEFAULTS='{"*": {}, "channel": {"media_format": "{not_a_real_format_key}"}}',
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=(
+                '{"*": {}, "channel": '
+                '{"media_format": "{not_a_real_format_key}"}}'
+            ),
         ):
             component = readiness.check_source_defaults()
         self.assertEqual(component['status'], 'unavailable')
@@ -718,7 +723,8 @@ class SourceDefaultsCheckTestCase(SimpleTestCase):
         secret_marker = 'super-secret-path-marker-should-not-leak'
         with env_override(
             MEDIANEST_BRIDGE_SOURCE_DEFAULTS=(
-                '{"*": {}, "channel": {"media_format": "' + secret_marker + '-{not_a_real_format_key}"}}'
+                '{"*": {}, "channel": {"media_format": "'
+                + secret_marker + '-{not_a_real_format_key}"}}'
             ),
         ):
             component = readiness.check_source_defaults()
@@ -728,5 +734,7 @@ class SourceDefaultsCheckTestCase(SimpleTestCase):
     def test_registered_in_checks_and_degrades_overall_status(self):
         self.assertIn('sourceDefaults', readiness.CHECKS)
         components = {name: readiness._status('healthy') for name in readiness.CHECKS}
-        components['sourceDefaults'] = readiness._status('unavailable', detail='bad config')
+        components['sourceDefaults'] = readiness._status(
+            'unavailable', detail='bad config',
+        )
         self.assertEqual(readiness.aggregate_status(components), 'degraded')

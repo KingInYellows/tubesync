@@ -2,19 +2,22 @@
 #
 # Canonical source: KingInYellows/medianest,
 #   docs/planning/tubesync-integration/bridge-openapi.v1.yaml
-#   @ f84aa1853cf8b3ba2cd4c68be6dca8b997e64731 (2026-09-25)
-#   (Previous re-vendors: a7689cdc7a87f93f0ddc8a5c8efd9d9ec7c88eda,
-#   2026-09-24; 35a9c069fe4f1512ff7b606c33c0c2a11c7efa76, 2026-08-21,
-#   description-only for DECISIONS #27. The T3 update also declares
-#   POST /sources' 503 ProviderUnavailable response, and adds one
-#   new OPTIONAL property, `sourceDefaults`, under
-#   components.schemas.HealthReady.properties.components.properties --
-#   NOT added to that object's own `required` list, so
-#   health_ready_component_names in contract_fixtures.json is unchanged;
-#   only this file's own sha256 moved. See DECISIONS #54: it documents a
-#   bridge's own configurable-source-defaults health, reported only by
-#   implementations that have it -- an older/other bridge build omitting
-#   this key stays fully conformant.)
+#   @ 118834c5c4e1611ac51694334feeb93d2b4ae1f2 (2026-09-25)
+#   (Previous re-vendors: f84aa1853cf8b3ba2cd4c68be6dca8b997e64731,
+#   2026-09-25, description-only -- declared POST /sources' own 503
+#   ProviderUnavailable response and added the OPTIONAL sourceDefaults
+#   property under HealthReady.components.properties (DECISIONS #54);
+#   a7689cdc7a87f93f0ddc8a5c8efd9d9ec7c88eda, 2026-09-24;
+#   35a9c069fe4f1512ff7b606c33c0c2a11c7efa76, 2026-08-21,
+#   description-only for DECISIONS #27. This update further declares
+#   POST /sources/validate's own 503 ProviderUnavailable response
+#   (DECISIONS #54 amendment): a broken MEDIANEST_BRIDGE_SOURCE_DEFAULTS
+#   now fails validate-time, before anything is dispatched, not just
+#   create-time -- matching this app's own ValidateSourceView check and
+#   rewording the ProviderUnavailable response description to say
+#   MediaNest treats the validate-time 503 as a definite, re-submittable
+#   failure while the create-time 503 remains a backstop reconciled as
+#   unknown.)
 #   Fork commit d20563a7 (T1 review fix) then added, directly in this file,
 #   the 403/413/503 response entries on the four diagnostics paths and the
 #   ProviderUnavailable / RequestTooLarge response components. The MediaNest
@@ -204,7 +207,12 @@ paths:
         (directory-traversal guard, media-format-example check) do NOT run
         at validate-time — this request schema supplies no directory to
         check them against; they run at create-time inside POST /sources.
-        Does not persist anything and performs no network calls.
+        Also checks the bridge's own source-creation defaults
+        (MEDIANEST_BRIDGE_SOURCE_DEFAULTS) and returns 503
+        PROVIDER_UNAVAILABLE when they are invalid, so a broken
+        configuration fails a create at validate-time, before anything is
+        dispatched (DECISIONS #54). Does not persist anything and performs
+        no network calls.
       parameters:
         - $ref: "#/components/parameters/CorrelationId"
         - $ref: "#/components/parameters/RequestId"
@@ -227,6 +235,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ProviderUnavailable"
 
   /sources:
     get:
@@ -554,10 +564,14 @@ components:
         PROVIDER_UNAVAILABLE — the bridge is disabled (typically because
         MEDIANEST_BRIDGE_TOKEN_FILE is unset, unreadable, or empty). The
         bridge fails closed: an unconfigured bridge is not reachable at all.
-        For POST /sources it also means the bridge's own source-creation
-        defaults failed validation (the `sourceDefaults` readiness component
-        reports "unavailable" with the same cause); nothing is created, and
-        the request can be retried once an operator fixes the configuration.
+        For POST /sources/validate and POST /sources it also means the
+        bridge's own source-creation defaults failed validation (the
+        `sourceDefaults` readiness component reports "unavailable" with the
+        same cause); nothing is created. MediaNest treats the validate-time
+        503 as a definite failure the user can re-submit once an operator
+        fixes the configuration; the create-time 503 is only a backstop and,
+        like any unexpected 5xx on create, is reconciled as an unknown
+        outcome rather than retried.
       content:
         application/json:
           schema:
