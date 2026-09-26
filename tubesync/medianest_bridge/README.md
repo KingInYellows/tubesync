@@ -76,10 +76,12 @@ Nine upstream files are touched at ten points (`settings.py` twice), seven of th
    playlists whose `media_format` uses `{episode_mmddnn}` (every
    bridge-created playlist), so the NFO matches the filename. Other
    playlists keep the pre-T1 values: season `1`, episode
-   `calculate_episode_number()`. `episode_date` prefers the related
-   `Metadata` row's `published` (see point 8) over `Media.published`
-   because the latter is rewritten with approximate data on every
-   re-index; `_same_day_index` is a single annotated `COUNT` (via
+   `calculate_episode_number()`. `episode_date`'s precedence is the
+   related `Metadata` row's `new_metadata.published` (see point 8), then
+   `Media.published`, then `Media.upload_date`, then `Media.created` --
+   `new_metadata.published` is checked first because it is *stable*,
+   unlike `Media.published`, which is rewritten with approximate data on
+   every re-index; `_same_day_index` is a single annotated `COUNT` (via
    `_episode_date_coalesce`) instead of an O(n) Python scan; and
    `episode_mmddnn` returns `nfo_episode_number`'s overflow value past 99
    same-day items so the filename and the NFO's `<episode>` never
@@ -98,7 +100,12 @@ Nine upstream files are touched at ten points (`settings.py` twice), seven of th
    docstring), so an episode's `<showtitle>` names the same show as the
    source's `tvshow.nfo` -- including one this writer leaves alone. It
    can lag a title change by up to that function's 60-second
-   per-process cache.
+   per-process cache (cleared whenever `write_tvshow_nfo()` next
+   recomputes it), since `nfoxml` calls it once per episode, including
+   from `rename_all_media_for_source`'s loop over every downloaded item
+   of a source; a database error while resolving never propagates (it is
+   logged and `source.name` is returned instead, uncached, so the next
+   call retries the real lookup).
 7. `sync/models/source.py` (Plex T1) -- adds the same three keys
    (`episode_yyyy`, `episode_mmddnn`, `title_full_bounded`) to the dict
    `example_media_format_dict` returns, required for
@@ -140,6 +147,9 @@ warning is logged), and episode NFOs take their `<showtitle>` from it.
 Delete such a file to have it regenerated. A symlinked `tvshow.nfo`,
 dangling or not, is never replaced either; a live one's `<title>` still
 names the show.
+`tvshow_nfo_needs_write()` and `write_tvshow_nfo()` share one call to
+`build_tvshow_nfo()` per write (a private helper returns the
+content-or-`None` both use), rather than each building it separately.
 
 Points 1-5 are tagged with the bridge's own slices (T1-T5); points 6 on
 are tagged with the Plex TV library slices (Plex T1-T4), a separate
@@ -707,6 +717,140 @@ from the YAML rather than hand-edited.
 
 Run with `cd tubesync && python3 manage.py test medianest_bridge` (or omit
 the app label to run the full suite, upstream included).
+
+## Operator commands
+
+`sync/management/commands/medianest_backfill_plex_sidecars.py` (Plex T4) is a
+new, wholly fork-owned management command -- like `sync/tvshow_nfo.py`
+(Plex T2), a new file rather than an edit to an existing upstream one, so it
+adds no "Fork delta" upstream touch point above. It applies Plex T3's
+per-type `MEDIANEST_BRIDGE_SOURCE_DEFAULTS` profile to one or more
+already-existing sources and backfills the Plex TV-library sidecars
+(renamed video files, per-episode NFOs, thumbnails, `tvshow.nfo`) their
+already-downloaded media would have had if created under that profile
+from the start -- for sources that predate Plex T3, or predate an operator
+changing `MEDIANEST_BRIDGE_SOURCE_DEFAULTS`.
+
+Dry-run by default; `--apply` is required to change anything on disk or
+in the DB. `--source <uuid>` (repeatable) or `--all-bridge-sources`
+(every source whose `directory` AND `name` both start with `acq-src-`)
+selects which sources to process; exactly one of the two is required.
+Never deletes a file. Resumable: a second `--apply` changes nothing
+(content is compared before any write, and a source is saved only when a
+field actually changes).
+
+**Rename-cascade gate.** Saving a source (via `SourceForm`, same as a
+real edit) fires TubeSync's own `source_post_save` signal, which
+unconditionally schedules `save_all_media_for_source` -- and that task,
+once a huey consumer processes it, always schedules
+`rename_all_media_for_source` in turn (`sync/tasks.py`, upstream-owned).
+That task calls upstream `Media.rename_files()` directly, with none of
+this command's own refusal checks, and `Path.replace()` silently
+overwrites a same-stem sidecar at the destination. It only skips a
+source when both `settings.RENAME_ALL_SOURCES` is `False` (env
+`TUBESYNC_RENAME_ALL_SOURCES`, **default `true`** --
+`tubesync/settings.py`/`local_settings.py.container`) and the source's
+`directory` is not listed in `settings.RENAME_SOURCES` (env
+`TUBESYNC_RENAME_SOURCES`, a comma-separated list, default empty) -- so
+on a typical deployment that cascade WILL run a few minutes after this
+command saves a source, and would silently clobber exactly the media
+this command itself refused to touch. To prevent that, `--apply` runs
+the same per-media decision logic a dry-run would (touching nothing)
+*before* saving any source whose overlay would actually change a field:
+when the cascade is enabled for that source and any media would be
+refused, the source is **not saved at all** -- nothing for it changes,
+one error is counted, and stdout names the refused count and tells the
+operator to resolve the conflicts, or set `TUBESYNC_RENAME_ALL_SOURCES=false`
+(and drop the source's directory from `TUBESYNC_RENAME_SOURCES`), before
+re-running. The same happens, counted as `in_flight` rather than as an
+error, when the overlay can change the rendered path (`media_format`,
+`source_resolution`, `source_vcodec`, `source_acodec`, `prefer_60fps`,
+`prefer_hdr` or `fallback`) and any of the source's media is downloading
+right now: that download would finish under the old name and the queued
+cascade would rename it later, unchecked. Dry-run runs the same preflight
+and stops the source the same way, so its summary matches `--apply`'s.
+
+Per-media and per-source failures are both logged and printed to stdout
+(a `FAILED`/`SKIPPED`/`LOCKED` line naming the media or source), and
+counted without aborting the rest of the run, but the command then exits
+non-zero, as it does when media were skipped as locked or a selected
+source has no T3 profile (a handle-based channel), so re-run it once the
+cause is fixed. A missing current file, one that is not a regular file
+(a directory), an occupied target for the video (on disk -- a dangling
+symlink counts -- or claimed by another media earlier in the same run,
+as its video or a sidecar destination, dry-run included), an occupied or
+so-claimed destination for any sidecar `rename_files()` would move, OR an
+already-occupied target-side `.nfo` that no move of this media's own
+would bring (this command's own NFO write would otherwise silently
+clobber it right after the video moves), is an error -- nothing moves. A
+foreign target-side `.jpg` is left alone and does not block the rename.
+With `{key}` in the profile, `rename_files()` also moves every path under
+the source directory whose name contains the media's key; the dry-run
+lists those moves (`key_matched_moves`), and one that would take another
+media's video or sidecar, or a directory, or whose destination is already
+taken, is an error, as is a current file or target directory reaching
+outside `DOWNLOAD_ROOT` through a symlink; a media already at its target
+gets the same checks before its NFO and thumbnail are written. An
+existing episode `.nfo` that is not this media's own (or is a symlink)
+is never overwritten, nor carried onto the target NFO name by either
+move set (`rename_files()` would overwrite it there). A symlinked
+`poster.jpg`, even a dangling one, counts as present, so no channel-image
+download is queued to write through it.
+Adopting an
+earlier half-finished move (the video already sits at its target but the
+database row does not, from a prior run that moved the file and then
+failed before saving) that left a stray same-key sidecar behind, or whose
+target is a symlink or resolves outside `DOWNLOAD_ROOT`, is also an error
+-- nothing is adopted, moved, or deleted; a stray old-name sidecar in the
+target's own directory counts too (only names that are the target's stem
+plus a `.` are its own). `--apply` saves only the
+overlay fields that change, onto a freshly read source row; processes
+media that finish downloading while it runs; and, after an overlay that
+can change the rendered path, counts media still busy downloading as
+`in_flight` and exits non-zero so the run is repeated. Dry-run turns `TUBESYNC_SHRINK_OLD` off
+so its metadata reads write nothing. The known limits (locked media, the
+cascade settings read in the command's own process, legacy names without
+the key, the in-flight race, downloads still in progress, legacy stored
+publish dates) are listed in
+`docs/release-notes-bridge-v1.1.0.md`. `--apply` refuses to run unless the effective user
+owns `DOWNLOAD_ROOT`, so new files and `Season YYYY/` directories stay
+writable by TubeSync. See the command's own module docstring for the
+full per-media/per-source decision logic (it is long enough that
+duplicating it here would just drift out of sync), and
+`sync/tests/test_backfill_plex_sidecars.py` (not
+`medianest_bridge/tests/` -- this command lives in the upstream `sync`
+app's own management-command directory, following the existing
+`create-tvshow-nfo`/`import-existing-media`/etc. commands there) for its
+test coverage: dry-run leaves everything unchanged, an exact target-tree
+assertion for both a channel and a playlist source, the N4 fix
+(an NFO gets written even when nothing needed renaming), idempotent
+second `--apply`, non-bridge sources left untouched by
+`--all-bridge-sources`, a `CommandError` (nothing changed) for an
+invalid `MEDIANEST_BRIDGE_SOURCE_DEFAULTS`, the rename-cascade gate
+(blocking a save when the cascade is enabled and a refusal or an
+in-flight download exists, proceeding when it is disabled or nothing is
+refused, dry-run stopping the source the same way with a matching
+summary), the target-side sidecar collision, dangling symlinks at the
+video and sidecar targets, a directory as the current file, an adoption
+with a leftover stray sidecar, one source's overlay-validation failure
+not stopping `--all-bridge-sources`, and the per-source directory
+snapshot (`Path.rglob`) built once and reused across every
+already-in-place/adopted media of that source instead of once per
+media.
+
+Run as the app user, dry-run first:
+```
+docker exec -u app <container> python3 /app/manage.py medianest_backfill_plex_sidecars --all-bridge-sources
+docker exec -u app <container> python3 /app/manage.py medianest_backfill_plex_sidecars --all-bridge-sources --apply
+```
+
+If `--apply` reports that it skipped a source because of the
+rename-cascade gate, either fix the reported per-media conflicts (or wait
+for the reported downloads to finish) and re-run, or set
+`TUBESYNC_RENAME_ALL_SOURCES=false` and remove that source's directory
+from `TUBESYNC_RENAME_SOURCES` before re-running. Running the backfill
+with the cascade off is recommended in any case (see the release notes'
+known limits).
 
 ## License
 
