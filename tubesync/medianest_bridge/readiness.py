@@ -110,6 +110,9 @@
     source_defaults()/validate_source_defaults()) currently parses and
     validates -- "healthy" if so, "unavailable" (with the specific
     error(s) in `detail`, never the env var's own raw value) otherwise.
+    A healthy result names, in `detail`, any type an explicit per-type
+    `{}` opts out of a non-empty `"*"` block. An unexpected error in the
+    check is logged and reported as "unavailable".
     This component calls config.validate_source_defaults() (the error
     list alone); POST /sources/validate and POST /sources call the same
     underlying config.load_validated_source_defaults() directly, via
@@ -568,11 +571,28 @@ def check_cookies():
 
 
 def check_source_defaults():
+    from common.logger import log
     from . import config
-    errors = config.validate_source_defaults()
-    if not errors:
-        return _status('healthy')
-    return _status('unavailable', detail='; '.join(errors))
+    try:
+        errors = config.validate_source_defaults()
+        opt_outs = config.source_defaults_star_opt_outs()
+    except Exception:
+        # Every expected configuration problem is already an entry in
+        # `errors`; this is a bug in the check itself. Say so in the log
+        # rather than letting _run_check() turn it into a silent unknown.
+        log.exception('medianest_bridge: sourceDefaults check failed')
+        return _status(
+            'unavailable',
+            detail='the source defaults could not be checked; see the bridge log',
+        )
+    if errors:
+        return _status('unavailable', detail='; '.join(errors))
+    if opt_outs:
+        return _status('healthy', detail=(
+            f'{", ".join(opt_outs)}: an explicit {{}} opts out of every '
+            '"*" field'
+        ))
+    return _status('healthy')
 
 
 def check_plex():

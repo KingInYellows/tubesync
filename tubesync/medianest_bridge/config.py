@@ -309,22 +309,33 @@ def source_defaults():
     return result
 
 
-def _overlay_value_errors(overlay):
+def _overlay_value_errors(overlay, form):
     '''
         Value-free errors for overlay values SourceForm accepts but that
-        would break every source created with them: a media_format with a
-        ".." path segment (it would write outside the source directory;
-        the edit checks only verify the directory, which an overlay can't
-        set) and a filter_text that is not a valid regular expression
-        (Source.is_regex_match() would raise on every media save).
+        would break every source created with them: a media_format whose
+        rendered path has a ".." segment (it would write outside the
+        source directory; the edit checks only verify the directory,
+        which an overlay can't set) and a filter_text that is not a valid
+        regular expression (Source.is_regex_match() would raise on every
+        media save).
+
+        Checked on what `form` would store and render, not on the raw
+        JSON: a segment like ".{ext:.0}." only renders to "..", and a
+        list-typed filter_text is stored as its str(). An invalid `form`
+        has nothing to render, so the raw overlay strings are checked
+        instead (its own field errors are reported alongside).
     '''
+    if form.is_valid():
+        media_format = form.save(commit=False).get_example_media_format()
+        filter_text = form.cleaned_data.get('filter_text')
+    else:
+        media_format = overlay.get('media_format')
+        filter_text = overlay.get('filter_text')
     errors = []
-    media_format = overlay.get('media_format')
     if isinstance(media_format, str) and any(
         '..' == part.strip() for part in re.split(r'[\\/]', media_format)
     ):
         errors.append('media_format: must not contain ".." path segments')
-    filter_text = overlay.get('filter_text')
     if isinstance(filter_text, str) and filter_text:
         try:
             re.compile(filter_text)
@@ -336,46 +347,49 @@ def _overlay_value_errors(overlay):
 def _source_type_errors(source_type, overlay):
     '''Value-free SourceForm/edit-check errors for one type's overlay.'''
     from .source_forms import (
-        build_synthetic_source_form, extract_form_error_codes,
+        build_synthetic_source_form, extract_form_errors,
         run_edit_source_checks,
     )
 
     form = build_synthetic_source_form(
         contract_source_type=source_type, overlay=overlay,
     )
+    # Before run_edit_source_checks(), which can add errors and so leave
+    # nothing to render.
+    value_errors = _overlay_value_errors(overlay, form)
     if form.is_valid():
         # Only safe to call once the form is already valid -- see
         # CreateSourceView.post's identical guard in views_write.py for
         # why (form.save(commit=False) raises unconditionally otherwise).
         run_edit_source_checks(form)
-    messages = extract_form_error_codes(form)
+    messages = extract_form_errors(form, value_free=True)
     # _overlay_value_errors() catches problems the form/edit-check pass
     # above cannot: a ".." media_format path segment is only caught by
     # run_edit_source_checks() once the *directory* it's joined against
     # is known, which a synthetic per-type overlay never supplies (see
     # build_synthetic_source_form()'s own docstring); filter_text has no
     # SourceForm-level regex validator at all. Report the UNION of both
-    # sources, deduped (form/edit-check codes first, stable order) --
-    # running the value-free checks only when `messages` was still empty
-    # (the old behavior) masked a real ".."/filter_text problem whenever
-    # the form also happened to report an unrelated field error, e.g. a
-    # non-boolean elsewhere in the same overlay.
-    for message in _overlay_value_errors(overlay):
+    # sources, deduped (form/edit-check codes first, stable order), so an
+    # unrelated field error never masks a ".."/filter_text problem.
+    for message in value_errors:
         if message not in messages:
             messages.append(message)
     return [f'{source_type}: {message}' for message in messages]
 
 
-def load_validated_source_defaults():
+def load_validated_source_defaults(source_types=None):
     '''
         Runs MEDIANEST_BRIDGE_SOURCE_DEFAULTS through source_defaults()
         plus the field-level SourceForm checks and run_edit_source_checks()
         (media-format-produces-a-filename, directory-traversal) a real
-        create would apply, and _overlay_value_errors(), for both source
-        types. A broken configuration therefore surfaces once here -- the
-        `sourceDefaults` readiness component, and POST /sources' own
-        pre-check -- rather than only as every subsequent create failing
-        one at a time with no diagnosis.
+        create would apply, and _overlay_value_errors(), for each of
+        `source_types` (default: every contract source type). A broken
+        configuration therefore surfaces once here -- the
+        `sourceDefaults` readiness component checks every type, and POST
+        /sources/validate and POST /sources check the type they were
+        asked for -- rather than only as every subsequent create failing
+        one at a time with no diagnosis. A parse error in the variable as
+        a whole (source_defaults() raising) fails every type.
 
         Returns (defaults_by_type, errors): the parsed per-type overlays
         (None when source_defaults() itself raised) and a list of
@@ -383,7 +397,7 @@ def load_validated_source_defaults():
         the returned overlays directly, so it reads the env var once per
         request. Every error string is safe to surface directly: they name
         failing keys/fields and error codes, never the env var's own raw
-        values (see source_forms.extract_form_error_codes()). An
+        values (see source_forms.extract_form_errors(value_free=True)). An
         unexpected exception while checking a type is logged with its
         traceback and reported as an error, so readiness says
         `unavailable` and creates get the documented 503, not `unknown`
@@ -402,6 +416,8 @@ def load_validated_source_defaults():
 
     errors = []
     for source_type, overlay in defaults_by_type.items():
+        if source_types is not None and source_type not in source_types:
+            continue
         if not overlay:
             continue
         try:
@@ -422,3 +438,33 @@ def load_validated_source_defaults():
 def validate_source_defaults():
     '''The error list from load_validated_source_defaults().'''
     return load_validated_source_defaults()[1]
+
+
+def source_defaults_star_opt_outs():
+    '''
+        The source types MEDIANEST_BRIDGE_SOURCE_DEFAULTS gives an
+        explicit per-type `{}` while its `"*"` block sets fields: those
+        types get none of them. That is the documented opt-out, but it is
+        also what a typo'd or half-edited configuration looks like, so the
+        `sourceDefaults` readiness component names them. Empty for an
+        unset or unparseable variable (source_defaults() reports the
+        latter).
+    '''
+    from .source_forms import CONTRACT_SOURCE_TYPES
+
+    raw = getenv('MEDIANEST_BRIDGE_SOURCE_DEFAULTS', '').strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, RecursionError):
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    shared = parsed.get('*')
+    if not isinstance(shared, dict) or not shared:
+        return []
+    return [
+        source_type for source_type in CONTRACT_SOURCE_TYPES
+        if parsed.get(source_type) == {}
+    ]

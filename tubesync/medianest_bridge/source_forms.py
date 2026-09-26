@@ -48,7 +48,7 @@
        operator-configured field overrides (MEDIANEST_BRIDGE_SOURCE_DEFAULTS),
        applied onto default_form_data() before the request's own
        type/key/name/directory. build_synthetic_source_form() and
-       extract_form_error_codes() below exist so
+       extract_form_errors(value_free=True) below exist so
        config.load_validated_source_defaults() can run that same overlay
        through this module's own validation path (for the
        `sourceDefaults` readiness component and both
@@ -56,11 +56,9 @@
        without a real request or a saved row -- see
        build_synthetic_source_form()'s own docstring for why a synthetic
        placeholder is acceptable there when it was rejected for
-       /sources/validate above. extract_form_error_codes(), not
-       extract_form_errors(), is the one shared with the config-check
-       path: it reports value-free field/code pairs so a rejected
-       overlay value is never echoed back (extract_form_errors() is
-       real-request-only, see its own docstring).
+       /sources/validate above. The config-check path reports
+       value-free field/code pairs (extract_form_errors(value_free=True))
+       so a rejected overlay value is never echoed back.
 '''
 import uuid
 
@@ -97,7 +95,7 @@ _ERRORS = {
 # mismatch as of this writing; if a future upstream field gains a similar
 # custom field/widget pairing, add it here rather than special-casing it
 # ad hoc at each call site.
-_LIST_SHAPED_FIELDS = {'sponsorblock_categories'}
+LIST_SHAPED_FIELDS = {'sponsorblock_categories'}
 
 # T3: fields a MEDIANEST_BRIDGE_SOURCE_DEFAULTS overlay may never set, and
 # that config.source_defaults() rejects outright if named in an overlay:
@@ -163,18 +161,18 @@ def validate_canonical_url(contract_source_type, canonical_key, canonical_url):
     return errors
 
 
-def _coerce_list_shaped_fields(data):
+def coerce_list_shaped_fields(data):
     '''
         Mutates and returns `data` in place: normalizes any
-        _LIST_SHAPED_FIELDS value to the list shape the auto-generated
-        form field expects (see _LIST_SHAPED_FIELDS' own comment). Shared
+        LIST_SHAPED_FIELDS value to the list shape the auto-generated
+        form field expects (see LIST_SHAPED_FIELDS' own comment). Shared
         by default_form_data() (TubeSync's own model default is the
         comma-joined string form) and build_source_form()/
         build_synthetic_source_form() (a MEDIANEST_BRIDGE_SOURCE_DEFAULTS
         overlay could supply either shape -- a plain string like the model
         default, or already a list).
     '''
-    for field in _LIST_SHAPED_FIELDS:
+    for field in LIST_SHAPED_FIELDS:
         if field in data and not isinstance(data[field], list):
             # The model's own string form is comma-separated
             # ("sponsor,selfpromo"), one choice per item.
@@ -189,7 +187,7 @@ def default_form_data():
     '''TubeSync's own Source model defaults for every SourceForm field.'''
     blank = Source()
     data = model_to_dict(blank, fields=list(SourceForm.base_fields.keys()))
-    return _coerce_list_shaped_fields(data)
+    return coerce_list_shaped_fields(data)
 
 
 def validate_source_type_and_key(*, source_type, key):
@@ -244,7 +242,7 @@ def build_source_form(*, source_type, key, name, directory, defaults_overlay=Non
     data = default_form_data()
     if defaults_overlay:
         data.update(defaults_overlay)
-        _coerce_list_shaped_fields(data)
+        coerce_list_shaped_fields(data)
     data['source_type'] = source_type
     data['key'] = key
     data['name'] = name
@@ -297,7 +295,7 @@ def build_synthetic_source_form(*, contract_source_type, overlay):
     '''
     data = default_form_data()
     data.update(overlay)
-    _coerce_list_shaped_fields(data)
+    coerce_list_shaped_fields(data)
     data['source_type'] = contract_source_type_to_tubesync(contract_source_type)
     placeholder = f'medianest-bridge-config-check-{uuid.uuid4().hex}'
     data['key'] = placeholder
@@ -309,45 +307,32 @@ def build_synthetic_source_form(*, contract_source_type, overlay):
     return form
 
 
-def extract_form_errors(form):
+def extract_form_errors(form, *, value_free=False):
     '''
         Plain-text "field: message" strings from form.errors, via
         Django's own ErrorDict.get_json_data() -- str(form.errors) would
         render as Django's own HTML (`<ul class="errorlist">...</ul>`),
         which a JSON/API consumer must never receive (T4 verifier MEDIUM
-        finding, reproduced live in a POST /sources response). Used only
-        by views_write.py for a real create's errors, returned straight
-        to the caller that supplied the rejected values -- NOT shared
-        with the config-check path (readiness's `sourceDefaults`
-        component, and both POST /sources/validate's and POST /sources'
-        own MEDIANEST_BRIDGE_SOURCE_DEFAULTS pre-checks), which uses the
-        value-free extract_form_error_codes() below instead so a
-        rejected overlay value is never echoed back to anyone.
-    '''
-    messages = []
-    for field, field_errors in form.errors.get_json_data().items():
-        for error in field_errors:
-            messages.append(f'{field}: {error["message"]}')
-    return messages
+        finding, reproduced live in a POST /sources response).
 
-
-def extract_form_error_codes(form):
-    '''
-        Value-free "field: code" strings from form.errors, for surfacing
-        MEDIANEST_BRIDGE_SOURCE_DEFAULTS problems in readiness detail and
-        logs. Django's built-in messages can interpolate the rejected value
-        (a ChoiceField's invalid_choice is "Select a valid choice. %(value)s
+        A real create's errors go straight back to the caller that sent
+        the rejected values. `value_free=True` is for the config-check
+        path instead (readiness's `sourceDefaults` component, and both
+        POST /sources/validate's and POST /sources' own
+        MEDIANEST_BRIDGE_SOURCE_DEFAULTS pre-checks), where a rejected
+        overlay value must never be echoed back to anyone: Django's
+        built-in messages can interpolate the rejected value (a
+        ChoiceField's invalid_choice is "Select a valid choice. %(value)s
         is not one of the available choices."), so a built-in error is
         reported by its code. The bridge's own messages (_ERRORS) carry no
-        code and are fixed strings, so they are kept. A real create's
-        errors, returned to the caller that sent the values, still use
-        extract_form_errors().
+        code and are fixed strings, so they are kept either way.
     '''
     messages = []
     for field, field_errors in form.errors.get_json_data().items():
         for error in field_errors:
-            code = error.get('code')
-            detail = code or error['message']
+            detail = error['message']
+            if value_free:
+                detail = error.get('code') or detail
             messages.append(f'{field}: {detail}')
     return messages
 

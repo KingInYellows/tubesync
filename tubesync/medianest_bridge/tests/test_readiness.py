@@ -731,6 +731,28 @@ class SourceDefaultsCheckTestCase(SimpleTestCase):
         self.assertEqual(component['status'], 'unavailable')
         self.assertNotIn(secret_marker, component['detail'])
 
+    def test_names_a_type_that_opts_out_of_star(self):
+        from .base import env_override
+        with env_override(
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS='{"*": {"write_nfo": true}, "playlist": {}}',
+        ):
+            component = readiness.check_source_defaults()
+        self.assertEqual(component['status'], 'healthy')
+        self.assertIn('playlist', component['detail'])
+
+    def test_an_unexpected_error_is_logged_and_unavailable(self):
+        with (
+            patch(
+                'medianest_bridge.config.validate_source_defaults',
+                side_effect=RuntimeError('bug'),
+            ),
+            patch('common.logger.log.exception') as mock_exception,
+        ):
+            component = readiness.check_source_defaults()
+        self.assertEqual(component['status'], 'unavailable')
+        self.assertNotIn('bug', component['detail'])
+        mock_exception.assert_called_once()
+
     def test_registered_in_checks_and_degrades_overall_status(self):
         self.assertIn('sourceDefaults', readiness.CHECKS)
         components = {name: readiness._status('healthy') for name in readiness.CHECKS}

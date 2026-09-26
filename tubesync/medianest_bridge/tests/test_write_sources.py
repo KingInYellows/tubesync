@@ -237,6 +237,27 @@ class ValidateSourceDefaultsCheckTestCase(BridgeTestCase):
         )
         self.assertEqual(response.status_code, 200)
 
+    def test_only_the_requested_types_overlay_can_block_it(self):
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps({
+                'channel': {'media_format': '{not_a_real_format_key}'},
+                'playlist': {'write_nfo': True},
+            }),
+        )
+        playlist = self._valid_body(
+            sourceType='playlist',
+            canonicalKey='PLabcdefghij',
+            canonicalUrl='https://www.youtube.com/playlist?list=PLabcdefghij',
+        )
+        response = post_json(
+            self.client, VALIDATE_URL, playlist, **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        response = post_json(
+            self.client, VALIDATE_URL, self._valid_body(), **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 503)
+
     def test_valid_explicit_config_still_succeeds_normally(self):
         self.enable_bridge(
             MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps({'*': {'write_nfo': True}}),
@@ -1297,8 +1318,8 @@ class SourceDefaultsCreateTestCase(BridgeTestCase):
             model-level stored representation (a comma-joined string,
             e.g. "sponsor,selfpromo") isn't the shape its auto-generated
             form field expects (a list) -- see source_forms.py's
-            _LIST_SHAPED_FIELDS comment and
-            _coerce_list_shaped_fields(). A MEDIANEST_BRIDGE_SOURCE_DEFAULTS
+            LIST_SHAPED_FIELDS comment and
+            coerce_list_shaped_fields(). A MEDIANEST_BRIDGE_SOURCE_DEFAULTS
             overlay may supply either shape; both must persist
             identically on a REAL create (not just pass the synthetic
             config-check form).
@@ -1421,3 +1442,34 @@ class SourceDefaultsCreateTestCase(BridgeTestCase):
         )
         self.assertEqual(response.status_code, 503)
         self.assertNotIn(secret_marker, response.content.decode('utf-8'))
+
+
+class BuildSourceFormOverlayTestCase(BridgeTestCase):
+    '''
+        build_source_form() applies the overlay before the request's own
+        type/key/name/directory, so an overlay can never replace them even
+        if one got past config.source_defaults()'s forbidden-field check.
+    '''
+
+    def test_request_identity_fields_win_over_the_overlay(self):
+        from ..source_forms import build_source_form, contract_source_type_to_tubesync
+        source_type = contract_source_type_to_tubesync('channel')
+        form = build_source_form(
+            source_type=source_type,
+            key='UCabcdefghijklmnopqrstuv',
+            name='request-name',
+            directory='request-directory',
+            defaults_overlay={
+                'source_type': contract_source_type_to_tubesync('playlist'),
+                'key': 'overlay-key',
+                'name': 'overlay-name',
+                'directory': 'overlay-directory',
+                'write_nfo': True,
+            },
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data['source_type'], source_type)
+        self.assertEqual(form.cleaned_data['key'], 'UCabcdefghijklmnopqrstuv')
+        self.assertEqual(form.cleaned_data['name'], 'request-name')
+        self.assertEqual(form.cleaned_data['directory'], 'request-directory')
+        self.assertTrue(form.cleaned_data['write_nfo'])

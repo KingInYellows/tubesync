@@ -149,6 +149,7 @@ class ValidateSourceView(BridgeView):
         # this is the one code path CreateSourceView.post also uses.
         _, defaults_error = _source_defaults_or_error(
             request_id, route='POST /sources/validate',
+            source_type=contract_source_type,
         )
         if defaults_error:
             return defaults_error
@@ -171,7 +172,7 @@ class ValidateSourceView(BridgeView):
         })
 
 
-def _source_defaults_or_error(request_id, *, route):
+def _source_defaults_or_error(request_id, *, route, source_type):
     '''
         Runs config.load_validated_source_defaults() and returns
         (defaults_by_type, None) on success, or (None, error_response)
@@ -183,7 +184,9 @@ def _source_defaults_or_error(request_id, *, route):
         the two call sites. `route` is only used to label the log line
         (`route` names which endpoint refused the request); it never
         affects the returned response body, which is identical either
-        way (_source_defaults_unavailable() below).
+        way (_source_defaults_unavailable() below). Only `source_type`'s
+        overlay is validated: a broken overlay for the other type does
+        not block this request (readiness still reports it).
 
         MEDIANEST_BRIDGE_SOURCE_DEFAULTS is this bridge's own
         configuration, not something the caller can fix by changing
@@ -195,7 +198,9 @@ def _source_defaults_or_error(request_id, *, route):
         validate/create until an operator fixes it, matching the
         `sourceDefaults` readiness component reporting the same failure.
     '''
-    defaults_by_type, defaults_errors = config.load_validated_source_defaults()
+    defaults_by_type, defaults_errors = config.load_validated_source_defaults(
+        source_types=(source_type,),
+    )
     if defaults_errors:
         log.error(
             'medianest_bridge: refusing %s -- '
@@ -295,6 +300,7 @@ class CreateSourceView(SourceLookupView):
         # is read once per request.
         defaults_by_type, defaults_error = _source_defaults_or_error(
             request_id, route='POST /sources',
+            source_type=contract_source_type,
         )
         if defaults_error:
             return defaults_error
