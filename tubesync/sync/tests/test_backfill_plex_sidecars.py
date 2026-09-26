@@ -30,16 +30,19 @@ from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase, override_settings
+from django_huey import lock_task as huey_lock_task
 from huey.exceptions import TaskLockedException
 
 from medianest_bridge import source_forms as medianest_source_forms
 from medianest_bridge.config import source_defaults
 from sync.choices import (
-    Val, Fallback, SourceResolution,
+    TaskQueue, Val, Fallback, SourceResolution,
     YouTube_AudioCodec, YouTube_VideoCodec,
     YouTube_SourceType,
 )
-from sync.forms import SourceForm
+from sync.management.commands.medianest_backfill_plex_sidecars import (
+    Command as BackfillCommand,
+)
 from sync.models import Media, Source
 from sync.models._migrations import media_file_storage
 from sync.tasks import download_source_images
@@ -652,17 +655,17 @@ class BackfillFailureHandlingTestCase(TestCase):
                 directory='acq-src-UCzyxwvutsrqponmlkjihgfe',
             )
             second.make_directory()
-            real_save = SourceForm.save
+            real_save = BackfillCommand._save_overlay
             calls = []
 
-            def save_once_then_fail(form, *args, **kwargs):
-                calls.append(form.instance.pk)
+            def save_once_then_fail(command, source, changes):
+                calls.append(source.pk)
                 if len(calls) == 1:
                     raise RuntimeError('db down')
-                return real_save(form, *args, **kwargs)
+                return real_save(command, source, changes)
 
             with (
-                patch.object(SourceForm, 'save', save_once_then_fail),
+                patch.object(BackfillCommand, '_save_overlay', save_once_then_fail),
                 self.assertRaises(CommandError),
             ):
                 run_backfill('--all-bridge-sources', '--apply')
@@ -809,7 +812,11 @@ class BackfillFailureHandlingTestCase(TestCase):
                 target_nfo.read_text(encoding='utf-8'), 'foreign nfo',
             )
 
-    def test_target_side_thumbnail_not_covered_by_a_move_is_occupied(self):
+    def test_target_side_thumbnail_not_covered_by_a_move_is_left_alone(self):
+        '''
+            _handle_thumbnail() never overwrites an existing .jpg, so a
+            foreign one at the target name does not block the rename.
+        '''
         with temp_download_root():
             source, media, old_path = self.make_downloaded()
             target = source.directory_path / 'Season 2017' / (
@@ -818,16 +825,14 @@ class BackfillFailureHandlingTestCase(TestCase):
             target_jpg = target.with_suffix('.jpg')
             target_jpg.parent.mkdir(parents=True)
             target_jpg.write_bytes(b'foreign thumbnail')
-            with (
-                patch.object(
-                    Media, 'thumb_file_exists',
-                    new_callable=PropertyMock, return_value=True,
-                ),
-                self.assertRaises(CommandError),
+            with patch.object(
+                Media, 'thumb_file_exists',
+                new_callable=PropertyMock, return_value=True,
             ):
-                run_backfill('--source', str(source.uuid), '--apply')
-            self.assertTrue(old_path.exists())
-            self.assertFalse(target.exists())
+                output = run_backfill('--source', str(source.uuid), '--apply')
+            self.assertIn('thumbs_copied: 0', output)
+            self.assertFalse(old_path.exists())
+            self.assertTrue(target.exists())
             self.assertEqual(target_jpg.read_bytes(), b'foreign thumbnail')
 
     def test_adoption_with_leftover_sidecar_is_an_error_and_nothing_is_adopted(self):
@@ -1179,3 +1184,261 @@ class CascadeGateTestCase(TestCase):
             self.assertIn(
                 '1 already-downloaded media item(s) would be refused', output,
             )
+
+
+class BackfillReviewFollowUpTestCase(TestCase):
+    '''
+        Review follow-up: rename_files()'s key sweep, projected targets,
+        adoption safety, targeted source saves, downloads that finish or
+        are still running during a run, and dry-run side effects.
+    '''
+
+    COMMAND = 'sync.management.commands.medianest_backfill_plex_sidecars'
+    TARGET_NAME = 's2017e091101 - no fancy stuff title [vid1]'
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+        _clear_show_title_cache()
+
+    def make_downloaded(self, key='vid1', source=None):
+        if source is None:
+            source = make_bridge_source()
+            source.make_directory()
+        media = Media.objects.create(key=key, source=source, metadata=metadata)
+        old_path = download_dummy_file(media)
+        return source, media, old_path
+
+    def target_dir(self, source):
+        return source.directory_path / 'Season 2017'
+
+    def test_an_orphan_with_the_key_is_listed_and_then_moved(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            orphan = source.directory_path / 'leftovers' / 'old name [vid1].en.srt'
+            orphan.parent.mkdir()
+            orphan.write_bytes(b'subtitle')
+            destination = self.target_dir(source) / f'{self.TARGET_NAME}.en.srt'
+
+            dry = run_backfill('--source', str(source.uuid))
+            self.assertIn('key_matched_moves: 1', dry)
+            self.assertIn(f'key match {orphan} -> {destination}', dry)
+            self.assertTrue(orphan.exists())
+
+            applied = run_backfill('--source', str(source.uuid), '--apply')
+            self.assertIn('key_matched_moves: 1', applied)
+            self.assertFalse(orphan.exists())
+            self.assertEqual(destination.read_bytes(), b'subtitle')
+
+    def test_another_medias_sidecar_with_the_key_is_refused(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            _, other, other_path = self.make_downloaded(key='other', source=source)
+            other_sidecar = other_path.with_name(other_path.stem + '.vid1.txt')
+            other_sidecar.write_bytes(b'notes')
+
+            dry, exc = run_backfill_capture('--source', str(source.uuid))
+            self.assertIsNotNone(exc)
+            self.assertIn('other media files would be moved with it', dry)
+
+            with self.assertRaises(CommandError):
+                run_backfill('--source', str(source.uuid), '--apply')
+            self.assertTrue(old_path.exists())
+            # `other` (processed first) took its own sidecar along; vid1's
+            # key sweep then refused to take it from there.
+            other.refresh_from_db()
+            other_video = Path(other.media_file.path)
+            self.assertIn('Season 2017', str(other_video))
+            moved_sidecar = other_video.with_name(other_video.stem + '.vid1.txt')
+            self.assertEqual(moved_sidecar.read_bytes(), b'notes')
+
+    def test_a_directory_matching_the_key_is_refused(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            (source.directory_path / 'vid1 extras').mkdir()
+            with self.assertRaises(CommandError):
+                run_backfill('--source', str(source.uuid), '--apply')
+            self.assertTrue(old_path.exists())
+
+    def test_dry_run_refuses_a_target_an_earlier_row_projects(self):
+        overlay = '{"*": {"media_format": "shared.{ext}"}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, _, _ = self.make_downloaded()
+            self.make_downloaded(key='vid2', source=source)
+            dry, exc = run_backfill_capture('--source', str(source.uuid))
+            self.assertIsNotNone(exc)
+            self.assertIn('renamed: 1', dry)
+            self.assertIn('errors: 1', dry)
+            self.assertIn('is already occupied', dry)
+
+    def test_a_symlinked_target_is_not_adopted(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            target = self.target_dir(source) / f'{self.TARGET_NAME}.mkv'
+            target.parent.mkdir(parents=True)
+            elsewhere = source.directory_path / 'elsewhere.mkv'
+            old_path.rename(elsewhere)
+            target.symlink_to(elsewhere)
+            output, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            self.assertIsNotNone(exc)
+            self.assertIn('it is a symlink', output)
+            media.refresh_from_db()
+            self.assertEqual(Path(media.media_file.path), old_path)
+
+    def test_a_target_resolving_outside_the_download_root_is_not_adopted(self):
+        with temp_download_root(), tempfile.TemporaryDirectory() as outside:
+            source, media, old_path = self.make_downloaded()
+            outside_season = Path(outside) / 'Season 2017'
+            outside_season.mkdir()
+            (outside_season / f'{self.TARGET_NAME}.mkv').write_bytes(b'x')
+            self.target_dir(source).symlink_to(outside_season)
+            old_path.unlink()
+            output, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            self.assertIsNotNone(exc)
+            self.assertIn('resolves outside', output)
+            media.refresh_from_db()
+            self.assertEqual(Path(media.media_file.path), old_path)
+
+    def test_the_overlay_save_keeps_concurrent_edits(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            Source.objects.filter(pk=source.pk).update(filter_text='  spaced  ')
+            schedule = source.target_schedule
+            real_describe = BackfillCommand._describe_overlay_diff
+
+            def edit_while_running(command, original, changes):
+                # Another writer changes the source after the run read it.
+                Source.objects.filter(pk=source.pk).update(days_to_keep=99)
+                return real_describe(command, original, changes)
+
+            with patch.object(
+                BackfillCommand, '_describe_overlay_diff', edit_while_running,
+            ):
+                run_backfill('--source', str(source.uuid), '--apply')
+            source.refresh_from_db()
+            self.assertTrue(source.write_nfo)
+            self.assertEqual(source.days_to_keep, 99)
+            self.assertEqual(source.filter_text, '  spaced  ')
+            self.assertEqual(source.target_schedule, schedule)
+
+    def test_a_download_finishing_during_the_run_is_processed(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            late = Media.objects.create(key='late1', source=source, metadata=metadata)
+            real_preflight = BackfillCommand._count_refused_media
+
+            def finish_a_download(command, downloaded, media_files):
+                # After the run read the downloaded media (the cascade
+                # gate's preflight runs right after that).
+                download_dummy_file(late)
+                return real_preflight(command, downloaded, media_files)
+
+            with patch.object(
+                BackfillCommand, '_count_refused_media', finish_a_download,
+            ):
+                output = run_backfill('--source', str(source.uuid), '--apply')
+            self.assertIn('finished downloading during this run', output)
+            self.assertIn('renamed: 2', output)
+            late.refresh_from_db()
+            self.assertIn('Season 2017', late.media_file.path)
+
+    def test_a_download_still_running_fails_the_run(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            busy = Media.objects.create(key='busy1', source=source, metadata=metadata)
+            Media.objects.filter(pk=busy.pk).update(skip=False, manual_skip=False)
+            lock = huey_lock_task(f'media:{busy.uuid}', queue=Val(TaskQueue.DB))
+            lock.acquire()
+            try:
+                output, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            finally:
+                lock.release()
+            self.assertIsNotNone(exc)
+            self.assertIn('1 in-flight', str(exc))
+            self.assertIn('in_flight: 1', output)
+            self.assertIn(f'IN FLIGHT: {busy}', output)
+
+    @override_settings(SHRINK_OLD_MEDIA_METADATA=True)
+    def test_dry_run_does_not_shrink_metadata(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            before = Media.objects.get(pk=media.pk).metadata
+            with patch.object(Media, 'ingest_metadata') as ingest:
+                run_backfill('--source', str(source.uuid))
+            ingest.assert_not_called()
+            self.assertEqual(Media.objects.get(pk=media.pk).metadata, before)
+
+    def test_apply_counts_the_nfo_rename_files_wrote(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            dry = run_backfill('--source', str(source.uuid))
+            applied = run_backfill('--source', str(source.uuid), '--apply')
+            for output in (dry, applied):
+                self.assertIn('nfo_written: 1', output)
+                self.assertIn('nfo_unchanged: 0', output)
+
+    def test_no_matching_sources(self):
+        output = run_backfill('--all-bridge-sources')
+        self.assertIn('No matching sources found.', output)
+
+    def test_bad_or_unknown_source_uuid(self):
+        with self.assertRaisesMessage(CommandError, 'Not a valid source UUID'):
+            run_backfill('--source', 'not-a-uuid')
+        with self.assertRaisesMessage(CommandError, 'No such source'):
+            run_backfill('--source', '00000000-0000-0000-0000-000000000000')
+
+    def test_a_rename_that_did_not_move_the_file_is_an_error(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            with patch.object(Media, 'rename_files'):
+                output, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            self.assertIsNotNone(exc)
+            self.assertIn('did not happen', output)
+            self.assertTrue(old_path.exists())
+
+    def test_a_second_apply_does_not_copy_the_thumbnail_again(self):
+        def fake_copy(media):
+            media.thumbpath.write_bytes(b'thumb')
+
+        with (
+            temp_download_root(),
+            patch.object(
+                Media, 'thumb_file_exists',
+                new_callable=PropertyMock, return_value=True,
+            ),
+            patch.object(Media, 'copy_thumbnail', autospec=True, side_effect=fake_copy),
+        ):
+            source, media, old_path = self.make_downloaded()
+            first = run_backfill('--source', str(source.uuid), '--apply')
+            second = run_backfill('--source', str(source.uuid), '--apply')
+        self.assertIn('thumbs_copied: 1', first)
+        self.assertIn('thumbs_copied: 0', second)
+
+    def test_the_lock_error_is_shown(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            with patch(
+                f'{self.COMMAND}.huey_lock_task',
+                side_effect=TaskLockedException('unable to acquire lock media:x'),
+            ):
+                output, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            self.assertIn('unable to acquire lock media:x', output)
