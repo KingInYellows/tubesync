@@ -40,6 +40,7 @@ from common.utils import (  django_queryset_generator as qs_gen,
                             remove_enclosed, seconds_to_timestr, )
 from .choices import Val, IndexSchedule, TaskQueue
 from .models import Source, Media, MediaServer, Metadata
+from .tvshow_nfo import write_tvshow_nfo
 from .utils import get_remote_image, resize_image_to_height, filter_response
 from .youtube import YouTubeError
 
@@ -747,6 +748,9 @@ def index_source(source_id):
             source.name,
         ),
     )
+    # Refresh the show-level NFO now that this run may have indexed new
+    # media (resolve_show_title()'s media-based fallback tiers can change).
+    write_tvshow_nfo(source)
     return True
 
 
@@ -792,20 +796,28 @@ def download_source_images(source_id):
         (banner,    ('banner.jpg', 'background.jpg')),
         (avatar,    ('poster.jpg', 'season-poster.jpg')),
     )
-    for url, file_names in images:
-        if url is None:
-            continue
-        i = get_remote_image(url)
-        image_file = BytesIO()
-        i.save(image_file, 'JPEG', quality=85, optimize=True, progressive=True)
-        for file_name in file_names:
-            image_file.seek(0)
-            file_path = source.directory_path / file_name
-            with open(file_path, 'wb') as f:
-                f.write(image_file.read())
-        i = image_file = None
+    try:
+        for url, file_names in images:
+            if url is None:
+                continue
+            i = get_remote_image(url)
+            image_file = BytesIO()
+            i.save(image_file, 'JPEG', quality=85, optimize=True, progressive=True)
+            for file_name in file_names:
+                image_file.seek(0)
+                file_path = source.directory_path / file_name
+                with open(file_path, 'wb') as f:
+                    f.write(image_file.read())
+            i = image_file = None
 
-    log.info(f'Thumbnail downloaded for source with ID: {source_id} / {source}')
+        log.info(f'Thumbnail downloaded for source with ID: {source_id} / {source}')
+    finally:
+        # get_image_url above also populates the channel/playlist Metadata
+        # cache resolve_show_title()/resolve_show_plot() prefer (F6) --
+        # refresh the show-level NFO even when an image fails, so a stale
+        # image URL cannot keep tvshow.nfo stale. write_tvshow_nfo() never
+        # raises, so an image error still propagates and retries the task.
+        write_tvshow_nfo(source)
 
 
 @db_task(delay=60, priority=90, retries=5, retry_delay=60, queue=Val(TaskQueue.FS))
@@ -1033,6 +1045,9 @@ def download_media_metadata(media_id, manual=False):
                  f'{source} / {media}: {media_id}')
     finally:
         metadata_lock.acquired = False
+    # The channel/uploader this media now carries may be the first real
+    # show title the source has; refresh tvshow.nfo (a no-op when unchanged).
+    write_tvshow_nfo(source)
     if (
         manual and
         media.can_download and
