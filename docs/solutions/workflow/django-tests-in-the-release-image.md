@@ -30,14 +30,22 @@ if [ -e "$settings" ]; then
   echo "$settings already exists; move it aside first" >&2
   exit 1
 fi
+scratch="${SCRATCH:-$(mktemp -d)}"   # never the real /config or /downloads
+mkdir -p "$scratch/tsconfig" "$scratch/tsdownloads"
 cp tubesync/tubesync/local_settings.py.container "$settings"
 trap 'rm -f "$settings"' EXIT   # removed even when the run is interrupted
+status=0
 docker run --rm --entrypoint /usr/bin/python3 \
-  -v "$PWD/tubesync:/app" -v "$SCRATCH/tsconfig:/config" \
-  -v "$SCRATCH/tsdownloads:/downloads" -w /app \
+  -v "$PWD/tubesync:/app" -v "$scratch/tsconfig:/config" \
+  -v "$scratch/tsdownloads:/downloads" -w /app \
   ghcr.io/kinginyellows/tubesync:bridge-v1.0.0 \
-  manage.py test --verbosity=1
-find . -path ./.git -prune -o ! -user "$(whoami)" -print   # must print nothing
+  manage.py test --verbosity=1 || status=$?
+foreign=$(find . -path ./.git -prune -o ! -user "$(whoami)" -print)
+if [ -n "$foreign" ]; then
+  printf 'files not owned by you:\n%s\n' "$foreign" >&2
+  [ "$status" -eq 0 ] && status=1
+fi
+exit "$status"   # the test run's own status when it failed
 ```
 
 - Always pass `--entrypoint /usr/bin/python3`.
