@@ -797,7 +797,8 @@ download is queued while any file it writes (`thumbnail.jpg`,
 symlink, even a dangling one (it would write through them), or while the
 source directory is missing and no save in this run recreates it. A
 source directory that resolves outside `DOWNLOAD_ROOT` is an error in both
-modes: no `tvshow.nfo` is written and no image download queued. An
+modes: no `tvshow.nfo` is written and no image download queued. So is a
+source directory path taken by a regular file or a dangling symlink. An
 overlay that would turn `copy_channel_images` on while such a link exists
 (or the source directory resolves outside `DOWNLOAD_ROOT`) makes the
 source an error in both modes, refused before anything is saved: saving

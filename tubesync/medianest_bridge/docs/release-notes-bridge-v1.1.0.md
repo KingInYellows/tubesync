@@ -201,6 +201,10 @@ owner. This file records what the tag would contain and what was verified.
      -- so the command refuses the source as an error in both modes
      *before* saving anything, rather than saving it and only noting the
      problem afterwards.
+   - A source whose directory path is taken by something that is not a
+     directory (a regular file, or a symlink that does not resolve to one)
+     is an error in both modes and nothing is saved: TubeSync's own
+     directory check on save would fail with `FileExistsError`.
    - A source directory that resolves outside `DOWNLOAD_ROOT` is an error
      in both modes: neither `tvshow.nfo` nor the image download is
      written or queued (`write_text_file()` would otherwise create its
@@ -352,3 +356,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 631 tests OK at the stack tip (T1-T3 unchanged). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 639 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep, for the backfill: an overlay that would turn `copy_channel_images` on is refused before it is saved, in both modes with equal summaries, when an image destination is a symlink or the source directory resolves outside `DOWNLOAD_ROOT`; TubeSync's own `source_pre_save` image job is never queued and the source row is unchanged. Each test was checked to fail with the gate removed.
+
+## Verification (2026-09-26, eleventh review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 633 tests OK at the stack tip (T1-T3 unchanged). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 641 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep, for the backfill: a regular file or a dangling symlink at a source's directory path makes the source an error in both modes with equal summaries, before anything is saved. Each test was checked to fail with the check removed.

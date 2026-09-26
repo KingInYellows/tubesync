@@ -364,6 +364,23 @@ class Command(BaseCommand):
             self.stdout.write(self.style.ERROR(f'  SKIPPED: {message}'))
             return
 
+        # A source directory path taken by something that is not a
+        # directory (a regular file, or a symlink that does not resolve to
+        # one) cannot be used in either mode: a dry-run would assume a save
+        # creates the directory, while apply's save fails in
+        # check_source_directory_exists (os.makedirs raises
+        # FileExistsError). Refuse it the same way in both.
+        directory = Path(source.directory_path)
+        if _occupied(directory) and not directory.is_dir():
+            summary['errors'] += 1
+            message = (
+                f'source directory {directory} exists but is not a '
+                'directory; move it aside and re-run'
+            )
+            log.error(f'medianest_backfill_plex_sidecars: {source}: {message}')
+            self.stdout.write(self.style.ERROR(f'  SKIPPED: {message}'))
+            return
+
         overlay = defaults_by_type.get(contract_type, {})
         working_source = source
         images_already_queued = False

@@ -2322,3 +2322,42 @@ class BackfillReviewFollowUp10TestCase(BackfillFollowUpMixin, TestCase):
             source.refresh_from_db()
             self.assertFalse(source.copy_channel_images)
             self.assertEqual(list(Path(outside).iterdir()), [])
+
+
+class BackfillReviewFollowUp11TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Eleventh review pass: a source directory path taken by something
+        that is not a directory is refused the same way in both modes.
+    '''
+
+    def assert_refused(self, occupy):
+        with temp_download_root():
+            source = make_bridge_source()
+            directory = source.directory_path
+            directory.parent.mkdir(parents=True, exist_ok=True)
+            occupy(directory)
+            with patch(f'{self.COMMAND}.TaskHistory') as mock_th:
+                dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+                applied, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            mock_th.schedule.assert_not_called()
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('exists but is not a directory', output)
+                self.assertIn('errors: 1', output)
+                self.assertIn('tvshow_written: 0', output)
+                self.assertIn('images_enqueued: 0', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            source.refresh_from_db()
+            # The profile turns copy_channel_images on; nothing was saved.
+            self.assertFalse(source.copy_channel_images)
+            self.assertFalse(directory.is_dir())
+
+    def test_a_regular_file_at_the_source_path_is_refused(self):
+        self.assert_refused(lambda path: path.write_bytes(b'not a directory'))
+
+    def test_a_dangling_symlink_at_the_source_path_is_refused(self):
+        self.assert_refused(
+            lambda path: path.symlink_to(path.parent / 'missing'),
+        )
