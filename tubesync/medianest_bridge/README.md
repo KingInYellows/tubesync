@@ -128,7 +128,9 @@ Known limits of the Plex T1 date-based numbering:
   renumbered and moved by the next rename. Its NFO is rewritten when
   `write_nfo` is on, but Plex sees a new file.
 - A same-day renumber of items not yet downloaded is expected: only a
-  downloaded file's number is kept.
+  downloaded file's number is kept. A custom `media_format` with no
+  literal text on either side of `{episode_mmddnn}` keeps no numbers at
+  all (nothing reliable anchors the number in the file name).
 
 Everything else the bridge needs is imported (models,
 `common.utils.getenv`, `common.logger.log`, `sync.tasks` helpers), never

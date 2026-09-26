@@ -25,7 +25,9 @@ from xml.etree import ElementTree
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.db.models.functions import Coalesce
+from django.db import connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from medianest_bridge.source_forms import default_form_data, run_edit_source_checks
@@ -764,6 +766,26 @@ class FrozenEpisodeNumberTestCase(TestCase):
         )
         self.assertEqual(legacy.episode_mmddnn, '030502')
 
+    def test_query_count_does_not_grow_with_the_days_downloads(self):
+        def queries_for_a_new_item(downloads):
+            for number in range(downloads):
+                self.mark_downloaded(self.make_media(
+                    f'count-{downloads}-{number}',
+                    aware(2026, 4, downloads, 10, number, 0),
+                ))
+            item = self.make_media(
+                f'count-{downloads}-new', aware(2026, 4, downloads, 9, 0, 0),
+            )
+            with CaptureQueriesContext(connection) as queries:
+                item.episode_mmddnn
+            # One pass over the day's rows, not a COUNT plus a fetch.
+            self.assertFalse(any(
+                'COUNT(' in query['sql'] for query in queries.captured_queries
+            ))
+            return len(queries)
+
+        self.assertEqual(queries_for_a_new_item(1), queries_for_a_new_item(6))
+
     def test_format_without_episode_mmddnn_stays_live(self):
         self.source.media_format = settings.MEDIA_FORMATSTR_DEFAULT
         self.source.save()
@@ -799,6 +821,8 @@ class EpisodeTokenParsingTestCase(TestCase):
             # No literal next to the field: digit boundaries anchor it.
             ('k1030502.mkv', '{key}{episode_mmddnn}.{ext}', None),
             ('key-030502.mkv', '{key}-{episode_mmddnn}.{ext}', 2),
+            # No literal on either side: not parsed at all.
+            ('ab030502cd.mkv', '{key}{episode_mmddnn}{title}.{ext}', None),
             # A format spec changes the rendering, so it is not parsed.
             ('s  030502.mkv', 's{episode_mmddnn:>8}.{ext}', None),
             ('s030502.mkv', 's{episode_mmddnn!s}.{ext}', 2),
@@ -844,6 +868,11 @@ class LazyEpisodeFormatKeysTestCase(TestCase):
         day_index.assert_not_called()
         self.assertNotIn('episode_mmddnn', format_dict)
         self.assertNotIn('episode_yyyy', format_dict)
+
+    def test_a_key_nested_in_a_format_spec_is_computed(self):
+        self.source.media_format = '{title_full:.{episode_yyyy}} [{key}].{ext}'
+        self.assertIn('episode_yyyy', self.media.format_dict)
+        self.assertTrue(self.media.filename.endswith(' [lazy].mkv'))
 
     def test_used_episode_keys_are_computed(self):
         self.source.media_format = 's{episode_mmddnn} [{key}].{ext}'
@@ -946,6 +975,31 @@ class NewMetadataWithoutPublishedTestCase(TestCase):
         )
         bare = Media.objects.get(pk=bare.pk)
         self.assertIsNone(bare.new_metadata.published)
+        self.assertEqual(bare.episode_date, aware(2017, 9, 11))
+        later = Media.objects.create(
+            key='later-same-day', source=self.source, metadata=metadata,
+            published=aware(2017, 9, 11, 12, 0, 0),
+        )
+        self.assertEqual(later._same_day_index(), 2)
+        self.assertEqual(bare._same_day_index(), 1)
+
+
+class NewMetadataOnlyTestCase(NewMetadataWithoutPublishedTestCase):
+    '''
+        The same, for a row whose metadata lives only in the related row
+        (`Media.metadata` NULL): `loaded_metadata` still reads its
+        `upload_date`, so SQL must not date it by `created`.
+    '''
+
+    def test_counted_on_its_upload_date(self):
+        bare = Media.objects.create(key='only-new-metadata', source=self.source)
+        Media.objects.filter(pk=bare.pk).update(published=None, metadata=None)
+        Metadata.objects.create(
+            media=bare, site='Youtube', key=bare.key, published=None,
+            value=json.loads(metadata),
+        )
+        bare = Media.objects.get(pk=bare.pk)
+        self.assertIsNone(bare.metadata)
         self.assertEqual(bare.episode_date, aware(2017, 9, 11))
         later = Media.objects.create(
             key='later-same-day', source=self.source, metadata=metadata,

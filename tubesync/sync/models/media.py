@@ -4,6 +4,7 @@ import json
 import re
 from collections import OrderedDict
 from copy import deepcopy
+from itertools import chain
 from datetime import datetime, timedelta, timezone as tz
 from pathlib import Path
 from string import Formatter
@@ -62,18 +63,27 @@ EPISODE_OVERFLOW_MMDD_FACTOR = 10_000
 def _format_field_names(format_str):
     '''
         The top-level field names `format_str` substitutes, so
-        `{episode_mmddnn:>8}` and `{episode_mmddnn!s}` count and an escaped
-        `{{episode_mmddnn}}` does not. Empty for an unparseable format.
+        `{episode_mmddnn:>8}` and `{episode_mmddnn!s}` count, a field nested
+        in another field's format spec (`{title:.{episode_yyyy}}`) counts
+        too, and an escaped `{{episode_mmddnn}}` does not. Empty for an
+        unparseable format.
     '''
     try:
-        return {
-            field.split('.', 1)[0].split('[', 1)[0]
-            for _, field, _, _ in Formatter().parse(format_str)
-            if field
-        }
+        return _parsed_field_names(format_str)
     except ValueError as e:
         log.warning(f'Unparseable media_format {format_str!r}: {e}')
         return set()
+
+
+def _parsed_field_names(format_str):
+    names = set()
+    for _literal, field, spec, _conversion in Formatter().parse(format_str):
+        if field:
+            names.add(field.split('.', 1)[0].split('[', 1)[0])
+        if spec:
+            # str.format allows one level of nesting inside a spec.
+            names |= _parsed_field_names(spec)
+    return names
 
 
 def _episode_day_index_from_name(name, media_format, mmdd):
@@ -87,7 +97,10 @@ def _episode_day_index_from_name(name, media_format, mmdd):
         format or extension change does not lose the number. The token
         must encode `mmdd` (the item's current `episode_date`), and every
         occurrence must agree. A field with a format spec or a conversion
-        other than `!s` is not parsed.
+        other than `!s` is not parsed, and neither is one with no literal
+        text on either side (only digit boundaries would anchor it, so an
+        unrelated digit run elsewhere in the path could match): such a
+        format numbers every item by its live same-day order.
     '''
     try:
         parsed = list(Formatter().parse(media_format))
@@ -102,6 +115,8 @@ def _episode_day_index_from_name(name, media_format, mmdd):
         after = ''
         if position + 1 < len(parsed):
             after = parsed[position + 1][0]
+        if not (before or after):
+            return None
         patterns.append(
             (re.escape(before) if before else r'(?<!\d)')
             + r'(\d{8}|\d{6})'
@@ -1345,8 +1360,9 @@ class Media(models.Model):
               once per filename evaluation, so that cost was effectively
               O(n^2) per source rename.
             - `published` unset, no `new_metadata.published` (no related
-              row, or one written without `ingest_metadata`), but a legacy
-              `metadata` column set directly (bypassing
+              row, or one written without `ingest_metadata`), but metadata
+              in the legacy `metadata` column or the related row, set
+              directly (bypassing
               `ingest_metadata` -- not reachable through this codebase's
               own indexing/ingest code paths, but a supported direct
               field assignment, e.g. in tests or a not-yet-migrated
@@ -1410,11 +1426,15 @@ class Media(models.Model):
         if self.pk is not None:
             others = others.exclude(pk=self.pk)
         # new_metadata__published is NULL both without a related row and
-        # for one written without going through ingest_metadata.
+        # for one written without going through ingest_metadata. Either
+        # metadata store can supply upload_date (loaded_metadata merges
+        # the related row in), so a row with either is dated in Python.
         legacy_metadata_only = models.Q(
             published__isnull=True,
             new_metadata__published__isnull=True,
-            metadata__isnull=False,
+        ) & (
+            models.Q(metadata__isnull=False)
+            | models.Q(new_metadata__isnull=False)
         )
         sql_day = others.exclude(legacy_metadata_only).annotate(
             episode_date_sort=_episode_date_coalesce(),
@@ -1460,30 +1480,42 @@ class Media(models.Model):
         if own is not None:
             return own
 
-        frozen = []
+        # One pass over the day's other rows (one query, plus the rare
+        # rows SQL can't date) gives both this item's live position and
+        # the indexes downloaded files keep; the cost is bounded by that
+        # day's upload count, not the source's size.
+        this_item = self._episode_sort_key()
         sql_day, legacy_day = self._same_day_others()
-        downloaded = sql_day.filter(downloaded=True).only(
-            'pk', 'key', 'created', 'downloaded', 'media_file',
-        )
-        for other in downloaded:
-            index = other._frozen_day_index(media_format, mmdd)
-            if index is not None:
-                sort_key = (
+        sql_rows = (
+            (
+                (
                     _aware_utc(other.episode_date_sort),
                     _aware_utc(other.created),
                     other.key,
-                )
-                frozen.append((sort_key, index))
-        for other in legacy_day():
+                ),
+                other,
+            )
+            for other in sql_day.only(
+                'pk', 'key', 'created', 'downloaded', 'media_file',
+            )
+        )
+        legacy_rows = (
+            (other._episode_sort_key(), other) for other in legacy_day()
+        )
+        before = 0
+        frozen = []
+        for sort_key, other in chain(sql_rows, legacy_rows):
+            if sort_key < this_item:
+                before += 1
             index = other._frozen_day_index(media_format, mmdd)
             if index is not None:
-                frozen.append((other._episode_sort_key(), index))
-        live = self._same_day_index()
+                frozen.append((sort_key, index))
         if not frozen:
-            return live
+            return before + 1
 
-        this_item = self._episode_sort_key()
-        rank = live - sum(1 for sort_key, _ in frozen if sort_key < this_item)
+        rank = before + 1 - sum(
+            1 for sort_key, _ in frozen if sort_key < this_item
+        )
         taken = {index for _, index in frozen}
         index = 0
         while rank:
