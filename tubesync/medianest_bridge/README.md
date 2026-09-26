@@ -787,12 +787,12 @@ the source directory whose name contains the media's key; the dry-run
 lists those moves (`key_matched_moves`), and one that would take another
 media's video or sidecar, or a directory, or whose destination is already
 taken, is an error, as is a current file or target directory reaching
-outside `DOWNLOAD_ROOT` through a symlink, or a target directory reached
-through a symlink inside it (`rename_files()` would record the resolved
-path); a media already at its target
+outside `DOWNLOAD_ROOT` through a symlink, or a current or target
+directory reached through a symlink inside it (`rename_files()` resolves
+both); a media already at its target
 gets the same checks before its NFO and thumbnail are written. An
-existing episode `.nfo` that is not this media's own (or is a symlink)
-is never overwritten, nor carried onto the target NFO name by either
+existing episode `.nfo` that is not this media's own (or is a symlink,
+or not a regular file at all, which is never read) is never overwritten, nor carried onto the target NFO name by either
 move set (`rename_files()` would overwrite it there). No channel-image
 download is queued while any file it writes (`thumbnail.jpg`,
 `banner.jpg`, `background.jpg`, `poster.jpg`, `season-poster.jpg`) is a

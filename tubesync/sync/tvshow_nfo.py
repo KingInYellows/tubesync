@@ -520,7 +520,8 @@ def _tvshow_nfo_content_to_write(source, assume_directory_exists=False):
     nfo_path = directory / 'tvshow.nfo'
     with transaction.atomic():
         content = build_tvshow_nfo(source)
-    if nfo_path.exists() and nfo_path.read_bytes() == content.encode('utf-8'):
+    # is_file(), not exists(): reading a FIFO would block.
+    if nfo_path.is_file() and nfo_path.read_bytes() == content.encode('utf-8'):
         return None
     reason = _foreign_nfo_reason(nfo_path, source)
     if reason:

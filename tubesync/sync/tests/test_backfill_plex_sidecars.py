@@ -19,6 +19,7 @@ import copy
 import logging
 import os
 import shutil
+import signal
 import tempfile
 from contextlib import contextmanager
 from io import StringIO
@@ -2440,3 +2441,102 @@ class BackfillReviewFollowUp12TestCase(BackfillFollowUpMixin, TestCase):
             self.assertEqual(summary_of(dry), summary_of(applied))
             source.refresh_from_db()
             self.assertFalse(source.copy_channel_images)
+
+
+class _ReadBlocked(BaseException):
+    '''Raised by a test alarm when a read blocks on a FIFO.'''
+
+
+class BackfillReviewFollowUp13TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Thirteenth review pass: a current path under a symlinked directory
+        inside DOWNLOAD_ROOT is refused like a symlinked target, and NFO
+        paths that are not regular files are foreign and never read.
+    '''
+
+    FOREIGN = 'not this media'
+
+    def setUp(self):
+        super().setUp()
+        # Reading a FIFO blocks; fail the test instead of hanging the run.
+        signal.signal(signal.SIGALRM, self._timed_out)
+        signal.alarm(20)
+
+    def tearDown(self):
+        signal.alarm(0)
+
+    @staticmethod
+    def _timed_out(signum, frame):
+        # A BaseException, so the command's broad `except Exception`
+        # handlers cannot swallow it and block on the next read.
+        raise _ReadBlocked('an NFO read blocked')
+
+    def run_both(self, source):
+        dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+        applied, exc = run_backfill_capture(
+            '--source', str(source.uuid), '--apply',
+        )
+        self.assertEqual(summary_of(dry), summary_of(applied))
+        return (dry, dry_exc), (applied, exc)
+
+    def test_a_current_path_under_a_symlinked_directory_is_refused(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            real = source.directory_path / 'real-old'
+            real.mkdir()
+            moved = real / old_path.name
+            old_path.rename(moved)
+            alias = source.directory_path / 'old-alias'
+            alias.symlink_to(real, target_is_directory=True)
+            aliased = alias / old_path.name
+            media.media_file.name = str(
+                aliased.relative_to(media_file_storage.location)
+            )
+            media.save()
+            for output, error in self.run_both(source):
+                self.assertIsNotNone(error)
+                self.assertIn('goes through a symlink', output)
+                self.assertIn(str(alias), output)
+                self.assertIn('renamed: 0', output)
+            self.assertTrue(moved.exists())
+            media.refresh_from_db()
+            self.assertEqual(Path(media.media_file.path), aliased)
+
+    def test_a_fifo_at_the_target_episode_nfo_is_foreign(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            run_backfill('--source', str(source.uuid), '--apply')
+            nfo = self.target_dir(source) / f'{self.TARGET_NAME}.nfo'
+            nfo.unlink()
+            os.mkfifo(nfo)
+            for output, error in self.run_both(source):
+                self.assertIsNotNone(error)
+                self.assertIn("it is not this media's episode NFO", output)
+            self.assertFalse(nfo.is_file())
+
+    def test_a_fifo_nfo_beside_the_old_video_is_not_moved(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            old_nfo = old_path.with_suffix('.nfo')
+            os.mkfifo(old_nfo)
+            for output, error in self.run_both(source):
+                self.assertIsNotNone(error)
+                self.assertIn(
+                    'would be moved to its new name and then overwritten', output,
+                )
+                self.assertIn('renamed: 0', output)
+            self.assertTrue(old_path.exists())
+            self.assertFalse(old_nfo.is_file())
+
+    def test_a_fifo_tvshow_nfo_is_never_read(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            tvshow = source.directory_path / 'tvshow.nfo'
+            os.mkfifo(tvshow)
+            (dry, _), (applied, _) = self.run_both(source)
+            for output in (dry, applied):
+                self.assertIn('tvshow_written: 0', output)
+            self.assertFalse(tvshow.is_file())

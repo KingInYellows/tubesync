@@ -823,10 +823,11 @@ class Command(BaseCommand):
             adoption target that is a symlink or resolves outside
             DOWNLOAD_ROOT, or that belongs to another media (its video, a
             sidecar of one, or a destination an earlier rename in this run
-            moves a file to, projected in a dry-run); a target directory
-            that goes through a symlink below the storage location
-            (rename_files() would record the resolved path, not the
-            target); a target video that already exists or that
+            moves a file to, projected in a dry-run); a current or target
+            directory that goes through a symlink below the storage
+            location (rename_files() resolves both, so it would move
+            sidecars these checks never saw and record the resolved path,
+            not the target); a target video that already exists or that
             another media in this run already claimed (its video, or a
             sidecar destination of its rename, projected in a dry-run); a
             sidecar or key-match destination that is such a claimed path;
@@ -940,6 +941,7 @@ class Command(BaseCommand):
             media_files.add(target)
             return 'adopted'
         problem = None
+        storage_root = Path(media.media_file.storage.location)
         reserved = self._reserved_paths(current, target, media_files)
         moves = self._sidecar_moves(current, target)
         key_moves, key_collisions = self._key_matched_moves(
@@ -987,16 +989,19 @@ class Command(BaseCommand):
             problem = f'target {target} is already occupied'
         elif (path_problem := self._path_problem(current, target)):
             problem = path_problem
-        elif (linked := self._symlinked_ancestor(
-            target.parent, Path(media.media_file.storage.location),
+        elif (linked := (
+            self._symlinked_ancestor(current.parent, storage_root)
+            or self._symlinked_ancestor(target.parent, storage_root)
         )):
-            # rename_files() resolves the new path before recording it, so
-            # media_file would name the link's target instead of `target`:
-            # the check below would report a failed rename after the move,
-            # and later runs would find `target` occupied.
+            # rename_files() resolves both paths: it globs the old-stem
+            # sidecars next to the resolved current file, where this
+            # command's lexical ownership checks did not look, and it
+            # records the resolved new path, so media_file would name the
+            # link's target instead of `target` (a failed rename after the
+            # move, then `target` occupied on every later run).
             problem = (
-                f'target directory {target.parent} goes through a symlink '
-                f'({linked}); rename_files() would record the resolved path'
+                f'its current or target directory goes through a symlink '
+                f'({linked}); rename_files() resolves paths through it'
             )
         elif key_collisions:
             problem = (
@@ -1106,11 +1111,16 @@ class Command(BaseCommand):
             `<uniqueid>` is this media's key), which must not be
             overwritten. A symlink (even a dangling one) is never this
             command's own NFO: writing would replace the link itself.
+            Neither is anything else that is not a regular file (a
+            directory, or a FIFO, which a read would block on).
         '''
         if nfo_path.is_symlink():
             return True
         if not nfo_path.exists():
             return False
+        if not nfo_path.is_file():
+            # A directory or FIFO: reading it would fail or block.
+            return True
         raw = nfo_path.read_bytes()
         if not raw:
             return False
@@ -1310,7 +1320,8 @@ class Command(BaseCommand):
             return
         nfo_path = self._sidecar_path(media, '.nfo')
         content = media.nfoxml
-        if nfo_path.exists() and nfo_path.read_bytes() == content.encode('utf-8'):
+        # is_file(), not exists(): reading a FIFO would block.
+        if nfo_path.is_file() and nfo_path.read_bytes() == content.encode('utf-8'):
             if renamed and apply_changes:
                 summary['nfo_written'] += 1
             else:

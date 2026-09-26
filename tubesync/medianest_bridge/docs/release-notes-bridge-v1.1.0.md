@@ -75,6 +75,8 @@ owner. This file records what the tag would contain and what was verified.
      `ANSI` or `UTF-32` that the XML parser cannot read) is left alone with a logged warning; a
      zero-byte file is still replaceable. A symlinked `tvshow.nfo`, dangling
      or not, is never replaced; a live one's `<title>` still names the show.
+     Anything else that is not a regular file (a directory, or a FIFO,
+     which a read would block on) is left alone the same way, never read.
    - The show title is resolved from the cheapest real data available
      (the cached channel/playlist metadata -- its `channel` for a channel,
      not the tab-suffixed page title -- then the newest few media with a
@@ -165,16 +167,19 @@ owner. This file records what the tag would contain and what was verified.
      symlink, is not a regular file (a directory would be moved whole) or
      resolves outside `DOWNLOAD_ROOT`, or a target directory that resolves
      outside it. A media already at its target gets the same checks before
-     its NFO and thumbnail are written. A rename whose target directory
-     goes through a symlink inside `DOWNLOAD_ROOT` is refused too:
-     `rename_files()` records the resolved path, not the target, so the
-     rename would look failed after the move and later runs would find the
-     target occupied.
+     its NFO and thumbnail are written. A rename whose current or target
+     directory goes through a symlink inside `DOWNLOAD_ROOT` is refused
+     too: `rename_files()` resolves both paths, so it would gather sidecars
+     next to the resolved current file that these checks never saw, and
+     record the resolved new path, not the target (the rename would look
+     failed after the move and later runs would find the target occupied).
    - **Foreign episode NFOs.** An existing `.nfo` at the target that is not
      this media's own (`<episodedetails>` whose `<id>`/`<uniqueid>` is its
      key), or is a symlink, is never overwritten -- for a rename, an
      already-in-place media
-     or an adoption alike; it is reported as an error. The same check
+     or an adoption alike; it is reported as an error. An `.nfo` path that
+     is not a regular file (a directory or FIFO) counts as foreign and is
+     never read. The same check
      covers an `.nfo` that either move set would carry onto the target NFO
      name (an old-name one beside the video, or a key match), because
      `rename_files()` rewrites the NFO right after the move. An `.nfo` in
@@ -374,3 +379,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 636 tests OK at the stack tip; 389, 450 and 527 at Plex T1, T2 and T3 (T3 re-run after its contract header re-sync to MediaNest's merged `0e7d2375b`: the sha256 lock and the PyYAML derivation cross-check both pass). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 644 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep, for the backfill: a rename whose target directory goes through a symlink inside `DOWNLOAD_ROOT` is refused before anything moves; a directory or FIFO at a channel-image destination queues no image download and refuses an overlay that would turn `copy_channel_images` on (dry-run and apply summaries equal). Each test was checked to fail with its fix reverted.
+
+## Verification (2026-09-26, thirteenth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 641 tests OK at the stack tip; 389, 451 and 528 at Plex T1, T2 and T3. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 649 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep, closing two classes rather than single cases: every NFO read in the stack (`tvshow.nfo` in T2; the episode NFO at the target and beside the old video in the backfill) treats a path that is not a regular file as foreign and never reads it, so a FIFO cannot block and a directory cannot raise; and a rename refuses a current or target directory reached through a symlink inside `DOWNLOAD_ROOT`, because `rename_files()` resolves both. Each test was checked to fail with its fix reverted; the FIFO tests use an alarm that raises a `BaseException`, so a regression fails the test instead of hanging the run.
