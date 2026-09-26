@@ -720,15 +720,15 @@ the app label to run the full suite, upstream included).
 
 ## Operator commands
 
-`sync/management/commands/medianest_backfill_plex_sidecars.py` (T4) is a
+`sync/management/commands/medianest_backfill_plex_sidecars.py` (Plex T4) is a
 new, wholly fork-owned management command -- like `sync/tvshow_nfo.py`
-(T2), a new file rather than an edit to an existing upstream one, so it
-adds no "Fork delta" upstream touch point above. It applies T3's
+(Plex T2), a new file rather than an edit to an existing upstream one, so it
+adds no "Fork delta" upstream touch point above. It applies Plex T3's
 per-type `MEDIANEST_BRIDGE_SOURCE_DEFAULTS` profile to one or more
 already-existing sources and backfills the Plex TV-library sidecars
 (renamed video files, per-episode NFOs, thumbnails, `tvshow.nfo`) their
 already-downloaded media would have had if created under that profile
-from the start -- for sources that predate T3, or predate an operator
+from the start -- for sources that predate Plex T3, or predate an operator
 changing `MEDIANEST_BRIDGE_SOURCE_DEFAULTS`.
 
 Dry-run by default; `--apply` is required to change anything on disk or
@@ -771,15 +771,28 @@ counted without aborting the rest of the run, but the command then exits
 non-zero, as it does when media were skipped as locked or a selected
 source has no T3 profile (a handle-based channel), so re-run it once the
 cause is fixed. A missing current file, an occupied target for the
-video, an occupied destination for any sidecar `rename_files()` would
-move, OR an already-occupied target-side `.nfo`/`.jpg` that no move of
-this media's own would bring (this command's own NFO/thumbnail write
-would otherwise silently clobber it right after the video moves), is an
-error -- nothing moves. Adopting an earlier half-finished move (the
-video already sits at its target but the database row does not, from a
-prior run that moved the file and then failed before saving) that left a
-stray same-key sidecar behind is also an error -- nothing is adopted,
-moved, or deleted. `--apply` refuses to run unless the effective user
+video (on disk, or claimed by another media earlier in the same run), an
+occupied destination for any sidecar `rename_files()` would move, OR an
+already-occupied target-side `.nfo` that no move of this media's own
+would bring (this command's own NFO write would otherwise silently
+clobber it right after the video moves), is an error -- nothing moves. A
+foreign target-side `.jpg` is left alone and does not block the rename.
+With `{key}` in the profile, `rename_files()` also moves every path under
+the source directory whose name contains the media's key; the dry-run
+lists those moves (`key_matched_moves`), and one that would take another
+media's video or sidecar, or a directory, is an error. Adopting an
+earlier half-finished move (the video already sits at its target but the
+database row does not, from a prior run that moved the file and then
+failed before saving) that left a stray same-key sidecar behind, or whose
+target is a symlink or resolves outside `DOWNLOAD_ROOT`, is also an error
+-- nothing is adopted, moved, or deleted. `--apply` saves only the
+overlay fields that change, onto a freshly read source row; processes
+media that finish downloading while it runs; and, after a `media_format`
+change, counts media still busy downloading as `in_flight` and exits
+non-zero so the run is repeated. Dry-run turns `TUBESYNC_SHRINK_OLD` off
+so its metadata reads write nothing. The known limits (locked media, the
+cascade settings read in the command's own process, legacy names without
+the key) are listed in `docs/release-notes-bridge-v1.1.0.md`. `--apply` refuses to run unless the effective user
 owns `DOWNLOAD_ROOT`, so new files and `Season YYYY/` directories stay
 writable by TubeSync. See the command's own module docstring for the
 full per-media/per-source decision logic (it is long enough that
