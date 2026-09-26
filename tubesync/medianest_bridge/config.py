@@ -132,7 +132,7 @@ def upstream_sha():
     return getenv('MEDIANEST_BRIDGE_UPSTREAM_SHA', 'unknown').strip() or 'unknown'
 
 
-def source_defaults():
+def source_defaults(source_types=None):
     '''
         Returns {'channel': {...}, 'playlist': {...}}, each value a dict of
         SourceForm field overrides to overlay onto default_form_data() for
@@ -186,6 +186,13 @@ def source_defaults():
         boolean field must be a JSON true/false (a form checkbox would read
         "0" or "off" as True).
 
+        `source_types` (default: every contract source type) limits the
+        per-type field check -- and the returned dict -- to those types,
+        so a bad field in one type's block cannot block a request for the
+        other. Everything else (malformed JSON, the top-level shape, an
+        unknown top-level key, an uncovered type, a non-object block and
+        the `*` block's fields) is still checked for every request.
+
         Raises SourceDefaultsConfigError for anything else: malformed
         JSON, a non-object top-level value, an unknown top-level key, an
         uncovered source type, or a non-object per-type/`*` value. This
@@ -204,11 +211,15 @@ def source_defaults():
         boolean_source_default_fields,
     )
 
+    wanted = tuple(
+        source_type for source_type in CONTRACT_SOURCE_TYPES
+        if source_types is None or source_type in source_types
+    )
     raw = getenv('MEDIANEST_BRIDGE_SOURCE_DEFAULTS', '').strip()
     if not raw:
         return {
-            'channel': dict(_BUILTIN_SOURCE_DEFAULTS_PROFILE),
-            'playlist': dict(_BUILTIN_SOURCE_DEFAULTS_PROFILE),
+            source_type: dict(_BUILTIN_SOURCE_DEFAULTS_PROFILE)
+            for source_type in wanted
         }
     try:
         parsed = json.loads(raw)
@@ -232,7 +243,7 @@ def source_defaults():
         )
     if not parsed:
         # Explicit escape hatch -- see docstring.
-        return {'channel': {}, 'playlist': {}}
+        return {source_type: {} for source_type in wanted}
 
     allowed_top_level = set(CONTRACT_SOURCE_TYPES) | {'*'}
     unknown_top_level = set(parsed.keys()) - allowed_top_level
@@ -295,6 +306,9 @@ def source_defaults():
                 'be a JSON object.',
             )
 
+        if source_type not in wanted:
+            # Not requested: its fields are neither checked nor returned.
+            continue
         if type_present and not overlay:
             # Explicit per-type {}: a full opt-out for this type alone,
             # deliberately bypassing "*" too -- see docstring. Distinct
@@ -413,14 +427,12 @@ def load_validated_source_defaults(source_types=None):
         own Source model defaults), so there's nothing to check.
     '''
     try:
-        defaults_by_type = source_defaults()
+        defaults_by_type = source_defaults(source_types)
     except SourceDefaultsConfigError as exc:
         return None, [str(exc)]
 
     errors = []
     for source_type, overlay in defaults_by_type.items():
-        if source_types is not None and source_type not in source_types:
-            continue
         if not overlay:
             continue
         try:

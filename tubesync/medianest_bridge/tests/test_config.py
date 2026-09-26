@@ -484,6 +484,35 @@ class SourceDefaultsPerTypeValidationTestCase(SourceDefaultsEnvMixin, BridgeTest
         _, errors = config.load_validated_source_defaults(source_types=('playlist',))
         self.assertEqual(len(errors), 1)
 
+    def test_an_unknown_field_only_fails_its_own_type(self):
+        self.set_defaults({
+            'channel': {'write_nfo': True},
+            'playlist': {'not_a_real_field': True},
+        })
+        defaults, errors = config.load_validated_source_defaults(
+            source_types=('channel',),
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual(defaults, {'channel': {'write_nfo': True}})
+        _, errors = config.load_validated_source_defaults(source_types=('playlist',))
+        self.assertEqual(len(errors), 1)
+        self.assertIn('not_a_real_field', errors[0])
+        # Readiness checks both types.
+        self.assertEqual(len(config.validate_source_defaults()), 1)
+
+    def test_structural_errors_stay_global(self):
+        for value in (
+            {'channel': {'write_nfo': True}},  # playlist uncovered
+            {'channel': {}, 'playlist': []},  # non-object block
+            {'*': {'not_a_real_field': True}, 'channel': {}, 'playlist': {}},
+        ):
+            with self.subTest(value=value):
+                self.set_defaults(value)
+                _, errors = config.load_validated_source_defaults(
+                    source_types=('channel',),
+                )
+                self.assertEqual(len(errors), 1)
+
 
 class SourceDefaultsStarOptOutsTestCase(SourceDefaultsEnvMixin, BridgeTestCase):
 

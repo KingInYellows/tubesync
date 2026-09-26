@@ -258,6 +258,27 @@ class ValidateSourceDefaultsCheckTestCase(BridgeTestCase):
         )
         self.assertEqual(response.status_code, 503)
 
+    def test_an_unknown_field_in_the_other_type_does_not_block_it(self):
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps({
+                'channel': {'write_nfo': True},
+                'playlist': {'not_a_real_field': True},
+            }),
+        )
+        response = post_json(
+            self.client, VALIDATE_URL, self._valid_body(), **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        playlist = self._valid_body(
+            sourceType='playlist',
+            canonicalKey='PLabcdefghij',
+            canonicalUrl='https://www.youtube.com/playlist?list=PLabcdefghij',
+        )
+        response = post_json(
+            self.client, VALIDATE_URL, playlist, **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 503)
+
     def test_valid_explicit_config_still_succeeds_normally(self):
         self.enable_bridge(
             MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps({'*': {'write_nfo': True}}),
