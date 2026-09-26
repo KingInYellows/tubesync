@@ -1,0 +1,61 @@
+tubesync/medianest_bridge/contract/contract_fixtures.json
+  s_f159128495b6f4::t_a878becc4485d0 5
+tubesync/medianest_bridge/README.md
+  s_f159128495b6f4::t_b16bdba0a8707c 456-466
+  s_f159128495b6f4::t_1fe6e9e62e0054 577-591,594-608
+  s_f159128495b6f4::t_ef39fd6d0b167e 491-501
+tubesync/medianest_bridge/readiness.py
+  s_f159128495b6f4::t_688af76fd3b00c 113-124
+tubesync/medianest_bridge/tests/test_config.py
+  s_f159128495b6f4::t_048847158fa821 325-327
+  s_f159128495b6f4::t_183bf06396d100 347-352
+  s_f159128495b6f4::t_97b9544ecff6a2 216-220,223-225,229-231,241-243
+  s_f159128495b6f4::t_4445f674b4c0e7 118-150
+  s_f159128495b6f4::t_a4fbcef9975de4 380-400
+  s_f159128495b6f4::t_0c83c189f3dae5 162-164
+tubesync/medianest_bridge/tests/test_write_sources.py
+  s_f159128495b6f4::t_363f6d8a84c6b5 402-429
+  s_f159128495b6f4::t_970f3af2eb4622 1294-1325
+  s_f159128495b6f4::t_905ab17d85ba6d 184-292
+  s_f159128495b6f4::t_00e5a466d2a328 1211-1213,1220-1223,1227-1229,1236-1239,1242-1247,1264-1269,1283-1288,1327-1333,1341-1346,1355-1360,1377-1379,1395-1400,1411-1416,1419-1421
+  s_f159128495b6f4::t_15f8595bba5a18 689-691
+tubesync/medianest_bridge/tests/test_readiness.py
+  s_f159128495b6f4::t_bf56d9f5c6a340 726-727
+  s_f159128495b6f4::t_942212d8cd4a6a 679-681
+  s_f159128495b6f4::t_bd42458d8c9606 737-739
+  s_f159128495b6f4::t_5551e4b52cd738 699-702
+tubesync/medianest_bridge/views_write.py
+  s_f159128495b6f4::t_0a9f9a5c99b962 174-208,244-264
+  s_f159128495b6f4::t_b8f3c86c58167d 9-24
+  s_f159128495b6f4::t_34acfc6164a45c 289-297,299-300
+  s_f159128495b6f4::t_c72bfd0eb6189a 404-409,416
+  s_f159128495b6f4::t_f2c489d131faaf 104-121,146-154
+  s_f159128495b6f4::t_b791bcc94d2531 155
+tubesync/medianest_bridge/source_forms.py
+  s_f159128495b6f4::t_f41444d33d7887 265,270-278
+  s_f159128495b6f4::t_dbec6a5f3d3180 318-325
+  s_f159128495b6f4::t_7f7bb7e73408e4 51-63
+tubesync/medianest_bridge/config.py
+  s_f159128495b6f4::t_f99cb381b96c31 215-225
+  s_f159128495b6f4::t_0d2c7c4e3ca397 352-365
+  s_f159128495b6f4::t_c4d5c9360d16fa 56-57
+  s_f159128495b6f4::t_27dec039d15b50 412-413
+tubesync/medianest_bridge/contract/bridge-openapi.v1.yaml
+  s_f159128495b6f4::t_c89b94fa0cfde9 5-20,210-215,238-239,567-574
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "783ab3e210b8a6b7dd9038c8996e5b419b796628",
+  "prompts": {},
+  "sessions": {
+    "s_f159128495b6f4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c35119a3-8856-4de8-ac32-3299b4a1c9e4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
