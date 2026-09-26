@@ -137,7 +137,9 @@ nobody has edited since: its files carry a `<uniqueid type="tubesync">`
 with the source's uuid and a `checksum` of the file. A hand-edited copy,
 a `create-tvshow-nfo` file or any other `tvshow.nfo` is left alone (a
 warning is logged), and episode NFOs take their `<showtitle>` from it.
-Delete such a file to have it regenerated.
+Delete such a file to have it regenerated. A symlinked `tvshow.nfo`,
+dangling or not, is never replaced either; a live one's `<title>` still
+names the show.
 
 Points 1-5 are tagged with the bridge's own slices (T1-T5); points 6 on
 are tagged with the Plex TV library slices (Plex T1-T4), a separate

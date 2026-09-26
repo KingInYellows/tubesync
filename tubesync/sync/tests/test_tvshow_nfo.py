@@ -923,3 +923,58 @@ class TasksWriteTvshowNfoTestCase(TestCase):
         ):
             download_media_metadata.call_local(str(media.pk))
         self.assert_called_for_source(mock_write)
+
+
+class TvshowNfoFollowUp5TestCase(TestCase):
+    '''Emoji-only show titles and symlinked tvshow.nfo paths.'''
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+        _clear_show_title_cache()
+        self.source = make_source()
+
+    def tearDown(self):
+        _clear_show_title_cache()
+
+    def _nfo_path(self):
+        return self.source.directory_path / 'tvshow.nfo'
+
+    def test_an_emoji_only_show_title_is_kept_in_both_nfos(self):
+        self.source.name = '🎉🎉'
+        self.source.save()
+        tree = ElementTree.fromstring(build_tvshow_nfo(self.source))
+        self.assertEqual(tree.find('title').text, '🎉🎉')
+        media = Media.objects.create(key='m1', source=self.source, metadata=metadata)
+        with patch('sync.tvshow_nfo.resolve_show_title', return_value='🎉🎉'):
+            tree = ElementTree.fromstring(media.nfoxml)
+        self.assertEqual(tree.find('showtitle').text, '🎉🎉')
+
+    def test_a_dangling_symlink_is_left_alone(self):
+        with temp_download_root():
+            self.source.make_directory()
+            self._nfo_path().symlink_to(self.source.directory_path / 'missing.nfo')
+            with patch('sync.tvshow_nfo.log') as mock_log:
+                write_tvshow_nfo(self.source)
+            self.assertTrue(self._nfo_path().is_symlink())
+            self.assertFalse(self._nfo_path().exists())
+            self.assertIn('symlink', mock_log.warning.call_args.args[0])
+            self.assertEqual(resolve_show_title(self.source), 'testname')
+
+    def test_a_live_symlink_to_an_owned_file_is_left_alone(self):
+        with temp_download_root():
+            self.source.make_directory()
+            write_tvshow_nfo(self.source)
+            target = self.source.directory_path / 'elsewhere.nfo'
+            self._nfo_path().rename(target)
+            self._nfo_path().symlink_to(target)
+            before = target.read_text(encoding='utf-8')
+            # New data would change the file's content.
+            Media.objects.create(key='m1', source=self.source, metadata=metadata)
+            _clear_show_title_cache()
+            with patch('sync.tvshow_nfo.log') as mock_log:
+                write_tvshow_nfo(self.source)
+            self.assertTrue(self._nfo_path().is_symlink())
+            self.assertEqual(target.read_text(encoding='utf-8'), before)
+            self.assertIn('symlink', mock_log.warning.call_args.args[0])
+            # Its <title> still names the show.
+            self.assertEqual(resolve_show_title(self.source), 'testname')
