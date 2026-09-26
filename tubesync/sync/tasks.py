@@ -796,24 +796,28 @@ def download_source_images(source_id):
         (banner,    ('banner.jpg', 'background.jpg')),
         (avatar,    ('poster.jpg', 'season-poster.jpg')),
     )
-    for url, file_names in images:
-        if url is None:
-            continue
-        i = get_remote_image(url)
-        image_file = BytesIO()
-        i.save(image_file, 'JPEG', quality=85, optimize=True, progressive=True)
-        for file_name in file_names:
-            image_file.seek(0)
-            file_path = source.directory_path / file_name
-            with open(file_path, 'wb') as f:
-                f.write(image_file.read())
-        i = image_file = None
+    try:
+        for url, file_names in images:
+            if url is None:
+                continue
+            i = get_remote_image(url)
+            image_file = BytesIO()
+            i.save(image_file, 'JPEG', quality=85, optimize=True, progressive=True)
+            for file_name in file_names:
+                image_file.seek(0)
+                file_path = source.directory_path / file_name
+                with open(file_path, 'wb') as f:
+                    f.write(image_file.read())
+            i = image_file = None
 
-    log.info(f'Thumbnail downloaded for source with ID: {source_id} / {source}')
-    # This is also what populates the channel/playlist Metadata cache
-    # resolve_show_title()/resolve_show_plot() prefer (F6) -- refresh the
-    # show-level NFO now that it may have just become available.
-    write_tvshow_nfo(source)
+        log.info(f'Thumbnail downloaded for source with ID: {source_id} / {source}')
+    finally:
+        # get_image_url above also populates the channel/playlist Metadata
+        # cache resolve_show_title()/resolve_show_plot() prefer (F6) --
+        # refresh the show-level NFO even when an image fails, so a stale
+        # image URL cannot keep tvshow.nfo stale. write_tvshow_nfo() never
+        # raises, so an image error still propagates and retries the task.
+        write_tvshow_nfo(source)
 
 
 @db_task(delay=60, priority=90, retries=5, retry_delay=60, queue=Val(TaskQueue.FS))

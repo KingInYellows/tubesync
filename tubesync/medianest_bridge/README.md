@@ -120,12 +120,15 @@ Nine upstream files are touched at ten points (`settings.py` twice), seven of th
    existing row changes.
 10. `sync/tasks.py` (Plex T2) -- one new import (`sync/tvshow_nfo.py`'s
    `write_tvshow_nfo`) and three call sites: the end of `index_source()`,
-   the end of `download_source_images()`, and right after
+   a `finally:` around `download_source_images()`'s image loop (so a
+   failed image still refreshes the NFO from the metadata
+   `get_image_url` just cached), and right after
    `download_media_metadata()` saves the media (so the first real channel
    name refreshes the show title), each just `write_tvshow_nfo(source)`.
-   `write_tvshow_nfo` logs any error instead of raising it. No existing
-   logic in any of these
-   tasks is changed, reordered, or made conditional on the new call.
+   `write_tvshow_nfo` logs any error instead of raising it. The image
+   loop is only re-indented under the `try:`; no existing logic in any
+   of these tasks is changed, reordered, or made conditional on the new
+   call, and an image error still propagates and retries the task.
 
 `sync/tvshow_nfo.py` (Plex T2) is a new, wholly fork-owned module (like
 `medianest_bridge/` itself), not an upstream touch point -- it is not
