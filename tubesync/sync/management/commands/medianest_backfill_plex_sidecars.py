@@ -51,9 +51,11 @@
     are listed. Adopting an earlier half-finished move that left stray
     same-key sidecars behind, or whose target is a symlink or resolves
     outside DOWNLOAD_ROOT, is also an error (nothing is adopted, moved or
-    deleted). Media that finish downloading during --apply are processed
-    before it ends, and after a media_format change media still busy
-    downloading are counted as in flight.
+    deleted). A symlink at any destination counts as occupied, even a
+    dangling one. Media that finish downloading during --apply are
+    processed before it ends, and after an overlay that can change the
+    rendered path (_PATH_FIELDS) media still busy downloading are counted
+    as in flight.
     Every per-media failure is both logged and printed to stdout, so the
     final "see the output above" is accurate. Each source is isolated
     from the others, and the command exits non-zero when anything errored
@@ -97,9 +99,15 @@
     refused, the source is not saved at all -- nothing for that source is
     changed, one error is counted, and the operator is told to resolve
     the conflicts or disable the cascade (TUBESYNC_RENAME_ALL_SOURCES and
-    TUBESYNC_RENAME_SOURCES) before re-running. Dry-run runs the same
-    preflight and reports the same verdict, purely informationally, since
-    it never saves anything anyway. Where the gate lets a save through
+    TUBESYNC_RENAME_SOURCES) before re-running. The same happens, counted
+    as in flight instead, when the overlay can change the rendered path
+    and any of the source's media is downloading right now: that
+    download finishes under the old name and the queued cascade would
+    rename it later, unchecked. Dry-run runs the same preflight and stops
+    the source the same way, so its summary matches --apply's. This
+    check runs just before the save, so a download that starts between
+    the two is still possible; the post-save in-flight count reports it.
+    Where the gate lets a save through
     (or the cascade is disabled/not enabled for that source),
     Media.rename_files() is itself idempotent -- calling it again after
     this command already renamed everything simply returns immediately
@@ -164,6 +172,26 @@ _SUMMARY_FIELDS = (
     'key_matched_moves', 'nfo_written', 'nfo_unchanged', 'thumbs_copied',
     'tvshow_written', 'images_enqueued', 'locked', 'in_flight', 'errors',
 )
+
+# Overlay fields that can change a media's rendered path: media_format
+# itself, and the format-selection fields behind Media.format_dict's
+# {format}/{resolution}/{height}/{width}/{vcodec}/{acodec}/{fps}/{hdr}
+# keys (get_format_str(), get_display_format(), sync/matching.py) and
+# Source.extension's {ext}. name, directory and source_type feed it too,
+# but a T3 overlay may not set them (SOURCE_DEFAULTS_FORBIDDEN_FIELDS).
+_PATH_FIELDS = frozenset((
+    'media_format', 'source_resolution', 'source_vcodec', 'source_acodec',
+    'prefer_60fps', 'prefer_hdr', 'fallback',
+))
+
+
+def _occupied(path):
+    '''
+        True when anything is at `path`, including a dangling symlink,
+        which Path.exists() reports as absent but Path.rename()/replace()
+        would silently replace.
+    '''
+    return path.exists() or path.is_symlink()
 
 
 @contextmanager
@@ -376,33 +404,42 @@ class Command(BaseCommand):
         # (see the module docstring). When that cascade is enabled for
         # this source, run the exact same per-media decision logic a
         # dry-run would (on a scratch copy, touching nothing) BEFORE
-        # deciding whether --apply may save the source at all.
-        cascade_would_fire = overlay_changed and self._cascade_enabled_for(source)
-        if apply_changes:
-            if cascade_would_fire:
-                refused = self._count_refused_media(downloaded, media_files)
-                if refused:
-                    summary['errors'] += 1
-                    message = self._cascade_gate_message(refused)
+        # deciding whether --apply may save the source at all. A download
+        # already running when a path-changing overlay is saved finishes
+        # under the old name, and the queued cascade would then rename it
+        # unchecked, so in-flight media refuse the save too. Both modes
+        # stop the source here, so a dry-run's summary matches --apply's.
+        path_changing = bool(_PATH_FIELDS.intersection(changes))
+        if overlay_changed and self._cascade_enabled_for(source):
+            gate = None
+            refused = self._count_refused_media(downloaded, media_files)
+            if refused:
+                gate = ('errors', 1, self._cascade_gate_message(refused))
+            elif path_changing and (busy := self._in_flight_media(source)):
+                for media in busy:
+                    self._report_in_flight(media)
+                gate = ('in_flight', len(busy), self._in_flight_gate_message(busy))
+            if gate is not None:
+                field, count, message = gate
+                summary[field] += count
+                if apply_changes:
                     log.error(
                         f'medianest_backfill_plex_sidecars: {source}: {message}'
                     )
                     self.stdout.write(self.style.ERROR(f'  SKIPPED: {message}'))
-                    return
-            if changes:
-                # Saving when no overlay field changes would still fire
-                # source_post_save and its save_all_media_for_source
-                # cascade on every re-run.
-                working_source = self._save_overlay(source, changes)
-                for media in downloaded:
-                    media.source = working_source
-        elif cascade_would_fire:
-            refused = self._count_refused_media(downloaded, media_files)
-            if refused:
-                self.stdout.write(self.style.WARNING(
-                    f'  NOTE: --apply would skip this source without '
-                    f'saving it: {self._cascade_gate_message(refused)}'
-                ))
+                else:
+                    self.stdout.write(self.style.WARNING(
+                        '  NOTE: --apply would skip this source without '
+                        f'saving it: {message}'
+                    ))
+                return
+        if apply_changes and changes:
+            # Saving when no overlay field changes would still fire
+            # source_post_save and its save_all_media_for_source cascade
+            # on every re-run.
+            working_source = self._save_overlay(source, changes)
+            for media in downloaded:
+                media.source = working_source
 
         for media in downloaded:
             summary['media_seen'] += 1
@@ -411,7 +448,7 @@ class Command(BaseCommand):
             self._process_late_downloads(
                 source, working_source, downloaded, summary, media_files,
             )
-            if 'media_format' in changes:
+            if path_changing:
                 self._count_in_flight(source, summary)
 
         self._process_tvshow_and_images(
@@ -463,26 +500,51 @@ class Command(BaseCommand):
                 self.stdout.write(f'  finished downloading during this run: {media}')
                 self._process_media(media, True, summary, media_files)
 
-    def _count_in_flight(self, source, summary):
+    def _in_flight_media(self, source):
         '''
-            Counts media of `source` that could be downloading right now:
-            not downloaded yet, wanted, and holding their `media:<uuid>`
-            lock (download_media_file holds it for the whole download). A
-            download that started before this run saved the new
-            media_format finishes into the old layout, so the run exits
-            non-zero and asks for a re-run once those are done.
+            Media of `source` that could be downloading right now: not
+            downloaded yet, wanted, and holding their `media:<uuid>` lock
+            (download_media_file holds it for the whole download).
         '''
         candidates = Media.objects.filter(
             source=source, downloaded=False, skip=False, manual_skip=False,
         ).only('pk', 'uuid', 'key', 'title')
-        for media in candidates:
-            lock = huey_lock_task(f'media:{media.uuid}', queue=Val(TaskQueue.DB))
-            if lock.is_locked():
-                summary['in_flight'] += 1
-                self.stdout.write(self.style.WARNING(
-                    f'  IN FLIGHT: {media} is busy (likely downloading) and '
-                    'may finish under the old name; re-run once it is done.'
-                ))
+        return [
+            media for media in candidates
+            if huey_lock_task(
+                f'media:{media.uuid}', queue=Val(TaskQueue.DB),
+            ).is_locked()
+        ]
+
+    def _report_in_flight(self, media):
+        self.stdout.write(self.style.WARNING(
+            f'  IN FLIGHT: {media} is busy (likely downloading) and '
+            'may finish under the old name; re-run once it is done.'
+        ))
+
+    def _count_in_flight(self, source, summary):
+        '''
+            Counts the in-flight media after a path-changing overlay was
+            saved (one that started after the gate's own check, or any
+            when the cascade is off): a download that started before the
+            save finishes into the old layout, so the run exits non-zero
+            and asks for a re-run once those are done.
+        '''
+        for media in self._in_flight_media(source):
+            summary['in_flight'] += 1
+            self._report_in_flight(media)
+
+    def _in_flight_gate_message(self, busy):
+        return (
+            f'{len(busy)} media item(s) are downloading right now and would '
+            'finish under the old name; saving this source would fire '
+            "TubeSync's own rename_all_media_for_source cascade, which "
+            "would later rename them without this command's own refusal "
+            'checks. Not saving this source. Wait for the downloads to '
+            'finish and re-run, or set TUBESYNC_RENAME_ALL_SOURCES=false '
+            "(and remove this source's directory from "
+            'TUBESYNC_RENAME_SOURCES) first.'
+        )
 
     def _cascade_enabled_for(self, source):
         '''
@@ -770,7 +832,7 @@ class Command(BaseCommand):
         )
         occupied = [
             destination for other, destination in moves
-            if destination != other and destination.exists()
+            if destination != other and _occupied(destination)
         ]
         # A target-side .nfo this media's own move does NOT bring (no
         # matching old-name file exists beside `current`) would be
@@ -794,7 +856,7 @@ class Command(BaseCommand):
         ]
         if not current.exists():
             problem = f'current file {current} is missing'
-        elif target.exists() or target in media_files:
+        elif _occupied(target) or target in media_files:
             problem = f'target {target} is already occupied'
         elif (path_problem := self._path_problem(current, target)):
             problem = path_problem
@@ -859,6 +921,9 @@ class Command(BaseCommand):
             return f'current file {current} cannot be resolved: {exc}'
         if not resolved.is_relative_to(download_root):
             return f'current file {current} resolves outside {download_root}'
+        if not resolved.is_file():
+            # Path.rename() would move a whole directory tree.
+            return f'current file {current} is not a regular file'
         if not target.parent.resolve().is_relative_to(download_root):
             return f'target directory {target.parent} resolves outside {download_root}'
         return None
@@ -868,8 +933,11 @@ class Command(BaseCommand):
             True when `nfo_path` holds something other than this media's
             own episode NFO (an `<episodedetails>` whose `<id>` or
             `<uniqueid>` is this media's key), which must not be
-            overwritten.
+            overwritten. A symlink (even a dangling one) is never this
+            command's own NFO: writing would replace the link itself.
         '''
+        if nfo_path.is_symlink():
+            return True
         if not nfo_path.exists():
             return False
         raw = nfo_path.read_bytes()
@@ -955,7 +1023,7 @@ class Command(BaseCommand):
             destination = new_dir / (new_stem + path.name[len(path_stem):])
             if destination == path:
                 continue
-            if destination in taken or destination.exists():
+            if destination in taken or _occupied(destination):
                 collisions.append(path)
                 continue
             taken.add(destination)
@@ -1011,12 +1079,18 @@ class Command(BaseCommand):
             not) is no longer known, so this is a best-effort, name-based
             scan rather than a move: it makes the leftover loudly visible
             (counted as an error) instead of silently leaving it orphaned
-            under the old name forever.
+            under the old name forever. Only the target's own completed
+            sidecars (its directory, a name starting with its stem) are
+            excluded, so an old-stem leftover beside a target that kept
+            its directory is found too.
         '''
         key = str(media.key)
+        (target_dir, target_stem) = directory_and_stem(target)
         return sorted(
             path for path in snapshot
-            if key in path.name and path.parent != target.parent and path != target
+            if key in path.name and path != target and not (
+                path.parent == target_dir and path.name.startswith(target_stem)
+            )
         )
 
     def _sidecar_moves(self, current, target):
@@ -1081,7 +1155,7 @@ class Command(BaseCommand):
         # which this command must never trigger.
         if not media.thumb_file_exists:
             return
-        if self._sidecar_path(media, '.jpg').exists():
+        if _occupied(self._sidecar_path(media, '.jpg')):
             return
         if apply_changes:
             media.copy_thumbnail()

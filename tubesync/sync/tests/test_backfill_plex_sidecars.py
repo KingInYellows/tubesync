@@ -128,6 +128,11 @@ def run_backfill_capture(*args, **options):
     return out.getvalue(), exc
 
 
+def summary_of(output):
+    '''The summary counts of a run's output, without the mode header.'''
+    return output.split('Summary (', 1)[1].split('\n', 1)[1]
+
+
 class BackfillPlexSidecarsTestCase(TestCase):
 
     def setUp(self):
@@ -1175,15 +1180,20 @@ class CascadeGateTestCase(TestCase):
         ):
             source, media, old_path, target = self.make_conflicted_source()
             output, exc = run_backfill_capture('--source', str(source.uuid))
-            # Dry-run never saves anything anyway, so the normal per-media
-            # prediction still runs (and still reports the conflict as an
-            # error) -- this just adds an informational note about what
-            # --apply would additionally do.
+            # Dry-run stops the source where --apply would, so its summary
+            # matches the apply run's.
             self.assertIsNotNone(exc)
             self.assertIn('NOTE', output)
             self.assertIn(
                 '1 already-downloaded media item(s) would be refused', output,
             )
+            self.assertIn('media_seen: 0', output)
+            self.assertIn('errors: 1', output)
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            self.assertIsNotNone(exc)
+            self.assertEqual(summary_of(output), summary_of(applied))
 
 
 class BackfillFollowUpMixin:
@@ -1359,7 +1369,10 @@ class BackfillReviewFollowUpTestCase(BackfillFollowUpMixin, TestCase):
             self.assertIn('Season 2017', late.media_file.path)
 
     def test_a_download_still_running_fails_the_run(self):
-        with temp_download_root():
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
             source, media, old_path = self.make_downloaded()
             busy = Media.objects.create(key='busy1', source=source, metadata=metadata)
             Media.objects.filter(pk=busy.pk).update(skip=False, manual_skip=False)
@@ -1569,7 +1582,7 @@ class BackfillReviewFollowUp3TestCase(BackfillFollowUpMixin, TestCase):
             self.assertIn('destination is already taken', output)
             self.assertIn(str(orphan), output)
 
-    def test_in_flight_is_only_counted_for_a_media_format_change(self):
+    def test_in_flight_is_only_counted_for_a_path_changing_overlay(self):
         overlay = '{"*": {"days_to_keep": 30}}'
         with (
             temp_download_root(),
@@ -1628,3 +1641,160 @@ class BackfillReviewFollowUp3TestCase(BackfillFollowUpMixin, TestCase):
             self.assertIn('directories would be moved with it', output)
             self.assertTrue(old_path.exists())
             self.assertTrue(extras.is_dir())
+
+
+class BackfillReviewFollowUp4TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Fourth review pass: non-file current paths, dangling symlinks at
+        destinations, in-flight downloads for any path-changing overlay
+        (and before a cascade-enabled save), and old-stem leftovers
+        beside a target that kept its directory.
+    '''
+
+    ACODEC_OVERLAY = '{"*": {"source_acodec": "MP4A"}}'
+
+    def make_busy_source(self):
+        source = make_bridge_source()
+        source.make_directory()
+        busy = Media.objects.create(key='busy1', source=source, metadata=metadata)
+        Media.objects.filter(pk=busy.pk).update(skip=False, manual_skip=False)
+        return source, busy
+
+    @contextmanager
+    def locked(self, media):
+        lock = huey_lock_task(f'media:{media.uuid}', queue=Val(TaskQueue.DB))
+        lock.acquire()
+        try:
+            yield
+        finally:
+            lock.release()
+
+    def test_a_directory_as_the_current_file_is_refused(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            old_path.unlink()
+            old_path.mkdir()
+            (old_path / 'inner.txt').write_bytes(b'x')
+            output, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            self.assertIsNotNone(exc)
+            self.assertIn('is not a regular file', output)
+            self.assertTrue((old_path / 'inner.txt').exists())
+            media.refresh_from_db()
+            self.assertEqual(Path(media.media_file.path), old_path)
+
+    def test_a_dangling_symlink_at_the_target_is_occupied(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            target = self.target_dir(source) / f'{self.TARGET_NAME}.mkv'
+            target.parent.mkdir(parents=True)
+            target.symlink_to(source.directory_path / 'missing.mkv')
+            output, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            self.assertIsNotNone(exc)
+            self.assertIn('is already occupied', output)
+            self.assertTrue(target.is_symlink())
+            self.assertTrue(old_path.exists())
+
+    def test_a_dangling_symlink_at_a_sidecar_destination_is_occupied(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            old_path.with_suffix('.info.json').write_text('{}')
+            destination = self.target_dir(source) / f'{self.TARGET_NAME}.info.json'
+            destination.parent.mkdir(parents=True)
+            destination.symlink_to(source.directory_path / 'missing.json')
+            output, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            self.assertIsNotNone(exc)
+            self.assertIn('sidecar target(s) already occupied', output)
+            self.assertTrue(destination.is_symlink())
+            self.assertTrue(old_path.exists())
+
+    def test_in_flight_is_counted_for_an_acodec_only_overlay(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict(
+                'os.environ',
+                {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': self.ACODEC_OVERLAY},
+            ),
+        ):
+            source, busy = self.make_busy_source()
+            with self.locked(busy):
+                output, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            self.assertIsNotNone(exc)
+            self.assertIn("source_acodec: 'OPUS' -> 'MP4A'", output)
+            self.assertIn('in_flight: 1', output)
+            source.refresh_from_db()
+            self.assertEqual(source.source_acodec, 'MP4A')  # cascade off: saved
+
+    def test_an_in_flight_download_refuses_a_cascade_enabled_save(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=True, RENAME_SOURCES=[]),
+            patch.dict(
+                'os.environ',
+                {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': self.ACODEC_OVERLAY},
+            ),
+        ):
+            source, busy = self.make_busy_source()
+            with self.locked(busy):
+                dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+                applied, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn(f'IN FLIGHT: {busy}', output)
+                self.assertIn('1 media item(s) are downloading right now', output)
+                self.assertIn('TUBESYNC_RENAME_ALL_SOURCES=false', output)
+                self.assertIn('in_flight: 1', output)
+                self.assertIn('errors: 0', output)
+            self.assertIn('NOTE: --apply would skip this source', dry)
+            self.assertIn('SKIPPED', applied)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            source.refresh_from_db()
+            self.assertEqual(source.source_acodec, 'OPUS')  # never saved
+
+    def test_an_old_stem_sidecar_beside_a_same_directory_target_is_reported(self):
+        overlay = '{"*": {"media_format": "{key}.{ext}"}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, media, old_path = self.make_downloaded()
+            # An earlier run moved and saved the video, then failed before
+            # moving its old-stem subtitle; the target kept its directory.
+            target = old_path.with_name('vid1.mkv')
+            old_path.rename(target)
+            media.media_file.name = str(
+                target.relative_to(media_file_storage.location)
+            )
+            media.save(update_fields=('media_file',))
+            stray = old_path.with_name(old_path.stem + '.en.srt')
+            stray.write_bytes(b'subtitle')
+            completed = target.with_name('vid1.en.srt')
+            completed.write_bytes(b'subtitle')
+            output, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            self.assertIsNotNone(exc)
+            self.assertIn('leftover sidecar(s)', output)
+            self.assertIn(str(stray), output)
+            self.assertNotIn(str(completed), output)
+            self.assertTrue(stray.exists())

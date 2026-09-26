@@ -762,17 +762,23 @@ refused, the source is **not saved at all** -- nothing for it changes,
 one error is counted, and stdout names the refused count and tells the
 operator to resolve the conflicts, or set `TUBESYNC_RENAME_ALL_SOURCES=false`
 (and drop the source's directory from `TUBESYNC_RENAME_SOURCES`), before
-re-running. Dry-run runs the same preflight and reports the same verdict
-purely informationally, since it never saves anything anyway.
+re-running. The same happens, counted as `in_flight` rather than as an
+error, when the overlay can change the rendered path (`media_format`,
+`source_resolution`, `source_vcodec`, `source_acodec`, `prefer_60fps`,
+`prefer_hdr` or `fallback`) and any of the source's media is downloading
+right now: that download would finish under the old name and the queued
+cascade would rename it later, unchecked. Dry-run runs the same preflight
+and stops the source the same way, so its summary matches `--apply`'s.
 
 Per-media and per-source failures are both logged and printed to stdout
 (a `FAILED`/`SKIPPED`/`LOCKED` line naming the media or source), and
 counted without aborting the rest of the run, but the command then exits
 non-zero, as it does when media were skipped as locked or a selected
 source has no T3 profile (a handle-based channel), so re-run it once the
-cause is fixed. A missing current file, an occupied target for the
-video (on disk, or claimed by another media earlier in the same run), an
-occupied destination for any sidecar `rename_files()` would move, OR an
+cause is fixed. A missing current file, one that is not a regular file
+(a directory), an occupied target for the video (on disk -- a dangling
+symlink counts -- or claimed by another media earlier in the same run),
+an occupied destination for any sidecar `rename_files()` would move, OR an
 already-occupied target-side `.nfo` that no move of this media's own
 would bring (this command's own NFO write would otherwise silently
 clobber it right after the video moves), is an error -- nothing moves. A
@@ -783,19 +789,22 @@ lists those moves (`key_matched_moves`), and one that would take another
 media's video or sidecar, or a directory, or whose destination is already
 taken, is an error, as is a current file or target directory reaching
 outside `DOWNLOAD_ROOT` through a symlink. An existing episode `.nfo`
-that is not this media's own is never overwritten. Adopting an
+that is not this media's own (or is a symlink) is never overwritten.
+Adopting an
 earlier half-finished move (the video already sits at its target but the
 database row does not, from a prior run that moved the file and then
 failed before saving) that left a stray same-key sidecar behind, or whose
 target is a symlink or resolves outside `DOWNLOAD_ROOT`, is also an error
--- nothing is adopted, moved, or deleted. `--apply` saves only the
+-- nothing is adopted, moved, or deleted; a stray old-name sidecar in the
+target's own directory counts too. `--apply` saves only the
 overlay fields that change, onto a freshly read source row; processes
-media that finish downloading while it runs; and, after a `media_format`
-change, counts media still busy downloading as `in_flight` and exits
-non-zero so the run is repeated. Dry-run turns `TUBESYNC_SHRINK_OLD` off
+media that finish downloading while it runs; and, after an overlay that
+can change the rendered path, counts media still busy downloading as
+`in_flight` and exits non-zero so the run is repeated. Dry-run turns `TUBESYNC_SHRINK_OLD` off
 so its metadata reads write nothing. The known limits (locked media, the
 cascade settings read in the command's own process, legacy names without
-the key) are listed in `docs/release-notes-bridge-v1.1.0.md`. `--apply` refuses to run unless the effective user
+the key, the in-flight race) are listed in
+`docs/release-notes-bridge-v1.1.0.md`. `--apply` refuses to run unless the effective user
 owns `DOWNLOAD_ROOT`, so new files and `Season YYYY/` directories stay
 writable by TubeSync. See the command's own module docstring for the
 full per-media/per-source decision logic (it is long enough that
@@ -810,9 +819,11 @@ assertion for both a channel and a playlist source, the N4 fix
 second `--apply`, non-bridge sources left untouched by
 `--all-bridge-sources`, a `CommandError` (nothing changed) for an
 invalid `MEDIANEST_BRIDGE_SOURCE_DEFAULTS`, the rename-cascade gate
-(blocking a save when the cascade is enabled and a refusal exists,
-proceeding when it is disabled or nothing is refused, dry-run's
-informational note), the target-side sidecar collision, an adoption
+(blocking a save when the cascade is enabled and a refusal or an
+in-flight download exists, proceeding when it is disabled or nothing is
+refused, dry-run stopping the source the same way with a matching
+summary), the target-side sidecar collision, dangling symlinks at the
+video and sidecar targets, a directory as the current file, an adoption
 with a leftover stray sidecar, one source's overlay-validation failure
 not stopping `--all-bridge-sources`, and the per-source directory
 snapshot (`Path.rglob`) built once and reused across every
@@ -826,9 +837,12 @@ docker exec -u app <container> python3 /app/manage.py medianest_backfill_plex_si
 ```
 
 If `--apply` reports that it skipped a source because of the
-rename-cascade gate, either fix the reported per-media conflicts and
-re-run, or set `TUBESYNC_RENAME_ALL_SOURCES=false` and remove that
-source's directory from `TUBESYNC_RENAME_SOURCES` before re-running.
+rename-cascade gate, either fix the reported per-media conflicts (or wait
+for the reported downloads to finish) and re-run, or set
+`TUBESYNC_RENAME_ALL_SOURCES=false` and remove that source's directory
+from `TUBESYNC_RENAME_SOURCES` before re-running. Running the backfill
+with the cascade off is recommended in any case (see the release notes'
+known limits).
 
 ## License
 
