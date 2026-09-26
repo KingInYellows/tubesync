@@ -148,8 +148,9 @@ owner. This file records what the tag would contain and what was verified.
      the video moves), is an error and nothing moves. A foreign target-side
      `.jpg` is left alone and does not block the rename. Adopting an
      earlier half-finished move that left a stray same-key sidecar behind,
-     or whose target is a symlink or resolves outside `DOWNLOAD_ROOT`, is
-     also an error -- nothing is adopted, moved, or deleted. A stray
+     or whose target is a symlink, resolves outside `DOWNLOAD_ROOT`, or
+     belongs to another media (its video, a sidecar of one, or a file an
+     earlier rename in this run moves there), is also an error -- nothing is adopted, moved, or deleted. A stray
      old-name sidecar in the target's own directory (a format that only
      changed the file name) counts too; only the target's own sidecars
      (its stem followed by a `.`) are excluded, so a leftover whose old
@@ -306,3 +307,10 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - New this sweep: a foreign `tvshow.nfo` declaring an encoding the parser cannot read (`ANSI`, `UTF-32`) and a foreign `<title>` with emoji, kept as written in `<showtitle>` (T2); and for the backfill, a foreign `.nfo` beside the old video, a foreign key-matched `.nfo` and one in an unreadable encoding (each refused in both modes with equal summaries), the media's own old `.nfo` still moving, a dangling `poster.jpg` symlink queueing no image download, and a leftover whose old stem starts with the new stem.
 - The legacy stored publish dates (T1) and downloads still in progress are documented under "Known limits" instead of fixed.
 - Each new fix's test was checked to fail with the fix reverted.
+
+## Verification (2026-09-26, seventh review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 623 tests OK at the stack tip (T1-T3 unchanged: 389, 450 and 527).
+- CI's configuration as well: `manage.py test --no-input --buffer` (every app, `common` included) with `TUBESYNC_DEBUG=True` and a final `DEBUG = False`, as CI's `local_settings.py.example` sets it: 631 tests OK at the stack tip.
+- `ruff check` with CI's rule set: only the two known hits.
+- New this sweep, for the backfill: a missing media is never adopted onto a file an earlier rename in this run moves to its target, nor onto another media's existing sidecar, and a stem match that is the sidecar of a media whose video is missing is never moved (dry-run and apply summaries equal). Each test was checked to fail with its fix reverted.

@@ -2027,3 +2027,99 @@ class BackfillReviewFollowUp6TestCase(BackfillFollowUpMixin, TestCase):
             self.assertIn(str(leftover), output)
             self.assertNotIn(str(own), output)
             self.assertIn('already_in_place: 0', output)
+
+
+class BackfillReviewFollowUp7TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Seventh review pass: adoption never takes another media's file, and
+        stem-pass moves never take another media's sidecar.
+    '''
+
+    def run_both(self, source, names):
+        with patch.object(
+            Media, 'filename', property(lambda media: names[media.key]),
+        ):
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+        self.assertIsNotNone(dry_exc)
+        self.assertIsNotNone(exc)
+        self.assertEqual(summary_of(dry), summary_of(applied))
+        return dry, applied
+
+    def test_a_sidecar_moved_onto_a_missing_medias_target_is_not_adopted(self):
+        names = {'aaa': 'foo.mkv', 'bbb': 'foo.en.mkv'}
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, first, first_path = self.make_downloaded(key='aaa')
+            _, second, second_path = self.make_downloaded(key='bbb', source=source)
+            # aaa's old .en.mkv sidecar moves to foo.en.mkv, bbb's target,
+            # and bbb's own video is gone (a half-finished earlier run).
+            sidecar = first_path.with_name(first_path.stem + '.en.mkv')
+            sidecar.write_bytes(b'subtitle track')
+            second_path.unlink()
+            dry, applied = self.run_both(source, names)
+            for output in (dry, applied):
+                self.assertIn('belongs to another media', output)
+                self.assertIn('adopted: 0', output)
+                self.assertIn('renamed: 1', output)
+            second.refresh_from_db()
+            self.assertEqual(Path(second.media_file.path), second_path)
+            self.assertEqual(
+                (source.directory_path / 'foo.en.mkv').read_bytes(),
+                b'subtitle track',
+            )
+
+    def test_another_medias_existing_sidecar_is_not_adopted(self):
+        names = {'aaa': 'foo.mkv', 'bbb': 'foo.en.mkv'}
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, first, first_path = self.make_downloaded(key='aaa')
+            _, second, second_path = self.make_downloaded(key='bbb', source=source)
+            # aaa already sits at foo.mkv with its foo.en.mkv subtitle; bbb's
+            # video is gone and its target is that subtitle.
+            placed = source.directory_path / 'foo.mkv'
+            first_path.rename(placed)
+            first.media_file.name = str(placed.relative_to(media_file_storage.location))
+            first.save()
+            subtitle = source.directory_path / 'foo.en.mkv'
+            subtitle.write_bytes(b'subtitle track')
+            second_path.unlink()
+            dry, applied = self.run_both(source, names)
+            for output in (dry, applied):
+                self.assertIn('belongs to another media', output)
+                self.assertIn('adopted: 0', output)
+            second.refresh_from_db()
+            self.assertEqual(Path(second.media_file.path), second_path)
+            self.assertEqual(subtitle.read_bytes(), b'subtitle track')
+
+    def test_a_stem_match_that_is_a_missing_medias_sidecar_is_not_moved(self):
+        names = {'aaa': 'foo.mkv', 'bbb': 'bar.mkv'}
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, first, first_path = self.make_downloaded(key='aaa')
+            # bbb's recorded video is "<aaa's stem>.bar.mkv" and is gone,
+            # but its subtitle remains; aaa's stem glob matches it.
+            second = Media.objects.create(key='bbb', source=source, metadata=metadata)
+            second_video = first_path.with_name(first_path.stem + '.bar.mkv')
+            second.media_file.name = str(
+                second_video.relative_to(media_file_storage.location)
+            )
+            second.downloaded = True
+            second.save()
+            subtitle = first_path.with_name(first_path.stem + '.bar.srt')
+            subtitle.write_bytes(b'bbb subtitle')
+            dry, applied = self.run_both(source, names)
+            for output in (dry, applied):
+                self.assertIn('other media files would be moved with it', output)
+                self.assertIn(str(subtitle), output)
+                self.assertIn('renamed: 0', output)
+            self.assertEqual(subtitle.read_bytes(), b'bbb subtitle')
+            self.assertTrue(first_path.exists())

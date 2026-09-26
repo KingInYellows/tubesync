@@ -798,7 +798,9 @@ Adopting an
 earlier half-finished move (the video already sits at its target but the
 database row does not, from a prior run that moved the file and then
 failed before saving) that left a stray same-key sidecar behind, or whose
-target is a symlink or resolves outside `DOWNLOAD_ROOT`, is also an error
+target is a symlink, resolves outside `DOWNLOAD_ROOT`, or belongs to
+another media (its video, a sidecar of one, or a file an earlier rename in
+this run moves there), is also an error
 -- nothing is adopted, moved, or deleted; a stray old-name sidecar in the
 target's own directory counts too (only names that are the target's stem
 plus a `.` are its own). `--apply` saves only the

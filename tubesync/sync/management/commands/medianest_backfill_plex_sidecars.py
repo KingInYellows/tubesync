@@ -759,7 +759,9 @@ class Command(BaseCommand):
             Counted as an error, returning None: a downloaded row with no
             media_file; a missing current file with nothing to adopt; an
             adoption target that is a symlink or resolves outside
-            DOWNLOAD_ROOT; a target video that already exists or that
+            DOWNLOAD_ROOT, or that belongs to another media (its video, a
+            sidecar of one, or a destination an earlier rename in this run
+            moves a file to, projected in a dry-run); a target video that already exists or that
             another media in this run already claimed (its video, or a
             sidecar destination of its rename, projected in a dry-run); a
             sidecar or key-match destination that is such a claimed path;
@@ -819,6 +821,26 @@ class Command(BaseCommand):
                 return None
             summary['already_in_place'] += 1
             return 'in_place'
+        if not current.exists() and (
+            target in self._projected_destinations
+            or (
+                _occupied(target)
+                and self._claimed_by_other_media(
+                    target, current, target, media_files,
+                )
+            )
+        ):
+            # Not an earlier half-finished move of this media's video: an
+            # earlier rename in this run moves (or, in a dry-run, would
+            # move) a file there, or it is another media's video or
+            # sidecar. Adopting it would record that file as this video.
+            self._media_error(
+                summary, f'{media}: current file {current} is missing, and '
+                f'its target {target} belongs to another media (its video '
+                'or a sidecar, possibly moved there by this run); not '
+                'adopting it',
+            )
+            return None
         if not current.exists() and target.exists() and target not in media_files:
             problem = self._adoption_problem(target)
             if problem is None:
@@ -881,10 +903,11 @@ class Command(BaseCommand):
                 other for other in incoming
                 if self._foreign_episode_nfo(media, other)
             ]
+        # Both move sets: a stem match can also be another media's sidecar
+        # (foo.bar.srt of foo.bar.mkv beside foo.mkv), even when that
+        # media's video is missing and so not moved with it.
         claimed = [
-            other for other, _ in moves if other in media_files
-        ] + [
-            other for other, _ in key_moves
+            other for other, _ in moves + key_moves
             if self._claimed_by_other_media(other, current, target, media_files)
         ]
         directories = [
