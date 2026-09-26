@@ -50,8 +50,10 @@ owner. This file records what the tag would contain and what was verified.
    - The three keys are listed in the source form's media-format help.
 2. **`tvshow.nfo` per source** (new `sync/tvshow_nfo.py`, with hooks in the
    upstream-owned `sync/tasks.py`).
-   - The file is written after indexing, after channel-image download, and
-     after each video's metadata is saved (so the first real channel name
+   - The file is written after indexing, after channel-image download
+     (even when an image fails, since the channel metadata is already
+     cached by then), and after each video's metadata is saved (so the
+     first real channel name
      reaches it without waiting for the next index). It contains the real
      channel or playlist title, the description when known, and two
      `<uniqueid>` elements (`type="youtube"`, the source's current `key`;
@@ -98,7 +100,10 @@ owner. This file records what the tag would contain and what was verified.
      `filter_text` regex is rejected -- both checked on the value the
      source form would store.
    - `POST /sources/validate` and `POST /sources` check only the requested
-     type's overlay; readiness checks both, and a healthy `sourceDefaults`
+     type's overlay, its field allowlist included; malformed JSON, an
+     unknown top-level key, an uncovered type, a non-object block or a bad
+     `"*"` field still fails every type. Readiness checks both, and a
+     healthy `sourceDefaults`
      names any type whose explicit `{}` opts out of a non-empty `"*"`.
 4. **`manage.py medianest_backfill_plex_sidecars`** (new command, no upstream
    edits).
@@ -122,10 +127,16 @@ owner. This file records what the tag would contain and what was verified.
      changes a field: if the cascade is enabled for that source and any
      media would be refused, the source is not saved at all, one error is
      counted, and the operator is told to resolve the conflicts or
-     disable the cascade before re-running.
+     disable the cascade before re-running. The same happens, counted as
+     `in_flight`, when the overlay can change the rendered path and any of
+     the source's media is downloading right now (it would finish under
+     the old name, and the cascade would rename it later, unchecked). The
+     dry-run stops the source the same way, so its summary matches
+     `--apply`'s.
    - **Wider occupied-sidecar detection.** An occupied target for the
-     video (on disk, or already claimed by another media earlier in the
-     same run, dry-run included), an occupied destination for any sidecar
+     video (on disk -- a dangling symlink counts -- or already claimed by
+     another media earlier in the same run, dry-run included), an occupied
+     destination for any sidecar
      `rename_files()` would move, OR an already-occupied target-side
      `.nfo` that no move of this media's own would bring (which this
      command's own NFO write would otherwise silently clobber right after
@@ -133,7 +144,10 @@ owner. This file records what the tag would contain and what was verified.
      `.jpg` is left alone and does not block the rename. Adopting an
      earlier half-finished move that left a stray same-key sidecar behind,
      or whose target is a symlink or resolves outside `DOWNLOAD_ROOT`, is
-     also an error -- nothing is adopted, moved, or deleted.
+     also an error -- nothing is adopted, moved, or deleted. A stray
+     old-name sidecar in the target's own directory (a format that only
+     changed the file name) counts too; only the target's own sidecars are
+     excluded.
    - **Key-matched moves.** With `{key}` in the profile, `rename_files()`
      also moves every path under the source directory whose name contains
      the media's key. The dry-run lists each of those moves
@@ -141,20 +155,23 @@ owner. This file records what the tag would contain and what was verified.
      sidecar of one, or a directory (in either move set), or whose
      destination is already taken (`rename_files()` would leave it behind),
      makes the media an error instead. So does a current file that is a
-     symlink or resolves outside `DOWNLOAD_ROOT`, or a target directory
-     that resolves outside it.
+     symlink, is not a regular file (a directory would be moved whole) or
+     resolves outside `DOWNLOAD_ROOT`, or a target directory that resolves
+     outside it.
    - **Foreign episode NFOs.** An existing `.nfo` at the target that is not
      this media's own (`<episodedetails>` whose `<id>`/`<uniqueid>` is its
-     key) is never overwritten -- for a rename, an already-in-place media
+     key), or is a symlink, is never overwritten -- for a rename, an
+     already-in-place media
      or an adoption alike; it is reported as an error.
    - **Targeted source save.** Only the overlay fields that change are
      saved, onto a freshly read row, so concurrent edits and
      `target_schedule` are kept and other fields are not re-normalized.
    - **Downloads during the run.** Media that finish downloading while
      `--apply` runs are processed before it ends; media still busy (their
-     `media:<uuid>` lock is held) after a `media_format` change are
-     counted as `in_flight` and fail the run so it is repeated (only when
-     the run changed `media_format`).
+     `media:<uuid>` lock is held) after an overlay that can change the
+     rendered path (`media_format`, `source_resolution`, `source_vcodec`,
+     `source_acodec`, `prefer_60fps`, `prefer_hdr` or `fallback`) are
+     counted as `in_flight` and fail the run so it is repeated.
    - Turning `copy_channel_images` on makes TubeSync's own signal queue an
      image download even when `poster.jpg` exists, and that download
      replaces the existing images; both modes count it and print a note.
@@ -205,6 +222,13 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `in_flight` is inferred from the media lock, which other media tasks
   also take briefly, so a busy source can report a false positive; re-run
   when it is idle.
+- The in-flight check runs just before the source is saved. A download
+  that starts between the check and the save still finishes under the old
+  name; with the rename cascade on, the queued
+  `rename_all_media_for_source` can then rename it without this command's
+  checks. The post-save in-flight count reports it, but cannot cancel the
+  queued cascade. Run the backfill with `TUBESYNC_RENAME_ALL_SOURCES=false`
+  (and the sources out of `TUBESYNC_RENAME_SOURCES`) to close this window.
 - Index-only sources (`download_media` off) only carry approximate
   listing dates until an item is downloaded, so their numbering can move.
 
@@ -226,3 +250,10 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge` in `ghcr.io/kinginyellows/tubesync:bridge-v1.0.0` (worktree mounted, `local_settings.py` from `local_settings.py.container`, `--entrypoint /usr/bin/python3`): 590 tests OK at the stack tip; 386, 440 and 514 at Plex T1, T2 and T3 (after the third review pass, which added the foreign-episode-NFO, symlink, directory and collision refusals and the contract re-vendor at `479b97ea`).
 - `ruff check` with CI's rule set: no new findings.
 - New tests cover the kept episode numbers, the NFO rewrite on rename, the `tvshow.nfo` checksum and preserved titles, the source-defaults checks on stored values, and every backfill change listed above.
+
+## Verification (2026-09-26, fourth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 600 tests OK at the stack tip; 386, 441 and 518 at Plex T1, T2 and T3.
+- `ruff check` with CI's rule set: only the two known hits (`sync/views/sources.py`, `sync/youtube.py:314`).
+- New this sweep: `tvshow.nfo` refreshed when a channel image fails (T2); a bad field in one type's source-defaults block no longer blocks the other type (T3); and for the backfill, a directory as the current file, dangling symlinks at the video and sidecar targets, an in-flight download refusing a cascade-enabled save (dry-run and apply summaries equal), the in-flight count for a `source_acodec`-only overlay, the dry-run stopping a gated source like `--apply`, and an old-name sidecar beside a same-directory target.
+- Each new test was checked to fail with its fix reverted.
