@@ -1,0 +1,56 @@
+tubesync/medianest_bridge/README.md
+  s_2fd14c67bb8172::t_7b1ece579aedc4 790-791,796-797,799-801
+  s_2fd14c67bb8172::t_51f42a56ec5192 838-843
+  s_2fd14c67bb8172::t_0c22340f553f2d 763-769
+  s_2fd14c67bb8172::t_d25f891f7e1cee 820-824
+  s_2fd14c67bb8172::t_fa38bc18d5c26d 776-779
+  s_2fd14c67bb8172::t_cd6f695a780955 804-805
+tubesync/sync/tests/test_backfill_plex_sidecars.py
+  s_2fd14c67bb8172::t_342492387719f1 131-135
+  s_2fd14c67bb8172::t_a7daaa9dc47d29 1585
+  s_2fd14c67bb8172::t_479c0906d35607 1372-1375
+  s_2fd14c67bb8172::t_6dd4caf04a7a95 1183-1184,1190-1196
+  s_2fd14c67bb8172::t_086e3686afe5e3 1644-1800
+tubesync/medianest_bridge/docs/release-notes-bridge-v1.1.0.md
+  s_2fd14c67bb8172::t_07f990b7006cc2 147-150
+  s_2fd14c67bb8172::t_69ee14fc9afbf4 171-174
+  s_2fd14c67bb8172::t_b9cb75c56e0106 163-164
+  s_2fd14c67bb8172::t_095abb5f4faf6d 225-231
+  s_2fd14c67bb8172::t_3aceaba5f84f62 253-259
+  s_2fd14c67bb8172::t_987f69e7048a33 158-160
+  s_2fd14c67bb8172::t_84815666784f62 130-135
+  s_2fd14c67bb8172::t_34a869e964809e 103-106
+  s_2fd14c67bb8172::t_f2a91e54776051 53-56
+  s_2fd14c67bb8172::t_1a9bf88ef8f5d7 137-139
+tubesync/sync/management/commands/medianest_backfill_plex_sidecars.py
+  s_2fd14c67bb8172::t_7e4e3f107c2218 1082-1085,1088,1091-1093
+  s_2fd14c67bb8172::t_52cc5fc5ad254c 102-110
+  s_2fd14c67bb8172::t_cc2b879ff244dc 54-58
+  s_2fd14c67bb8172::t_20a3d9a0a7cfb5 1158
+  s_2fd14c67bb8172::t_92757229df434b 936-937,939-940
+  s_2fd14c67bb8172::t_db3051c25ac848 176-186
+  s_2fd14c67bb8172::t_7670b85a9d41f4 835
+  s_2fd14c67bb8172::t_d4fbffe2d8f4d8 924-926
+  s_2fd14c67bb8172::t_65f4db4ae7e816 859
+  s_2fd14c67bb8172::t_c753c56adcc61a 188-195
+  s_2fd14c67bb8172::t_5c0afd2189f300 407-425,430-442,451
+  s_2fd14c67bb8172::t_a805a5f64fb977 503,505-507,512-547
+  s_2fd14c67bb8172::t_48f3a8cae9cf6a 1026
+  s_2fd14c67bb8172::t_f88859246a2cb0 187
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "82e15bf93fbf801ce072b82c5a87f188e3412281",
+  "prompts": {},
+  "sessions": {
+    "s_2fd14c67bb8172": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "98fd25e6-a859-4d85-b54d-3528af753d69",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}

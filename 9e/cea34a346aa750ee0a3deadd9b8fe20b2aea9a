@@ -1,0 +1,25 @@
+tubesync/medianest_bridge/README.md
+  s_6790353d565094::t_3e0db75ef76557 721,723-724,729,772-793
+tubesync/medianest_bridge/docs/release-notes-bridge-v1.1.0.md
+  s_6790353d565094::t_d4331c4f5235d8 16-17,41-50,58-64,74-77,79-81,97-102,127-151,171,179,182-198,211-216
+tubesync/sync/management/commands/medianest_backfill_plex_sidecars.py
+  s_6790353d565094::t_3b71fab021c1b7 22-23,26-31,43-56,60-61,116,123,133,164-165,199-207,248,250-253,317-320,346-348,350-351,378-380,392-397,404-468,540,549,576,580,598,605-623,627,630-631,645-647,650-683,686-688,690,695-697,699,704-705,710,712,714,716-719,721-733,747,750,755-758,761-768,770,773,776,779-782,787-792,798-800,802,806-881,966-972,978-981
+tubesync/sync/tests/test_backfill_plex_sidecars.py
+  s_6790353d565094::t_40342e2499cedb 33,39,43-45,658,661-662,665,668,815-819,828-830,832-835,1187-1444
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "9ecea34a346aa750ee0a3deadd9b8fe20b2aea9a",
+  "prompts": {},
+  "sessions": {
+    "s_6790353d565094": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d88f8383-3f7d-42ae-80fd-a2f5940fe795",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}

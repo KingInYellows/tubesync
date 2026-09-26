@@ -1,0 +1,66 @@
+tubesync/medianest_bridge/docs/release-notes-bridge-v1.1.0.md
+  s_f159128495b6f4::t_bd3795896f657e 19-26,29-35,45-49,51-63,66-67
+  s_f159128495b6f4::t_40fac569b81dac 131-133
+  s_f159128495b6f4::t_85526a9d4137d2 89-111,117-120,123-127
+  s_f159128495b6f4::t_6d813ab7bb656f 147,149-152
+tubesync/sync/tests/test_tvshow_nfo.py
+  s_f159128495b6f4::t_0de3145927c0b9 307-333
+  s_f159128495b6f4::t_cca7bf64d649b1 33
+tubesync/medianest_bridge/README.md
+  s_f159128495b6f4::t_1c5b4ee7be11af 738-784,793-802,810-813
+  s_f159128495b6f4::t_37acd4b64b43ab 79-84
+  s_f159128495b6f4::t_2f15fb87f91146 814
+tubesync/sync/management/commands/medianest_backfill_plex_sidecars.py
+  s_f159128495b6f4::t_dd464e5df89e97 533-536,542-544
+  s_f159128495b6f4::t_e887c38878348b 204-207
+  s_f159128495b6f4::t_5534ef0b9a8c0c 294-295,298-302,322,325-326,331-369,379-426,433-434
+  s_f159128495b6f4::t_55dfc034dc398e 40-54
+  s_f159128495b6f4::t_8a29f3887cbfc3 66-102
+  s_f159128495b6f4::t_bea0d7031d0413 112,117
+  s_f159128495b6f4::t_029b2c8c87e77e 435,564-568,570-573,577-579,581-582,589-591,593-594,596-598,601-606,609-610,615-631,652-667,690-691,698,700-734,736-749,751-752
+  s_f159128495b6f4::t_6d1a978e86843f 427-432
+  s_f159128495b6f4::t_fa05cecf3b03e1 812-822,829-831
+  s_f159128495b6f4::t_6c4df3c158a93b 849-858,860,862-864,866-868
+  s_f159128495b6f4::t_79c72d72893119 687-688
+  s_1020285ed56c9b::t_a6887392aa828c 436
+tubesync/sync/tvshow_nfo.py
+  s_f159128495b6f4::t_81cc4cbafa37b2 474,476-486,498,501,505-506,510-519,524-525,530-533,557-563,575-576
+tubesync/sync/tests/test_backfill_plex_sidecars.py
+  s_f159128495b6f4::t_d86c4c8273687e 891-897,900
+  s_f159128495b6f4::t_d5384264f6175a 20
+  s_f159128495b6f4::t_59aef51cc768bc 132-135
+  s_f159128495b6f4::t_d673f2ced9050b 674
+  s_f159128495b6f4::t_861dfae1af9a43 45-46
+  s_f159128495b6f4::t_a2c355b4340634 490-496,501
+  s_f159128495b6f4::t_78cdc34394d47e 112-127
+  s_f159128495b6f4::t_fca4a11396a593 787-890,898-899,901-1004,1016-1028,1046-1047,1051-1053,1056-1181
+  s_f159128495b6f4::t_dda259a9e16b94 595-607
+  s_f159128495b6f4::t_339f90eb0af2d2 1005-1015,1029-1041,1045,1048-1050,1054-1055
+  s_f159128495b6f4::t_6df06635c2f073 29,35
+  s_f159128495b6f4::t_a39ccc6c8443f0 380
+  s_f159128495b6f4::t_1ff8bf5fb0388e 1042-1044
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "dbd5591f854331f8695e33828729c342e4d4ebbb",
+  "prompts": {},
+  "sessions": {
+    "s_1020285ed56c9b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "646d2608-019a-448d-8b7a-abedb646aee3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    },
+    "s_f159128495b6f4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c35119a3-8856-4de8-ac32-3299b4a1c9e4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
