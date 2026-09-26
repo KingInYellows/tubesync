@@ -252,11 +252,14 @@ class SourceDefaultsConfigTestCase(BridgeTestCase):
         self.assertTrue(defaults['playlist']['write_nfo'])
 
 
-class SourceDefaultsFieldRulesTestCase(BridgeTestCase):
-    '''Forbidden fields, boolean typing and the "*" block check.'''
+class SourceDefaultsEnvMixin:
 
     def set_defaults(self, value):
         os.environ['MEDIANEST_BRIDGE_SOURCE_DEFAULTS'] = json.dumps(value)
+
+
+class SourceDefaultsFieldRulesTestCase(SourceDefaultsEnvMixin, BridgeTestCase):
+    '''Forbidden fields, boolean typing and the "*" block check.'''
 
     def test_target_schedule_is_forbidden(self):
         self.set_defaults({'*': {'target_schedule': None}})
@@ -356,11 +359,8 @@ class SourceDefaultsValidationTestCase(BridgeTestCase):
         self.assertFalse(any(secret_marker in message for message in errors))
 
 
-class SourceDefaultsValidationSafetyTestCase(BridgeTestCase):
+class SourceDefaultsValidationSafetyTestCase(SourceDefaultsEnvMixin, BridgeTestCase):
     '''Value-free errors, extra value checks and unexpected failures.'''
-
-    def set_defaults(self, value):
-        os.environ['MEDIANEST_BRIDGE_SOURCE_DEFAULTS'] = json.dumps(value)
 
     def test_invalid_choice_error_never_echoes_the_configured_value(self):
         marker = 'SECRET-MARKER-7f3a'
@@ -426,3 +426,75 @@ class SourceDefaultsValidationSafetyTestCase(BridgeTestCase):
         defaults, errors = config.load_validated_source_defaults()
         self.assertEqual(errors, [])
         self.assertEqual(defaults['channel'], {'write_nfo': True})
+
+
+class SourceDefaultsStoredValueChecksTestCase(SourceDefaultsEnvMixin, BridgeTestCase):
+    '''
+        The ".." and filter_text checks look at what the form would store
+        and render, not at the raw JSON.
+    '''
+
+    def test_a_segment_that_only_renders_to_dot_dot_is_rejected(self):
+        self.set_defaults({'*': {'media_format': 'shows/.{ext:.0}./{key}.{ext}'}})
+        errors = config.validate_source_defaults()
+        self.assertIn(
+            'channel: media_format: must not contain ".." path segments', errors,
+        )
+
+    def test_a_list_filter_text_is_checked_as_the_string_it_becomes(self):
+        # Stored as "['](']", which does not compile.
+        self.set_defaults({'*': {'filter_text': ['](']}})
+        errors = config.validate_source_defaults()
+        self.assertIn('channel: filter_text: not a valid regular expression', errors)
+
+    def test_an_invalid_form_still_gets_the_raw_checks(self):
+        self.set_defaults({'*': {
+            'media_format': '../{key}.{ext}', 'source_resolution': 'nope',
+        }})
+        errors = config.validate_source_defaults()
+        self.assertIn('channel: source_resolution: invalid_choice', errors)
+        self.assertIn(
+            'channel: media_format: must not contain ".." path segments', errors,
+        )
+
+
+class SourceDefaultsPerTypeValidationTestCase(SourceDefaultsEnvMixin, BridgeTestCase):
+
+    def test_only_the_requested_type_is_validated(self):
+        self.set_defaults({
+            'channel': {'media_format': '{not_a_real_format_key}'},
+            'playlist': {'write_nfo': True},
+        })
+        _, errors = config.load_validated_source_defaults(source_types=('playlist',))
+        self.assertEqual(errors, [])
+        _, errors = config.load_validated_source_defaults(source_types=('channel',))
+        self.assertTrue(errors)
+        self.assertTrue(all(error.startswith('channel: ') for error in errors))
+
+    def test_a_parse_error_fails_every_type(self):
+        os.environ['MEDIANEST_BRIDGE_SOURCE_DEFAULTS'] = '{not json'
+        _, errors = config.load_validated_source_defaults(source_types=('playlist',))
+        self.assertEqual(len(errors), 1)
+
+
+class SourceDefaultsStarOptOutsTestCase(SourceDefaultsEnvMixin, BridgeTestCase):
+
+    def test_names_types_that_opt_out_of_a_non_empty_star(self):
+        self.set_defaults({'*': {'write_nfo': True}, 'channel': {}})
+        self.assertEqual(config.source_defaults_star_opt_outs(), ['channel'])
+
+    def test_nothing_to_report(self):
+        for value in (
+            None,
+            {'*': {}, 'channel': {}},
+            {'*': {'write_nfo': True}},
+            {'channel': {}, 'playlist': {'write_nfo': True}},
+        ):
+            with self.subTest(value=value):
+                if value is None:
+                    os.environ.pop('MEDIANEST_BRIDGE_SOURCE_DEFAULTS', None)
+                else:
+                    self.set_defaults(value)
+                self.assertEqual(config.source_defaults_star_opt_outs(), [])
+        os.environ['MEDIANEST_BRIDGE_SOURCE_DEFAULTS'] = '{not json'
+        self.assertEqual(config.source_defaults_star_opt_outs(), [])
