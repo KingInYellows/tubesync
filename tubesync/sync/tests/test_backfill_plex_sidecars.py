@@ -2123,3 +2123,79 @@ class BackfillReviewFollowUp7TestCase(BackfillFollowUpMixin, TestCase):
                 self.assertIn('renamed: 0', output)
             self.assertEqual(subtitle.read_bytes(), b'bbb subtitle')
             self.assertTrue(first_path.exists())
+
+
+class BackfillReviewFollowUp8TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Eighth review pass: every file the channel image download writes
+        is checked before it is queued, and a download marked skipped
+        while it runs still counts as in flight.
+    '''
+
+    ACODEC_OVERLAY = BackfillReviewFollowUp4TestCase.ACODEC_OVERLAY
+    make_busy_source = BackfillReviewFollowUp4TestCase.make_busy_source
+    locked = BackfillReviewFollowUp4TestCase.locked
+
+    def test_a_download_marked_skipped_while_running_is_in_flight(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=True, RENAME_SOURCES=[]),
+            patch.dict(
+                'os.environ',
+                {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': self.ACODEC_OVERLAY},
+            ),
+        ):
+            source, busy = self.make_busy_source()
+            Media.objects.filter(pk=busy.pk).update(skip=True, manual_skip=True)
+            with self.locked(busy):
+                dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+                applied, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn(f'IN FLIGHT: {busy}', output)
+                self.assertIn('in_flight: 1', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            source.refresh_from_db()
+            self.assertEqual(source.source_acodec, 'OPUS')  # never saved
+
+    def test_a_symlinked_image_destination_queues_no_image_download(self):
+        with temp_download_root(), tempfile.TemporaryDirectory() as outside:
+            source = make_bridge_source(copy_channel_images=True)
+            source.make_directory()
+            self.make_downloaded(source=source)
+            # poster.jpg stays missing, so only the link can stop the job.
+            for name in ('thumbnail.jpg', 'banner.jpg', 'background.jpg',
+                         'season-poster.jpg'):
+                with self.subTest(name=name):
+                    link = source.directory_path / name
+                    link.symlink_to(Path(outside) / name)
+                    with patch(f'{self.COMMAND}.TaskHistory') as mock_th:
+                        dry = run_backfill('--source', str(source.uuid))
+                        applied = run_backfill(
+                            '--source', str(source.uuid), '--apply',
+                        )
+                    mock_th.schedule.assert_not_called()
+                    for output in (dry, applied):
+                        self.assertIn('images_enqueued: 0', output)
+                        self.assertIn(f'{name} is a symlink', output)
+                    self.assertFalse((Path(outside) / name).exists())
+                    link.unlink()
+
+    def test_a_source_directory_outside_the_root_queues_no_image_download(self):
+        with temp_download_root(), tempfile.TemporaryDirectory() as outside:
+            source = make_bridge_source(copy_channel_images=True)
+            directory = source.directory_path
+            directory.parent.mkdir(parents=True, exist_ok=True)
+            directory.symlink_to(outside, target_is_directory=True)
+            with patch(f'{self.COMMAND}.TaskHistory') as mock_th:
+                dry, _ = run_backfill_capture('--source', str(source.uuid))
+                applied, _ = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            mock_th.schedule.assert_not_called()
+            for output in (dry, applied):
+                self.assertIn('images_enqueued: 0', output)
+                self.assertIn('resolves outside', output)
+            self.assertFalse((Path(outside) / 'poster.jpg').exists())

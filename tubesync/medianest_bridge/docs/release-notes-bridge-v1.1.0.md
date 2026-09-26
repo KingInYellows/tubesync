@@ -180,16 +180,20 @@ owner. This file records what the tag would contain and what was verified.
      `target_schedule` are kept and other fields are not re-normalized.
    - **Downloads during the run.** Media that finish downloading while
      `--apply` runs are processed before it ends; media still busy (their
-     `media:<uuid>` lock is held) after an overlay that can change the
+     `media:<uuid>` lock is held, even if marked skipped meanwhile) after
+     an overlay that can change the
      rendered path (`media_format`, `source_resolution`, `source_vcodec`,
      `source_acodec`, `prefer_60fps`, `prefer_hdr` or `fallback`) are
      counted as `in_flight` and fail the run so it is repeated.
    - Turning `copy_channel_images` on makes TubeSync's own signal queue an
      image download even when `poster.jpg` exists, and that download
      replaces the existing images; both modes count it and print a note.
-   - A symlinked `poster.jpg`, even a dangling one, counts as present, so
-     the command never queues the channel-image download (which writes
-     with a plain `open()` and would follow the link); it prints a note.
+   - The channel-image download writes `thumbnail.jpg`, `banner.jpg`,
+     `background.jpg`, `poster.jpg` and `season-poster.jpg` with a plain
+     `open()`, which follows a symlink. The command never queues it while
+     any of those is a symlink, even a dangling one, or the source
+     directory resolves outside `DOWNLOAD_ROOT`; it prints a note instead.
+     A symlinked `poster.jpg` also counts as present.
    - Dry-run turns `TUBESYNC_SHRINK_OLD` off while reading metadata, so it
      writes nothing to the database. Apply counts the episode NFO
      `rename_files()` wrote as written, matching the dry-run.
@@ -314,3 +318,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - CI's configuration as well: `manage.py test --no-input --buffer` (every app, `common` included) with `TUBESYNC_DEBUG=True` and a final `DEBUG = False`, as CI's `local_settings.py.example` sets it: 631 tests OK at the stack tip.
 - `ruff check` with CI's rule set: only the two known hits.
 - New this sweep, for the backfill: a missing media is never adopted onto a file an earlier rename in this run moves to its target, nor onto another media's existing sidecar, and a stem match that is the sidecar of a media whose video is missing is never moved (dry-run and apply summaries equal). Each test was checked to fail with its fix reverted.
+
+## Verification (2026-09-26, eighth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 626 tests OK at the stack tip (T1-T3 unchanged). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 634 tests OK.
+- `ruff check` run as CI runs it (from `tubesync/`, reading `ruff.toml`): only the two known hits.
+- New this sweep, for the backfill: a symlink at any file the channel-image download writes, or a source directory resolving outside `DOWNLOAD_ROOT`, queues no image download in either mode; and a download marked skipped while it runs still counts as `in_flight` (dry-run and apply summaries equal). Each test was checked to fail with its fix reverted.

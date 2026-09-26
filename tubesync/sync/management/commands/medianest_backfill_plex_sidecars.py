@@ -188,6 +188,14 @@ _PATH_FIELDS = frozenset((
 ))
 
 
+# Every file sync/tasks.py::download_source_images writes into the source
+# directory, each with a plain open(..., 'wb') that follows a symlink.
+_SOURCE_IMAGE_NAMES = (
+    'thumbnail.jpg', 'banner.jpg', 'background.jpg', 'poster.jpg',
+    'season-poster.jpg',
+)
+
+
 def _occupied(path):
     '''
         True when anything is at `path`, including a dangling symlink,
@@ -509,11 +517,13 @@ class Command(BaseCommand):
     def _in_flight_media(self, source):
         '''
             Media of `source` that could be downloading right now: not
-            downloaded yet, wanted, and holding their `media:<uuid>` lock
-            (download_media_file holds it for the whole download).
+            downloaded yet and holding their `media:<uuid>` lock
+            (download_media_file holds it for the whole download). Skipped
+            rows count too: marking an item skipped does not stop a
+            download that is already running.
         '''
         candidates = Media.objects.filter(
-            source=source, downloaded=False, skip=False, manual_skip=False,
+            source=source, downloaded=False,
         ).only('pk', 'uuid', 'key', 'title')
         return [
             media for media in candidates
@@ -1260,7 +1270,8 @@ class Command(BaseCommand):
             Writes (apply) or predicts (dry-run) `source`'s tvshow.nfo,
             then enqueues (or predicts enqueueing) `download_source_images`
             when `copy_channel_images` is on and poster.jpg is still
-            missing -- unless `images_already_queued` says
+            missing, and no file it writes is a symlink nor its directory
+            outside DOWNLOAD_ROOT (see _image_write_problems()) -- unless `images_already_queued` says
             source_pre_save's own copy_channel_images-turned-on check
             already scheduled it for this same save, in which case this
             command must not also schedule a second job, but still counts
@@ -1290,17 +1301,21 @@ class Command(BaseCommand):
                 summary['tvshow_written'] += 1
 
         poster_path = Path(source.directory_path) / 'poster.jpg'
-        # A symlink, even a dangling one, counts as present: the image
-        # download writes poster.jpg with a plain open(), which would
-        # follow the link and write wherever it points.
         poster_exists = _occupied(poster_path)
-        if source.copy_channel_images and poster_path.is_symlink():
+        # The image download writes every _SOURCE_IMAGE_NAMES file with a
+        # plain open(), which follows a symlink (even a dangling one) or a
+        # source directory resolving outside DOWNLOAD_ROOT and writes
+        # wherever it points. This command never queues it then.
+        unsafe = (
+            self._image_write_problems(source)
+            if source.copy_channel_images else []
+        )
+        if unsafe:
             self.stdout.write(self.style.WARNING(
-                f'  NOTE: {poster_path} is a symlink; this command does not '
-                'queue the channel image download, which would write '
-                'through it' + (
+                '  NOTE: not queueing the channel image download, which '
+                'would write through: ' + '; '.join(unsafe) + (
                     '. Turning copy_channel_images on queues it anyway; '
-                    'replace the link with a regular file first.'
+                    'replace the link(s) with regular files first.'
                     if images_already_queued else '.'
                 )
             ))
@@ -1313,7 +1328,7 @@ class Command(BaseCommand):
                 'poster/banner/thumbnail images.'
             ))
         if source.copy_channel_images and (
-            images_already_queued or not poster_exists
+            images_already_queued or (not poster_exists and not unsafe)
         ):
             if apply_changes:
                 if not images_already_queued:
@@ -1339,6 +1354,22 @@ class Command(BaseCommand):
                         vn_args=(source.name,),
                     )
             summary['images_enqueued'] += 1
+
+    def _image_write_problems(self, source):
+        '''
+            Why `download_source_images` must not run for `source`, as a
+            list (empty when it may): its directory resolves outside
+            DOWNLOAD_ROOT, or one of the files it writes is a symlink.
+        '''
+        directory = Path(source.directory_path)
+        download_root = Path(settings.DOWNLOAD_ROOT).resolve()
+        if not directory.resolve().is_relative_to(download_root):
+            return [f'{directory} resolves outside {download_root}']
+        return [
+            f'{directory / name} is a symlink'
+            for name in _SOURCE_IMAGE_NAMES
+            if (directory / name).is_symlink()
+        ]
 
     def _print_summary(self, summary, apply_changes):
         self.stdout.write('')
