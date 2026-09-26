@@ -123,8 +123,8 @@ Nine upstream files are touched at ten points (`settings.py` twice), seven of th
    the end of `download_source_images()`, and right after
    `download_media_metadata()` saves the media (so the first real channel
    name refreshes the show title), each just `write_tvshow_nfo(source)`.
-   `write_tvshow_nfo` logs database and filesystem errors instead of
-   raising them. No existing logic in any of these
+   `write_tvshow_nfo` logs any error instead of raising it. No existing
+   logic in any of these
    tasks is changed, reordered, or made conditional on the new call.
 
 `sync/tvshow_nfo.py` (Plex T2) is a new, wholly fork-owned module (like

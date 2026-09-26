@@ -10,6 +10,7 @@
 '''
 import json
 import logging
+import re
 import tempfile
 import time
 from contextlib import contextmanager
@@ -695,19 +696,60 @@ class TvshowNfoOwnershipTestCase(TestCase):
             write_tvshow_nfo(self.source)
             self.assertEqual(self._nfo_path().read_text(encoding='utf-8'), manual)
 
-    def test_a_file_from_before_the_checksum_is_still_ours(self):
-        legacy = (
+    def test_a_file_without_the_checksum_is_kept(self):
+        # No release ever wrote the id without a checksum, so a file like
+        # this can only be an edited copy.
+        edited = (
             '<tvshow><title>Old</title>'
             f'<uniqueid type="tubesync">{self.source.uuid}</uniqueid></tvshow>'
         )
         with temp_download_root():
             self.source.make_directory()
-            self._nfo_path().write_text(legacy, encoding='utf-8')
+            self._nfo_path().write_text(edited, encoding='utf-8')
             write_tvshow_nfo(self.source)
-            self.assertEqual(
-                self._nfo_path().read_text(encoding='utf-8'),
-                build_tvshow_nfo(self.source),
+            self.assertEqual(self._nfo_path().read_text(encoding='utf-8'), edited)
+            self.assertEqual(resolve_show_title(self.source), 'Old')
+
+    def test_a_reformatted_checksum_marks_the_file_edited(self):
+        with temp_download_root():
+            self.source.make_directory()
+            write_tvshow_nfo(self.source)
+            original = self._nfo_path().read_text(encoding='utf-8')
+            # An editor that reorders the attributes, and one that drops
+            # the checksum: the content is otherwise untouched.
+            reordered = original.replace(
+                '<uniqueid type="tubesync" checksum=',
+                '<uniqueid checksum=',
+            ).replace(
+                f'>{self.source.uuid}</uniqueid>',
+                f' type="tubesync">{self.source.uuid}</uniqueid>',
             )
+            dropped = re.sub(r' checksum="[^"]*"', '', original)
+            for variant in (reordered, dropped):
+                with self.subTest(variant=variant):
+                    self._nfo_path().write_text(variant, encoding='utf-8')
+                    Media.objects.get_or_create(
+                        key='m1', source=self.source, defaults={'metadata': metadata},
+                    )
+                    with patch('sync.tvshow_nfo.log') as mock_log:
+                        write_tvshow_nfo(self.source)
+                    mock_log.warning.assert_called_once()
+                    self.assertEqual(
+                        self._nfo_path().read_text(encoding='utf-8'), variant,
+                    )
+
+    def test_the_file_is_read_once_per_title_lookup(self):
+        upstream = '<tvshow><title>Upstream Title</title></tvshow>'
+        with temp_download_root():
+            self.source.make_directory()
+            self._nfo_path().write_text(upstream, encoding='utf-8')
+            real_read_bytes = type(self._nfo_path()).read_bytes
+            with patch.object(
+                type(self._nfo_path()), 'read_bytes', autospec=True,
+                side_effect=real_read_bytes,
+            ) as read_bytes:
+                self.assertEqual(resolve_show_title(self.source), 'Upstream Title')
+            self.assertEqual(read_bytes.call_count, 1)
 
     def test_episodes_follow_a_create_tvshow_nfo_title(self):
         # What the upstream create-tvshow-nfo command writes: source.name
@@ -793,17 +835,27 @@ class ShowTitleCacheSafetyTestCase(TestCase):
             self.assertFalse(connection.needs_rollback)
             self.assertEqual(Source.objects.filter(pk=self.source.pk).count(), 1)
 
-    def test_unexpected_errors_are_not_swallowed(self):
+    def test_unexpected_errors_are_logged_not_raised(self):
         with (
             temp_download_root(),
             patch(
                 'sync.tvshow_nfo.build_tvshow_nfo',
                 side_effect=AttributeError('bug'),
             ),
+            patch('sync.tvshow_nfo.log') as mock_log,
         ):
             self.source.make_directory()
-            with self.assertRaises(AttributeError):
-                write_tvshow_nfo(self.source)
+            write_tvshow_nfo(self.source)
+        mock_log.exception.assert_called_once()
+
+    def test_a_non_dict_cached_value_is_ignored(self):
+        Metadata.objects.create(
+            site='YoutubeTab', key=self.source.key, value=['not', 'a', 'dict'],
+        )
+        self.assertEqual(resolve_show_title(self.source), 'testname')
+        tree = ElementTree.fromstring(build_tvshow_nfo(self.source))
+        self.assertEqual(tree.find('title').text, 'testname')
+        self.assertIsNone(tree.find('plot'))
 
 
 class TasksWriteTvshowNfoTestCase(TestCase):

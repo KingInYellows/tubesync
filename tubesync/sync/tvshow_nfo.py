@@ -214,7 +214,7 @@ def _resolve_show_title_from_data(source, cached):
             'channel', 'uploader', 'title',
         )
         for field in fields:
-            cached_title = _clean_text(cached.value.get(field))
+            cached_title = _clean_text(_value_dict(cached).get(field))
             if cached_title:
                 break
     if cached_title and source.is_playlist:
@@ -235,9 +235,18 @@ def _display_title(source, data_title):
     return data_title or _clean_text(source.name) or str(source.name).strip()
 
 
+def _value_dict(cached):
+    '''
+        `cached.value` when it is a dict. `Metadata.value` is an
+        unconstrained JSONField; any other shape carries no show data.
+    '''
+    value = cached.value
+    return value if isinstance(value, dict) else {}
+
+
 def _plot_from(cached):
     if cached is not None:
-        return _clean_text(cached.value.get('description'))
+        return _clean_text(_value_dict(cached).get('description'))
     return ''
 
 
@@ -248,14 +257,8 @@ def _preserved_show_title(source):
         show as the file Plex/Kodi actually read, such as one the upstream
         `create-tvshow-nfo` command wrote with `source.name`.
     '''
-    nfo_path = source.directory_path / 'tvshow.nfo'
-    if _foreign_nfo_reason(nfo_path, source) is None:
-        return None
-    try:
-        root = ElementTree.fromstring(nfo_path.read_bytes())
-    except ElementTree.ParseError:
-        return None
-    if root.tag != 'tvshow':
+    root, reason = _read_tvshow_nfo(source.directory_path / 'tvshow.nfo', source)
+    if reason is None or root is None or root.tag != 'tvshow':
         return None
     return _clean_text(root.findtext('title')) or None
 
@@ -406,13 +409,16 @@ def _foreign_nfo_reason(nfo_path, source):
         Why the file at `nfo_path` is not this writer's to replace, or None
         when it is: absent, empty, or a `<tvshow>` carrying this source's
         `<uniqueid type="tubesync">` (its immutable `uuid` primary key;
-        only this writer emits that type) whose checksum still matches, or
-        that predates the checksum. Otherwise:
+        only this writer emits that type) with a checksum that still
+        matches the file. Otherwise:
           - another root, such as a video's own `<episodedetails>` from a
             `media_format` that renders a filename as `tvshow`; overwriting
             it would leave the two writers replacing each other's file;
-          - this writer's file, edited by hand since (its checksum no
-            longer matches); delete it to have it regenerated;
+          - this writer's file, edited since: its checksum no longer
+            matches, or is missing or no longer in the exact form this
+            writer emits (an editor reordered or requoted it); delete it
+            to have it regenerated. Files from before the checksum existed
+            are treated the same way (none were ever released);
           - any other `<tvshow>`, such as one written by hand or by the
             upstream `create-tvshow-nfo` command, which never overwrites.
             A `<uniqueid type="youtube">` with this source's key is not
@@ -427,17 +433,25 @@ def _foreign_nfo_reason(nfo_path, source):
             content to protect, so it is still replaceable, same as an
             absent one.
     '''
+    return _read_tvshow_nfo(nfo_path, source)[1]
+
+
+def _read_tvshow_nfo(nfo_path, source):
+    '''
+        (parsed root or None, `_foreign_nfo_reason`'s reason), reading and
+        parsing the file once for both callers.
+    '''
     if not nfo_path.exists():
-        return None
+        return None, None
     raw = nfo_path.read_bytes()
     if not raw:
-        return None
+        return None, None
     try:
         root = ElementTree.fromstring(raw)
     except ElementTree.ParseError:
-        return 'it exists but could not be parsed as XML'
+        return None, 'it exists but could not be parsed as XML'
     if root.tag != 'tvshow':
-        return (
+        return root, (
             'it holds another NFO (does media_format render a video '
             'filename as "tvshow"?)'
         )
@@ -448,13 +462,13 @@ def _foreign_nfo_reason(nfo_path, source):
         for uniqueid in root.iter('uniqueid')
     )
     if not owned:
-        return 'it is a tvshow.nfo this writer did not create'
-    if _checksum_state(raw.decode('utf-8', errors='replace')) is False:
-        return (
+        return root, 'it is a tvshow.nfo this writer did not create'
+    if _checksum_state(raw.decode('utf-8', errors='replace')) is not True:
+        return root, (
             'it was edited after this writer created it; delete it to '
             'have it regenerated'
         )
-    return None
+    return root, None
 
 
 def write_tvshow_nfo(source):
@@ -467,9 +481,8 @@ def write_tvshow_nfo(source):
         its mtime) when nothing has changed. Never deletes anything.
 
         Best-effort: it runs at the tail of those tasks, after their real
-        work has succeeded, so a database or filesystem error is logged
-        with its traceback instead of failing, and so retrying, the
-        calling task. A missing source directory (not created yet by
+        work has succeeded, so any error is logged with its traceback
+        instead of failing, and so retrying, the calling task. A missing source directory (not created yet by
         `check_source_directory_exists`) is skipped -- creating it is not
         this function's job.
 
@@ -515,5 +528,8 @@ def write_tvshow_nfo(source):
             return
         log.info(f'Writing tvshow.nfo for: {source}')
         write_text_file(nfo_path, content)
-    except (db.Error, OSError, ValueError):
+    except Exception:
+        # Deliberately broad: this runs at the tail of tasks whose real
+        # work already succeeded, so no failure here (including one from
+        # unexpected metadata shapes) may fail and retry them.
         log.exception(f'Failed to write tvshow.nfo for: {source}')
