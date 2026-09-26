@@ -1,0 +1,33 @@
+tubesync/medianest_bridge/README.md
+  s_6790353d565094::t_2464bbf278c08f 322,385,393-397,399-400,453-456,483,486-487,626,649,685
+tubesync/medianest_bridge/config.py
+  s_6790353d565094::t_e3e0d7218a8155 312,315-326,328-333,350,357-359,365,372-374,380,385-392,400,419-420,441-470
+tubesync/medianest_bridge/readiness.py
+  s_6790353d565094::t_64c8048d7287ce 113-115,574,576-595
+tubesync/medianest_bridge/source_forms.py
+  s_6790353d565094::t_2a25ce1aba2551 51,59-61,98,164,167-168,175,190,245,298,310,316-325,328,333-335
+tubesync/medianest_bridge/tests/test_config.py
+  s_6790353d565094::t_7e3066919a5423 255,260-263,362,429-500
+tubesync/medianest_bridge/tests/test_readiness.py
+  s_6790353d565094::t_1efbb2c19a99e0 734-755
+tubesync/medianest_bridge/tests/test_write_sources.py
+  s_6790353d565094::t_cd39743a0ccff9 240-260,1321-1322,1445-1475
+tubesync/medianest_bridge/views_write.py
+  s_6790353d565094::t_c85d4b0d69aecf 152,175,187-189,201-203,303
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "bacd7100b328ac00f2050c100b9a5837cb874377",
+  "prompts": {},
+  "sessions": {
+    "s_6790353d565094": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d88f8383-3f7d-42ae-80fd-a2f5940fe795",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
