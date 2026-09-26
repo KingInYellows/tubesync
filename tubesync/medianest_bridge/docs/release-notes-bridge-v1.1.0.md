@@ -178,7 +178,11 @@ owner. This file records what the tag would contain and what was verified.
      anything happens, and a source any of whose downloaded rows is
      recorded through a symlinked directory is refused before it is saved
      (another row's video, seen through the alias, would otherwise look
-     like an unclaimed sidecar and be moved).
+     like an unclaimed sidecar and be moved). When the profile uses
+     `{key}`, a source whose directory contains another source's directory
+     is refused too: the recursive key sweep would reach the nested
+     source's files, which this source's ownership checks cannot see.
+     Bridge-created `acq-src-*` directories are siblings, never nested.
    - **Foreign episode NFOs.** An existing `.nfo` at the target that is not
      this media's own (`<episodedetails>` whose `<id>`/`<uniqueid>` is its
      key), or is a symlink, is never overwritten -- for a rename, an
@@ -397,3 +401,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 643 tests OK at the stack tip (T1-T3 unchanged: 389, 451 and 528). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 651 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep, making canonical paths a precondition instead of a per-media check: a symlinked media storage location refuses the whole run in both modes, and a source with any downloaded row recorded through a symlinked directory is refused in both modes (equal summaries) before anything is saved or moved. Two earlier tests now meet this earlier refusal and were updated to expect it. Each new test was checked to fail with its check removed.
+
+## Verification (2026-09-26, fifteenth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 645 tests OK at the stack tip (T1-T3 unchanged: 389, 451 and 528). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 653 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: with `{key}` in the profile, a source whose directory contains another source's directory is refused in both modes before anything is saved or moved (the nested source's file carrying the same video key is untouched); a sibling source directory is not affected. The refusal test was checked to fail with the check removed.

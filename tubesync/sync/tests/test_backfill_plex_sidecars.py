@@ -2613,3 +2613,61 @@ class BackfillReviewFollowUp14TestCase(BackfillFollowUpMixin, TestCase):
             self.assertEqual((real / 'other.mkv').read_bytes(), b'other video')
             source.refresh_from_db()
             self.assertFalse(source.copy_channel_images)  # never saved
+
+
+class BackfillReviewFollowUp15TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Fifteenth review pass: a source whose directory contains another
+        source's directory is refused when the {key} sweep could reach it.
+    '''
+
+    def test_a_nested_source_directory_refuses_the_source(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            nested_source = make_bridge_source(
+                key='UCnestedabcdefghijklmnop',
+                name='acq-src-nested',
+                directory=f'{source.directory}/nested',
+            )
+            nested_source.make_directory()
+            # The same video, downloaded by the nested source too.
+            nested_row = Media.objects.create(
+                key='vid1', source=nested_source, metadata=metadata,
+            )
+            nested_file = nested_source.directory_path / 'copy [vid1].mkv'
+            nested_file.write_bytes(b'nested copy')
+            nested_row.media_file.name = str(
+                nested_file.relative_to(media_file_storage.location)
+            )
+            nested_row.downloaded = True
+            nested_row.save()
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn("other sources' directories", output)
+                self.assertIn('renamed: 0', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertEqual(nested_file.read_bytes(), b'nested copy')
+            self.assertTrue(old_path.exists())
+            source.refresh_from_db()
+            self.assertFalse(source.copy_channel_images)  # never saved
+
+    def test_a_sibling_source_directory_is_not_nested(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            make_bridge_source(
+                key='UCsiblingabcdefghijklmno',
+                name='acq-src-sibling',
+                directory=f'{source.directory}-sibling',
+            )
+            output = run_backfill('--source', str(source.uuid), '--apply')
+            self.assertIn('renamed: 1', output)

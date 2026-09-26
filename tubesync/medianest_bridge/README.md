@@ -791,7 +791,8 @@ outside `DOWNLOAD_ROOT` through a symlink, or a current or target
 directory reached through a symlink inside it (`rename_files()` resolves
 both). The whole run is refused when `DOWNLOAD_ROOT` itself goes through a
 symlink, and a whole source when any of its downloaded rows is recorded
-through a symlinked directory; a media already at its target
+through a symlinked directory, or (with `{key}` in the profile) when its
+directory contains another source's; a media already at its target
 gets the same checks before its NFO and thumbnail are written. An
 existing episode `.nfo` that is not this media's own (or is a symlink,
 or not a regular file at all, which is never read) is never overwritten, nor carried onto the target NFO name by either

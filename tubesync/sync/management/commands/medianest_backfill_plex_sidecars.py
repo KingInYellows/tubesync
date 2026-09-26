@@ -496,6 +496,28 @@ class Command(BaseCommand):
                     f'it: {message}'
                 ))
             return
+        # rename_files()'s {key} sweep walks this source's whole directory
+        # tree, but the ownership checks only know this source's rows: a
+        # nested source's file carrying the same video key would be moved
+        # and its row left pointing at nothing. Refuse such a source, in
+        # both modes, before anything is saved or moved.
+        nested = self._nested_source_directories(source, working_source)
+        if nested:
+            summary['errors'] += 1
+            message = (
+                "the profile's media_format uses {key}, whose sweep would "
+                "reach other sources' directories inside this one ("
+                + ', '.join(nested) + '); move them out and re-run'
+            )
+            if apply_changes:
+                log.error(f'medianest_backfill_plex_sidecars: {source}: {message}')
+                self.stdout.write(self.style.ERROR(f'  SKIPPED: {message}'))
+            else:
+                self.stdout.write(self.style.WARNING(
+                    '  NOTE: --apply would skip this source without saving '
+                    f'it: {message}'
+                ))
+            return
         # Where every video was before this run moved anything; a dry-run
         # leaves other media's sidecars there (see _claimed_by_other_media).
         self._original_media_files = frozenset(media_files)
@@ -1134,6 +1156,23 @@ class Command(BaseCommand):
         if not target.parent.resolve().is_relative_to(download_root):
             return f'target directory {target.parent} resolves outside {download_root}'
         return None
+
+    def _nested_source_directories(self, source, working_source):
+        '''
+            The directories of other sources that lie inside
+            `working_source`'s own directory, when its media_format uses
+            {key} (only that sweep, rename_files()'s recursive key match,
+            reaches into subdirectories); otherwise an empty list.
+        '''
+        if '{key}' not in str(working_source.media_format):
+            return []
+        top = Path(working_source.directory_path).resolve()
+        nested = []
+        for other in Source.objects.exclude(pk=source.pk):
+            other_dir = Path(other.directory_path).resolve()
+            if other_dir != top and other_dir.is_relative_to(top):
+                nested.append(str(other.directory_path))
+        return sorted(nested)
 
     def _symlinked_ancestor(self, directory, storage_root):
         '''
