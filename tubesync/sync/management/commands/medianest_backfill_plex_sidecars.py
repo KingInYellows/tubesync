@@ -124,6 +124,7 @@
 '''
 import copy
 import os
+import stat
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from uuid import UUID
@@ -389,6 +390,28 @@ class Command(BaseCommand):
             message = (
                 f'source directory {directory} exists but is not a '
                 'directory; move it aside and re-run'
+            )
+            log.error(f'medianest_backfill_plex_sidecars: {source}: {message}')
+            self.stdout.write(self.style.ERROR(f'  SKIPPED: {message}'))
+            return
+
+        # One precondition instead of a check at every path the backfill
+        # or rename_files() touches: the source's tree must hold only
+        # regular files and real directories. rename_files() resolves
+        # symlinks while this command's checks compare paths lexically,
+        # skips dangling links, and moves FIFOs and sockets as if they were
+        # sidecars; NFO reads block on a FIFO. Refused in both modes before
+        # anything is saved or moved. The per-path checks further down stay
+        # as defense in depth.
+        special = self._special_tree_entries(directory)
+        if special:
+            summary['errors'] += 1
+            shown = ', '.join(str(path) for path in special[:10])
+            more = f' and {len(special) - 10} more' if len(special) > 10 else ''
+            message = (
+                'the source directory holds symlinks or special files '
+                f'({shown}{more}); the backfill only handles regular files '
+                'and real directories. Replace or remove them and re-run'
             )
             log.error(f'medianest_backfill_plex_sidecars: {source}: {message}')
             self.stdout.write(self.style.ERROR(f'  SKIPPED: {message}'))
@@ -1156,6 +1179,26 @@ class Command(BaseCommand):
         if not target.parent.resolve().is_relative_to(download_root):
             return f'target directory {target.parent} resolves outside {download_root}'
         return None
+
+    def _special_tree_entries(self, directory):
+        '''
+            Every entry at or under `directory` that is a symlink (live or
+            dangling) or neither a regular file nor a directory (a FIFO,
+            socket or device), without following links, sorted. Empty when
+            `directory` does not exist.
+        '''
+        if directory.is_symlink():
+            return [directory]
+        if not directory.is_dir():
+            return []
+        special = []
+        for dirpath, dirnames, filenames in os.walk(directory, followlinks=False):
+            for name in dirnames + filenames:
+                path = Path(dirpath) / name
+                mode = os.lstat(path).st_mode
+                if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
+                    special.append(path)
+        return sorted(special)
 
     def _nested_source_directories(self, source, working_source):
         '''

@@ -183,6 +183,17 @@ owner. This file records what the tag would contain and what was verified.
      is refused too: the recursive key sweep would reach the nested
      source's files, which this source's ownership checks cannot see.
      Bridge-created `acq-src-*` directories are siblings, never nested.
+   - **Plain source trees only.** Before anything else, each source's
+     directory is walked once (without following links), and the source
+     is refused in both modes when it holds any symlink (live or dangling)
+     or any entry that is neither a regular file nor a directory (a FIFO,
+     socket or device). `rename_files()` resolves symlinks while the
+     command's checks compare paths lexically, skips dangling links, and
+     moves special files as if they were sidecars, so this one
+     precondition covers every such case; the per-path checks described
+     above remain as defense in depth. TubeSync itself never creates
+     symlinks under a source directory, so only operator-made ones can
+     trigger it, and the dry-run lists them before anything changes.
    - **Foreign episode NFOs.** An existing `.nfo` at the target that is not
      this media's own (`<episodedetails>` whose `<id>`/`<uniqueid>` is its
      key), or is a symlink, is never overwritten -- for a rename, an
@@ -288,6 +299,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
   counting every locked row would also count TubeSync's brief cleanup
   and migration locks on downloaded media. Run the backfill with `TUBESYNC_RENAME_ALL_SOURCES=false`
   (and the sources out of `TUBESYNC_RENAME_SOURCES`) to close this window.
+- A source whose directory holds any symlink or special file cannot be
+  backfilled until those entries are replaced or removed (see "Plain
+  source trees only" above).
 - Index-only sources (`download_media` off) only carry approximate
   listing dates until an item is downloaded, so their numbering can move.
 - A source whose `media_format` does not use `{episode_mmddnn}` numbers
@@ -407,3 +421,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 645 tests OK at the stack tip (T1-T3 unchanged: 389, 451 and 528). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 653 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: with `{key}` in the profile, a source whose directory contains another source's directory is refused in both modes before anything is saved or moved (the nested source's file carrying the same video key is untouched); a sibling source directory is not affected. The refusal test was checked to fail with the check removed.
+
+## Verification (2026-09-26, sixteenth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 648 tests OK at the stack tip (T1-T3 unchanged: 389, 451 and 528). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 656 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep, replacing further per-path fixes with one precondition: a source tree holding any symlink or special file is refused in both modes before anything is saved or moved (a dangling-symlink sidecar and an adoption through a symlinked directory are the new cases). Twenty-three earlier symlink/FIFO test cases now meet this earlier refusal; they were updated to expect it and still assert that nothing moved, was written or was saved. The source-level alias check keeps its own test for an alias outside the source tree. Each new test was checked to fail with its check removed.

@@ -792,7 +792,10 @@ directory reached through a symlink inside it (`rename_files()` resolves
 both). The whole run is refused when `DOWNLOAD_ROOT` itself goes through a
 symlink, and a whole source when any of its downloaded rows is recorded
 through a symlinked directory, or (with `{key}` in the profile) when its
-directory contains another source's; a media already at its target
+directory contains another source's. Before any of that, a source whose
+directory holds any symlink or special file (FIFO, socket, device) is
+refused outright; TubeSync never creates those itself. A media already at
+its target
 gets the same checks before its NFO and thumbnail are written. An
 existing episode `.nfo` that is not this media's own (or is a symlink,
 or not a regular file at all, which is never read) is never overwritten, nor carried onto the target NFO name by either

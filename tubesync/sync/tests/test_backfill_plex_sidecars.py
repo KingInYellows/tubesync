@@ -130,6 +130,13 @@ def run_backfill_capture(*args, **options):
     return out.getvalue(), exc
 
 
+def run_backfill_refused(*args, **options):
+    '''run_backfill() for a run that must exit non-zero; returns its output.'''
+    output, exc = run_backfill_capture(*args, **options)
+    assert exc is not None, 'expected the backfill to exit non-zero'
+    return output
+
+
 def summary_of(output):
     '''The summary counts of a run's output, without the mode header.'''
     return output.split('Summary (', 1)[1].split('\n', 1)[1]
@@ -1307,7 +1314,7 @@ class BackfillReviewFollowUpTestCase(BackfillFollowUpMixin, TestCase):
                 '--source', str(source.uuid), '--apply',
             )
             self.assertIsNotNone(exc)
-            self.assertIn('it is a symlink', output)
+            self.assertIn('holds symlinks or special files', output)
             media.refresh_from_db()
             self.assertEqual(Path(media.media_file.path), old_path)
 
@@ -1323,7 +1330,7 @@ class BackfillReviewFollowUpTestCase(BackfillFollowUpMixin, TestCase):
                 '--source', str(source.uuid), '--apply',
             )
             self.assertIsNotNone(exc)
-            self.assertIn('resolves outside', output)
+            self.assertIn('holds symlinks or special files', output)
             media.refresh_from_db()
             self.assertEqual(Path(media.media_file.path), old_path)
 
@@ -1534,7 +1541,7 @@ class BackfillReviewFollowUp3TestCase(BackfillFollowUpMixin, TestCase):
                 '--source', str(source.uuid), '--apply',
             )
             self.assertIsNotNone(exc)
-            self.assertIn('is a symlink', output)
+            self.assertIn('holds symlinks or special files', output)
             self.assertTrue(old_path.is_symlink())
             self.assertEqual(real.read_bytes(), b'outside')
 
@@ -1546,7 +1553,7 @@ class BackfillReviewFollowUp3TestCase(BackfillFollowUpMixin, TestCase):
                 '--source', str(source.uuid), '--apply',
             )
             self.assertIsNotNone(exc)
-            self.assertIn('resolves outside', output)
+            self.assertIn('holds symlinks or special files', output)
             self.assertTrue(old_path.exists())
             self.assertEqual(list(Path(outside).iterdir()), [])
 
@@ -1702,7 +1709,7 @@ class BackfillReviewFollowUp4TestCase(BackfillFollowUpMixin, TestCase):
                 '--source', str(source.uuid), '--apply',
             )
             self.assertIsNotNone(exc)
-            self.assertIn('is already occupied', output)
+            self.assertIn('holds symlinks or special files', output)
             self.assertTrue(target.is_symlink())
             self.assertTrue(old_path.exists())
 
@@ -1720,7 +1727,7 @@ class BackfillReviewFollowUp4TestCase(BackfillFollowUpMixin, TestCase):
                 '--source', str(source.uuid), '--apply',
             )
             self.assertIsNotNone(exc)
-            self.assertIn('sidecar target(s) already occupied', output)
+            self.assertIn('holds symlinks or special files', output)
             self.assertTrue(destination.is_symlink())
             self.assertTrue(old_path.exists())
 
@@ -1847,7 +1854,7 @@ class BackfillReviewFollowUp5TestCase(BackfillFollowUpMixin, TestCase):
             self.assertIsNotNone(exc)
             # Review pass 14's source-level check refuses a row recorded
             # through a symlinked directory before this per-media one.
-            self.assertIn('recorded through symlinked directories', output)
+            self.assertIn('holds symlinks or special files', output)
             self.assertFalse(nfo.exists())
 
     def test_a_sidecar_onto_an_earlier_medias_projected_video_is_refused(self):
@@ -1914,8 +1921,8 @@ class BackfillReviewFollowUp5TestCase(BackfillFollowUpMixin, TestCase):
             source, media, old_path = self.make_downloaded()
             tvshow = source.directory_path / 'tvshow.nfo'
             tvshow.symlink_to(source.directory_path / 'missing.nfo')
-            dry = run_backfill('--source', str(source.uuid))
-            applied = run_backfill('--source', str(source.uuid), '--apply')
+            dry = run_backfill_refused('--source', str(source.uuid))
+            applied = run_backfill_refused('--source', str(source.uuid), '--apply')
             for output in (dry, applied):
                 self.assertIn('tvshow_written: 0', output)
             self.assertTrue(tvshow.is_symlink())
@@ -2004,12 +2011,12 @@ class BackfillReviewFollowUp6TestCase(BackfillFollowUpMixin, TestCase):
             poster = source.directory_path / 'poster.jpg'
             poster.symlink_to(Path(outside) / 'poster.jpg')
             with patch(f'{self.COMMAND}.TaskHistory') as mock_th:
-                dry = run_backfill('--source', str(source.uuid))
-                applied = run_backfill('--source', str(source.uuid), '--apply')
+                dry = run_backfill_refused('--source', str(source.uuid))
+                applied = run_backfill_refused('--source', str(source.uuid), '--apply')
             mock_th.schedule.assert_not_called()
             for output in (dry, applied):
                 self.assertIn('images_enqueued: 0', output)
-                self.assertIn('poster.jpg is a symlink', output)
+                self.assertIn('holds symlinks or special files', output)
             self.assertTrue(poster.is_symlink())
             self.assertFalse((Path(outside) / 'poster.jpg').exists())
 
@@ -2175,14 +2182,14 @@ class BackfillReviewFollowUp8TestCase(BackfillFollowUpMixin, TestCase):
                     link = source.directory_path / name
                     link.symlink_to(Path(outside) / name)
                     with patch(f'{self.COMMAND}.TaskHistory') as mock_th:
-                        dry = run_backfill('--source', str(source.uuid))
-                        applied = run_backfill(
+                        dry = run_backfill_refused('--source', str(source.uuid))
+                        applied = run_backfill_refused(
                             '--source', str(source.uuid), '--apply',
                         )
                     mock_th.schedule.assert_not_called()
                     for output in (dry, applied):
                         self.assertIn('images_enqueued: 0', output)
-                        self.assertIn(f'{name} is a symlink', output)
+                        self.assertIn('holds symlinks or special files', output)
                     self.assertFalse((Path(outside) / name).exists())
                     link.unlink()
 
@@ -2200,7 +2207,7 @@ class BackfillReviewFollowUp8TestCase(BackfillFollowUpMixin, TestCase):
             mock_th.schedule.assert_not_called()
             for output in (dry, applied):
                 self.assertIn('images_enqueued: 0', output)
-                self.assertIn('resolves outside', output)
+                self.assertIn('holds symlinks or special files', output)
             self.assertFalse((Path(outside) / 'poster.jpg').exists())
 
 
@@ -2225,7 +2232,7 @@ class BackfillReviewFollowUp9TestCase(BackfillFollowUpMixin, TestCase):
             mock_th.schedule.assert_not_called()
             for output, error in ((dry, dry_exc), (applied, exc)):
                 self.assertIsNotNone(error)
-                self.assertIn('resolves outside', output)
+                self.assertIn('holds symlinks or special files', output)
                 self.assertIn('tvshow_written: 0', output)
                 self.assertIn('images_enqueued: 0', output)
             self.assertEqual(summary_of(dry), summary_of(applied))
@@ -2294,7 +2301,7 @@ class BackfillReviewFollowUp10TestCase(BackfillFollowUpMixin, TestCase):
             for output, error in ((dry, dry_exc), (applied, exc)):
                 self.assertIsNotNone(error)
                 self.assertIn('errors: 1', output)
-                self.assertIn(f'{link} is a symlink', output)
+                self.assertIn('holds symlinks or special files', output)
             self.assertEqual(summary_of(dry), summary_of(applied))
             source.refresh_from_db()
             self.assertFalse(source.copy_channel_images)
@@ -2319,7 +2326,7 @@ class BackfillReviewFollowUp10TestCase(BackfillFollowUpMixin, TestCase):
             for output, error in ((dry, dry_exc), (applied, exc)):
                 self.assertIsNotNone(error)
                 self.assertIn('errors: 1', output)
-                self.assertIn('resolves outside', output)
+                self.assertIn('holds symlinks or special files', output)
             self.assertEqual(summary_of(dry), summary_of(applied))
             source.refresh_from_db()
             self.assertFalse(source.copy_channel_images)
@@ -2387,7 +2394,7 @@ class BackfillReviewFollowUp12TestCase(BackfillFollowUpMixin, TestCase):
             )
             for output, error in ((dry, dry_exc), (applied, exc)):
                 self.assertIsNotNone(error)
-                self.assertIn('goes through a symlink', output)
+                self.assertIn('holds symlinks or special files', output)
                 self.assertIn('renamed: 0', output)
             self.assertEqual(summary_of(dry), summary_of(applied))
             self.assertTrue(old_path.exists())
@@ -2409,15 +2416,24 @@ class BackfillReviewFollowUp12TestCase(BackfillFollowUpMixin, TestCase):
                 with self.subTest(name=name):
                     make()
                     with patch(f'{self.COMMAND}.TaskHistory') as mock_th:
-                        dry = run_backfill('--source', str(source.uuid))
-                        applied = run_backfill(
+                        # A refused source exits non-zero; only the output
+                        # matters here.
+                        dry = run_backfill_capture('--source', str(source.uuid))[0]
+                        applied = run_backfill_capture(
                             '--source', str(source.uuid), '--apply',
-                        )
+                        )[0]
                     mock_th.schedule.assert_not_called()
                     for output in (dry, applied):
                         self.assertIn('images_enqueued: 0', output)
+                        # A directory named like an image is a real
+                        # directory and meets the per-path check; a FIFO is
+                        # a special file, refused by the source-tree
+                        # precondition (review pass 16) first.
                         self.assertIn(
-                            f'{name} exists but is not a regular file', output,
+                            f'{name} exists but is not a regular file'
+                            if name == 'banner.jpg'
+                            else 'holds symlinks or special files',
+                            output,
                         )
                     undo()
 
@@ -2501,7 +2517,7 @@ class BackfillReviewFollowUp13TestCase(BackfillFollowUpMixin, TestCase):
                 self.assertIsNotNone(error)
                 # The source-level check (review pass 14) now refuses it
                 # before the per-media one is reached.
-                self.assertIn('recorded through symlinked directories', output)
+                self.assertIn('holds symlinks or special files', output)
                 self.assertIn(str(alias), output)
                 self.assertIn('renamed: 0', output)
             self.assertTrue(moved.exists())
@@ -2517,7 +2533,7 @@ class BackfillReviewFollowUp13TestCase(BackfillFollowUpMixin, TestCase):
             os.mkfifo(nfo)
             for output, error in self.run_both(source):
                 self.assertIsNotNone(error)
-                self.assertIn("it is not this media's episode NFO", output)
+                self.assertIn('holds symlinks or special files', output)
             self.assertFalse(nfo.is_file())
 
     def test_a_fifo_nfo_beside_the_old_video_is_not_moved(self):
@@ -2527,9 +2543,9 @@ class BackfillReviewFollowUp13TestCase(BackfillFollowUpMixin, TestCase):
             os.mkfifo(old_nfo)
             for output, error in self.run_both(source):
                 self.assertIsNotNone(error)
-                self.assertIn(
-                    'would be moved to its new name and then overwritten', output,
-                )
+                # The source-tree precondition (review pass 16) refuses a
+                # FIFO before the per-media check below it is reached.
+                self.assertIn('holds symlinks or special files', output)
                 self.assertIn('renamed: 0', output)
             self.assertTrue(old_path.exists())
             self.assertFalse(old_nfo.is_file())
@@ -2605,7 +2621,7 @@ class BackfillReviewFollowUp14TestCase(BackfillFollowUpMixin, TestCase):
             )
             for output, error in ((dry, dry_exc), (applied, exc)):
                 self.assertIsNotNone(error)
-                self.assertIn('recorded through symlinked directories', output)
+                self.assertIn('holds symlinks or special files', output)
                 self.assertIn(str(alias), output)
                 self.assertIn('renamed: 0', output)
             self.assertEqual(summary_of(dry), summary_of(applied))
@@ -2671,3 +2687,70 @@ class BackfillReviewFollowUp15TestCase(BackfillFollowUpMixin, TestCase):
             )
             output = run_backfill('--source', str(source.uuid), '--apply')
             self.assertIn('renamed: 1', output)
+
+
+class BackfillReviewFollowUp16TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Sixteenth review pass: the source tree must hold only regular files
+        and real directories (one precondition for every symlink and
+        special-file case), and a row recorded through an alias outside the
+        source tree is still refused by the source-level alias check.
+    '''
+
+    def assert_refused(self, source, message):
+        dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+        applied, exc = run_backfill_capture(
+            '--source', str(source.uuid), '--apply',
+        )
+        for output, error in ((dry, dry_exc), (applied, exc)):
+            self.assertIsNotNone(error)
+            self.assertIn(message, output)
+            self.assertIn('renamed: 0', output)
+            self.assertIn('adopted: 0', output)
+        self.assertEqual(summary_of(dry), summary_of(applied))
+
+    def test_a_dangling_symlink_sidecar_refuses_the_source(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            sidecar = old_path.with_suffix('.en.srt')
+            sidecar.symlink_to(source.directory_path / 'missing.srt')
+            self.assert_refused(source, 'holds symlinks or special files')
+            self.assertTrue(old_path.exists())
+            self.assertTrue(sidecar.is_symlink())
+
+    def test_an_adoption_through_a_symlinked_directory_is_refused(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            real = source.directory_path / 'real-season'
+            real.mkdir()
+            self.target_dir(source).symlink_to(real, target_is_directory=True)
+            # A half-finished move: the video already sits at the target
+            # (through the link) and the recorded current file is gone.
+            old_path.rename(real / f'{self.TARGET_NAME}.mkv')
+            self.assert_refused(source, 'holds symlinks or special files')
+            media.refresh_from_db()
+            self.assertEqual(Path(media.media_file.path), old_path)
+
+    def test_a_row_aliased_outside_the_source_tree_refuses_the_source(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, first, first_path = self.make_downloaded(key='aaa')
+            elsewhere = source.directory_path.parent / 'elsewhere'
+            elsewhere.mkdir()
+            alias = source.directory_path.parent / 'elsewhere-alias'
+            alias.symlink_to(elsewhere, target_is_directory=True)
+            (elsewhere / 'other.mkv').write_bytes(b'other video')
+            second = Media.objects.create(key='bbb', source=source, metadata=metadata)
+            second.media_file.name = str(
+                (alias / 'other.mkv').relative_to(media_file_storage.location)
+            )
+            second.downloaded = True
+            second.save()
+            self.assert_refused(source, 'recorded through symlinked directories')
+            self.assertTrue(first_path.exists())
+            self.assertEqual((elsewhere / 'other.mkv').read_bytes(), b'other video')
