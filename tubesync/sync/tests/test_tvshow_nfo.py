@@ -897,6 +897,20 @@ class TasksWriteTvshowNfoTestCase(TestCase):
             download_source_images.call_local(str(self.source.pk))
         self.assert_called_for_source(mock_write)
 
+    def test_download_source_images_refreshes_the_nfo_when_an_image_fails(self):
+        from sync.tasks import download_source_images
+        with (
+            patch.object(
+                Source, 'get_image_url', new_callable=PropertyMock,
+                return_value=('https://example.invalid/a.jpg', None, None),
+            ),
+            patch('sync.tasks.get_remote_image', side_effect=OSError('boom')),
+            patch('sync.tasks.write_tvshow_nfo') as mock_write,
+        ):
+            with self.assertRaises(OSError):
+                download_source_images.call_local(str(self.source.pk))
+        self.assert_called_for_source(mock_write)
+
     def test_download_media_metadata(self):
         from sync.tasks import download_media_metadata
         media = Media.objects.create(
