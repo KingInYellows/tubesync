@@ -416,6 +416,22 @@ class Command(BaseCommand):
             log.error(f'medianest_backfill_plex_sidecars: {source}: {message}')
             self.stdout.write(self.style.ERROR(f'  SKIPPED: {message}'))
             return
+        # The source directory's own path must be canonical too: a symlink
+        # on it (an ancestor below the storage location; the location
+        # itself is checked per run) would let the save's
+        # check_source_directory_exists create the directory wherever the
+        # link points, outside DOWNLOAD_ROOT included, before any later
+        # check runs.
+        if directory.resolve() != directory.absolute():
+            summary['errors'] += 1
+            message = (
+                f'the source directory {directory} goes through a symlink '
+                f'(it resolves to {directory.resolve()}); point the source '
+                'at the real directory and re-run'
+            )
+            log.error(f'medianest_backfill_plex_sidecars: {source}: {message}')
+            self.stdout.write(self.style.ERROR(f'  SKIPPED: {message}'))
+            return
 
         overlay = defaults_by_type.get(contract_type, {})
         working_source = source
@@ -1202,8 +1218,8 @@ class Command(BaseCommand):
 
     def _nested_source_directories(self, source, working_source):
         '''
-            The directories of other sources that lie inside
-            `working_source`'s own directory, when its media_format uses
+            The directories of other sources that lie inside, or resolve
+            to, `working_source`'s own directory, when its media_format uses
             {key} (only that sweep, rename_files()'s recursive key match,
             reaches into subdirectories); otherwise an empty list.
         '''
@@ -1213,7 +1229,9 @@ class Command(BaseCommand):
         nested = []
         for other in Source.objects.exclude(pk=source.pk):
             other_dir = Path(other.directory_path).resolve()
-            if other_dir != top and other_dir.is_relative_to(top):
+            # is_relative_to() includes equality: another source reaching
+            # this very directory through an alias overlaps it too.
+            if other_dir.is_relative_to(top):
                 nested.append(str(other.directory_path))
         return sorted(nested)
 
@@ -1472,7 +1490,10 @@ class Command(BaseCommand):
         # which this command must never trigger.
         if not media.thumb_file_exists:
             return
-        if _occupied(self._sidecar_path(media, '.jpg')):
+        thumb_path = self._sidecar_path(media, '.jpg')
+        # A dry-run has not moved the old-stem .jpg its rename projects
+        # there; apply has, and finds it occupied. Count both the same.
+        if _occupied(thumb_path) or thumb_path in self._projected_destinations:
             return
         if apply_changes:
             media.copy_thumbnail()

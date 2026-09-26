@@ -2754,3 +2754,77 @@ class BackfillReviewFollowUp16TestCase(BackfillFollowUpMixin, TestCase):
             self.assert_refused(source, 'recorded through symlinked directories')
             self.assertTrue(first_path.exists())
             self.assertEqual((elsewhere / 'other.mkv').read_bytes(), b'other video')
+
+
+class BackfillReviewFollowUp17TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Seventeenth review pass: a source directory path through a symlink
+        is refused before the save can create anything, sources resolving
+        to the same directory overlap, and a projected .jpg counts as an
+        existing thumbnail in a dry-run as it does in apply.
+    '''
+
+    def test_a_source_path_through_a_symlinked_ancestor_is_refused(self):
+        with temp_download_root(), tempfile.TemporaryDirectory() as outside:
+            source = make_bridge_source(directory='via-link/acq-src-x')
+            link = source.directory_path.parent
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to(outside, target_is_directory=True)
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('goes through a symlink', output)
+                self.assertIn('errors: 1', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertEqual(list(Path(outside).iterdir()), [])
+            source.refresh_from_db()
+            self.assertFalse(source.copy_channel_images)  # never saved
+
+    def test_a_source_aliasing_this_directory_overlaps_it(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            alias_source = make_bridge_source(
+                key='UCaliasabcdefghijklmnopq',
+                name='acq-src-alias',
+                directory='acq-src-alias',
+            )
+            alias_source.directory_path.symlink_to(
+                source.directory_path, target_is_directory=True,
+            )
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn("other sources' directories", output)
+                self.assertIn('renamed: 0', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertTrue(old_path.exists())
+
+    def test_a_projected_jpg_counts_as_an_existing_thumbnail(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            old_path.with_suffix('.jpg').write_bytes(b'old thumbnail')
+            with (
+                patch.object(
+                    Media, 'thumb_file_exists',
+                    new_callable=PropertyMock, return_value=True,
+                ),
+                patch.object(Media, 'copy_thumbnail') as mock_copy,
+            ):
+                dry = run_backfill('--source', str(source.uuid))
+                applied = run_backfill('--source', str(source.uuid), '--apply')
+            mock_copy.assert_not_called()
+            for output in (dry, applied):
+                self.assertIn('thumbs_copied: 0', output)
+                self.assertIn('renamed: 1', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            target_jpg = self.target_dir(source) / f'{self.TARGET_NAME}.jpg'
+            self.assertEqual(target_jpg.read_bytes(), b'old thumbnail')
