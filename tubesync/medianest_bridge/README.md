@@ -583,8 +583,8 @@ uuid, none of which can carry either.
 `medianest_bridge/contract/bridge-openapi.v1.yaml` is a vendored, read-only
 copy of the canonical contract (MediaNest repo,
 `docs/planning/tubesync-integration/bridge-openapi.v1.yaml` @
-`118834c5c4e1611ac51694334feeb93d2b4ae1f2`, re-vendored to declare
-`POST /sources/validate`'s own 503 `ProviderUnavailable` response).
+`479b97ea4fa990def968f99db7052b04cafd5e0d`, a description-only re-vendor
+scoping the source-defaults 503 to the requested source type).
 **Note:** that SHA is the contract worktree's own local commit on
 `plex/m3a-contract-source-defaults` as of this PR -- a pre-merge branch
 commit, not yet on the canonical repo's `main`. Re-sync this field (and
@@ -602,16 +602,22 @@ exactly this way since T3); `a7689cdc7a87f93f0ddc8a5c8efd9d9ec7c88eda`
 object's `required` list, so `contract_fixtures.json`'s
 `health_ready_component_names` is unchanged;
 `f84aa1853cf8b3ba2cd4c68be6dca8b997e64731` (2026-09-25) declared
-`POST /sources`' own 503 `ProviderUnavailable` response; this re-vendor
-(`118834c5c4e1611ac51694334feeb93d2b4ae1f2`, 2026-09-25) further declares
+`POST /sources`' own 503 `ProviderUnavailable` response;
+`118834c5c4e1611ac51694334feeb93d2b4ae1f2` (2026-09-25) further declared
 `POST /sources/validate`'s own 503 `ProviderUnavailable` response and
 rewords the shared `ProviderUnavailable` response description (and
 DECISIONS #54) to say MediaNest treats the validate-time 503 as a
 definite, re-submittable failure the user can retry once an operator
 fixes the configuration, while the create-time 503 remains a backstop
 only, reconciled as an unknown outcome (never blind-retried) -- matching
-`views_write.py`'s own `ValidateSourceView`/`CreateSourceView` docstrings.
-Only response/description text changed across these last three
+`views_write.py`'s own `ValidateSourceView`/`CreateSourceView` docstrings;
+and this re-vendor (`479b97ea4fa990def968f99db7052b04cafd5e0d`,
+2026-09-25) scopes the source-defaults 503 to the requested source type
+(as `_source_defaults_or_error()` validates it), limits "serves no
+endpoint" to a disabled bridge, and states that a bridge reporting
+`sourceDefaults` says `healthy` (never `not_configured`) with nothing
+configured, and may put a `detail` on a healthy status.
+Only response/description text changed across these last four
 re-vendors -- no `components.schemas` shape changed, confirmed by
 `test_contract_conformance.py`'s own PyYAML cross-check. Do not edit this
 file directly -- re-vendor from the canonical source instead.
