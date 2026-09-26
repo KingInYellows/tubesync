@@ -1,0 +1,31 @@
+docs/solutions/code-quality/date-episode-numbers-collide-with-downloaded-files.md
+  s_6790353d565094::t_fb22b9ffc00461 1-93
+docs/solutions/workflow/django-tests-in-the-release-image.md
+  s_6790353d565094::t_677ac270b05628 1-66
+docs/solutions/code-quality/rename-files-key-sweep-moves-other-media.md
+  s_6790353d565094::t_bf531ada7b1348 1-94
+docs/solutions/code-quality/yt-dlp-channel-title-has-tab-suffix.md
+  s_6790353d565094::t_68c05ac7f36994 1-62
+docs/solutions/workflow/graphite-restacks-miscount-fork-delta-docs.md
+  s_6790353d565094::t_954200d1c60a3f 1-79
+docs/solutions/workflow/bot-review-waves-and-github-rate-limits.md
+  s_6790353d565094::t_b1ee09bacb4a6a 1-60
+docs/solutions/README.md
+  s_6790353d565094::t_91b92697923564 1-10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "8a88839efb350021e6689d0e4f5bb2161037f323",
+  "prompts": {},
+  "sessions": {
+    "s_6790353d565094": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d88f8383-3f7d-42ae-80fd-a2f5940fe795",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
