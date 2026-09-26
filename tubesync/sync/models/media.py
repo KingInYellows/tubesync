@@ -1,13 +1,17 @@
 import os
 import uuid
 import json
+import re
 from collections import OrderedDict
 from copy import deepcopy
+from itertools import chain
 from datetime import datetime, timedelta, timezone as tz
 from pathlib import Path
+from string import Formatter
 from xml.etree import ElementTree
 from django.conf import settings
 from django.db import models
+from django.db.models.functions import Coalesce
 from django.core.exceptions import ObjectDoesNotExist
 from django.db.transaction import atomic
 from django.utils.text import slugify
@@ -44,6 +48,152 @@ from .media__tasks import (
     failed_format, refresh_formats, wait_for_premiere, write_nfo_file,
 )
 from .source import Source
+
+
+# UTF-8 byte budget for `Media.title_full_bounded`.
+TITLE_FULL_BOUNDED_MAX_BYTES = 150
+# `episode_mmddnn` is 'MMDD' plus a two-digit same-day index up to this.
+EPISODE_DAY_INDEX_TWO_DIGIT_MAX = 99
+# Base of the disjoint episode-number range for a same-day index past
+# EPISODE_DAY_INDEX_TWO_DIGIT_MAX: base + MMDD * 10_000 + index (8 digits).
+EPISODE_OVERFLOW_BASE = 10_000_000
+EPISODE_OVERFLOW_MMDD_FACTOR = 10_000
+
+
+def _format_field_names(format_str):
+    '''
+        The top-level field names `format_str` substitutes, so
+        `{episode_mmddnn:>8}` and `{episode_mmddnn!s}` count, a field nested
+        in another field's format spec (`{title:.{episode_yyyy}}`) counts
+        too, and an escaped `{{episode_mmddnn}}` does not. Empty for an
+        unparseable format.
+    '''
+    try:
+        return _parsed_field_names(format_str)
+    except ValueError as e:
+        log.warning(f'Unparseable media_format {format_str!r}: {e}')
+        return set()
+
+
+def _parsed_field_names(format_str):
+    names = set()
+    for _literal, field, spec, _conversion in Formatter().parse(format_str):
+        if field:
+            names.add(field.split('.', 1)[0].split('[', 1)[0])
+        if spec:
+            # str.format allows one level of nesting inside a spec.
+            names |= _parsed_field_names(spec)
+    return names
+
+
+def _episode_day_index_from_name(name, media_format, mmdd):
+    '''
+        The same-day index a file name already carries in its
+        `{episode_mmddnn}` field, or `None`.
+
+        Anchors on the literal text around each `{episode_mmddnn}` in
+        `media_format` (for the built-in Plex profile, `e` before and
+        ` - ` after), not on the whole rendered name, so a later title,
+        format or extension change does not lose the number. The token
+        must encode `mmdd` (the item's current `episode_date`), and every
+        occurrence must agree. A field with a format spec or a conversion
+        other than `!s` is not parsed, and neither is one with no literal
+        text on either side (only digit boundaries would anchor it, so an
+        unrelated digit run elsewhere in the path could match): such a
+        format numbers every item by its live same-day order.
+    '''
+    try:
+        parsed = list(Formatter().parse(media_format))
+    except ValueError:
+        return None
+    patterns = []
+    for position, (before, field, spec, conversion) in enumerate(parsed):
+        if field != 'episode_mmddnn':
+            continue
+        if spec or conversion not in (None, 's'):
+            return None
+        after = ''
+        if position + 1 < len(parsed):
+            after = parsed[position + 1][0]
+        if not (before or after):
+            return None
+        patterns.append(
+            (re.escape(before) if before else r'(?<!\d)')
+            + r'(\d{8}|\d{6})'
+            + (re.escape(after) if after else r'(?!\d)')
+        )
+    indexes = set()
+    for pattern in patterns:
+        for token in re.findall(pattern, name):
+            index = _parse_episode_token(token, mmdd)
+            if index is None:
+                return None
+            indexes.add(index)
+    if len(indexes) != 1:
+        return None
+    return indexes.pop()
+
+
+def _parse_episode_token(token, mmdd):
+    '''
+        The same-day index an `episode_mmddnn` value encodes for `mmdd`,
+        or `None` when it encodes another day or is not such a value.
+    '''
+    if len(token) == 6:
+        index = int(token[4:])
+        if token[:4] == mmdd and 1 <= index <= EPISODE_DAY_INDEX_TWO_DIGIT_MAX:
+            return index
+        return None
+    rest = int(token) - EPISODE_OVERFLOW_BASE
+    if rest < 0:
+        return None
+    token_mmdd, index = divmod(rest, EPISODE_OVERFLOW_MMDD_FACTOR)
+    if f'{token_mmdd:04}' == mmdd and index > EPISODE_DAY_INDEX_TWO_DIGIT_MAX:
+        return index
+    return None
+
+
+def _aware_utc(value):
+    '''Returns `value` as a timezone-aware datetime in UTC (naive = UTC).'''
+    if timezone.is_naive(value):
+        value = timezone.make_aware(value, tz.utc)
+    return value.astimezone(tz.utc)
+
+
+def _episode_date_coalesce():
+    '''
+        The SQL-side mirror of `Media.episode_date`'s precedence, used to
+        annotate every other row in `Media._same_day_index` with the same
+        value `episode_date` would compute for each of them in Python:
+        `new_metadata__published` (stable once ingested -- see
+        `sync.models.metadata.Metadata.ingest_metadata`), else
+        `published` (can be rewritten with approximate data on every
+        `index_source` re-index -- see sync/tasks.py `db_fields_media`
+        and sync/youtube.py's forced `youtubetab:approximate_date=true`),
+        else `created` (always set once a row is saved).
+
+        `upload_date` never needs its own branch in this SQL expression,
+        unlike in `episode_date`'s full Python order (`new_metadata.
+        published` -> `published` -> `upload_date` -> `created`): it
+        isn't a database column -- it's derived from JSON metadata in
+        Python -- so it can't appear in a SQL expression at all.
+        `Metadata.ingest_metadata` now folds it into `new_metadata.
+        published` at ingest time whenever no real release/upload
+        timestamp exists, so its value is reachable through the first
+        branch for every row that has a `new_metadata` row at all. The
+        one remaining case -- a `Media` with a legacy `metadata` column
+        and no `new_metadata.published` (no related row, or one written
+        without going through `ingest_metadata`) -- still can't be
+        expressed here; `_same_day_index` filters those out of the query
+        that uses this function and evaluates them separately in Python.
+
+        Keep this and `episode_date` in exact agreement -- if they
+        disagree about which UTC day an item falls on, `_same_day_index`
+        (SQL, via this function) and `episode_mmddnn`/`nfo_episode_number`
+        (Python, via `episode_date`) can disagree about that item's
+        same-day index.
+    '''
+    return Coalesce('new_metadata__published', 'published', 'created')
 
 
 class Media(models.Model):
@@ -553,7 +703,17 @@ class Media(models.Model):
         format_str = self.get_format_str()
         display_format = self.get_display_format(format_str)
         dateobj = self.upload_date if self.upload_date else self.created
-        return {
+        # The episode_* keys cost a query each (episode_mmddnn a COUNT
+        # too), so only a media_format that uses them gets them.
+        # {yyyy}/{mm}/{dd} above stay on upload_date for compatibility and
+        # can differ from {episode_yyyy} -- see Media.episode_date.
+        used_fields = _format_field_names(str(self.source.media_format))
+        episode_keys = {
+            key: getattr(self, key)
+            for key in ('episode_yyyy', 'episode_mmddnn')
+            if key in used_fields
+        }
+        return episode_keys | {
             'yyyymmdd': dateobj.strftime('%Y%m%d'),
             'yyyy_mm_dd': dateobj.strftime('%Y-%m-%d'),
             'yyyy_0mm_dd': dateobj.strftime('%Y-0%m-%d'),
@@ -564,6 +724,7 @@ class Media(models.Model):
             'source_full': clean_filename(self.source.name),
             'title': self.slugtitle,
             'title_full': clean_filename(self.title),
+            'title_full_bounded': self.title_full_bounded,
             'key': self.key,
             'format': '-'.join(display_format['format']),
             'playlist_title': self.playlist_title,
@@ -764,6 +925,27 @@ class Media(models.Model):
         return decoded[:80]
 
     @property
+    def title_full_bounded(self):
+        '''
+            Like `title_full` (`clean_filename(self.title)`), but bounded to
+            at most `TITLE_FULL_BOUNDED_MAX_BYTES` (150) UTF-8 bytes,
+            truncated at a character boundary so a
+            multibyte character is never split, then stripped. Keeps a long
+            multibyte/emoji title from pushing a filename's directory
+            component past common filesystem length limits when
+            combined with the rest of `media_format`.
+        '''
+        cleaned = clean_filename(self.title)
+        encoded = cleaned.encode('utf-8')
+        if len(encoded) <= TITLE_FULL_BOUNDED_MAX_BYTES:
+            return cleaned.strip()
+        # Decoding with errors='ignore' drops any incomplete trailing
+        # multibyte sequence left by the raw byte-offset truncation.
+        return encoded[:TITLE_FULL_BOUNDED_MAX_BYTES].decode(
+            'utf-8', errors='ignore',
+        ).strip()
+
+    @property
     def thumbnail(self):
         default = f'https://i.ytimg.com/vi/{self.key}/maxresdefault.jpg'
         return self.get_metadata_first_value('thumbnail', default)
@@ -784,6 +966,75 @@ class Media(models.Model):
             log.debug(f'Media.upload_date: {self.source} / {self}: strptime: {e}')
             pass
         return None
+
+    @property
+    def episode_date(self):
+        '''
+            The single date source for date-based episode numbering
+            (`episode_yyyy`, `episode_mmddnn`, and the non-playlist NFO
+            <season>/<episode>): `new_metadata.published` when set, else
+            `published`, else `upload_date`, else `created` -- always
+            returned as an aware UTC datetime.
+
+            `new_metadata.published` (the reverse `OneToOne` from
+            `sync.models.metadata.Metadata.media`, `related_name=
+            'new_metadata'`) is checked first because it is *stable*,
+            unlike `published`: `Metadata.ingest_metadata` sets it once,
+            from the full metadata's `release_timestamp`/`timestamp`
+            (falling back to `upload_date`, then to `media.published` or
+            `retrieved` -- see sync/models/metadata.py), and nothing
+            afterwards rewrites it with approximate data --
+            `sync.tasks.migrate_to_metadata` only ever merges the
+            `epoch`/`availability`/`extractor_key` keys into it, never
+            `timestamp`. `Media.published`, by contrast, is rewritten on
+            every `index_source` re-index (sync/tasks.py's
+            `db_fields_media` includes `'published'`) from yt-dlp's
+            `youtubetab:approximate_date=true` tab listing (forced on in
+            sync/youtube.py), which yt-dlp can derive from relative text
+            like "3 weeks ago" and so can drift call to call -- silently
+            reshuffling MMDD/index/filenames/NFOs for already-downloaded
+            media.
+
+            The `upload_date` step only still matters for a `Media` whose
+            legacy `metadata` column was set directly (bypassing
+            `ingest_metadata`, so no `new_metadata.published` exists --
+            not reachable through this codebase's own indexing/ingest
+            code paths, but a supported direct field assignment, e.g. in
+            tests): `_same_day_index`'s SQL `COUNT` can't see it either,
+            since `upload_date` is derived from JSON metadata in Python,
+            not a database column, so `_same_day_index` evaluates that
+            narrow case in Python too (see its docstring). Every row
+            produced by the normal indexing pipeline gets a
+            `new_metadata` row (via `migrate_to_metadata`/
+            `download_media_metadata`), whose `.published` already
+            covers `upload_date` (see `Metadata.ingest_metadata`), so
+            this step is not reached for those.
+
+            This is deliberately its own date source rather than reusing
+            `calculate_episode_number` (which only ever looks at
+            `published`), the pre-existing NFO season (`upload_date.year`),
+            or the `{yyyy}` format key (`upload_date` or `created`) --
+            those three can disagree with each other and with this one, and
+            adding a fourth ad-hoc mix would only make that worse.
+
+            `created` is only `None` for an unsaved instance (it has
+            `auto_now_add=True`, populated on save) -- that case falls back
+            to the current time rather than `None`.
+        '''
+        try:
+            new_metadata_published = self.new_metadata.published
+        except ObjectDoesNotExist:
+            new_metadata_published = None
+        if new_metadata_published:
+            return _aware_utc(new_metadata_published)
+        if self.published:
+            return _aware_utc(self.published)
+        upload_date = self.upload_date
+        if upload_date:
+            return _aware_utc(upload_date)
+        return _aware_utc(
+            self.created if self.created is not None else timezone.now()
+        )
 
     @property
     def metadata_duration(self):
@@ -939,16 +1190,24 @@ class Media(models.Model):
         nfo.append(_nfo_element(nfo,
             'showtitle', clean_emoji(str(self.source.name).strip()),
         ))
-        # season = upload date year
+        # season = episode_date year, episode = MMDD + same-day index. A
+        # playlist keeps the legacy season '1' and published-order
+        # calculate_episode_number() unless its media_format files videos
+        # by the same date scheme (every bridge-created playlist), so the
+        # NFO always agrees with the Season YYYY/sYYYYeMMDDNN filename.
+        legacy_playlist = (
+            self.source.is_playlist
+            and 'episode_mmddnn'
+            not in _format_field_names(str(self.source.media_format))
+        )
         nfo.append(_nfo_element(nfo,
             'season',
-            '1' if self.source.is_playlist else str(
-                self.upload_date.year if self.upload_date else ''
-            ),
+            '1' if legacy_playlist else str(self.episode_date.year),
         ))
-        # episode = number of video in the year
         nfo.append(_nfo_element(nfo,
-            'episode', self.get_episode_str(),
+            'episode',
+            self.get_episode_str() if legacy_playlist
+            else str(self.nfo_episode_number),
         ))
         # ratings = media metadata youtube rating
         value = _nfo_element(nfo, 'value', str(self.rating), indent=6)
@@ -1076,6 +1335,301 @@ class Media(models.Model):
             self.skip = True
         return response
 
+    def _same_day_index(self):
+        '''
+            Returns the 1-based position of this Media among its source's
+            other media whose `episode_date` falls on the same UTC calendar
+            day, ordered by (`episode_date`, `created`, `key`) -- the same
+            tie-break `calculate_episode_number` uses. Membership is never
+            filtered by `skip` or download state.
+
+            Membership and ordering use `episode_date` itself (mirrored in
+            SQL by `_episode_date_coalesce()`), so the MMDD that
+            `episode_mmddnn` encodes and the day an item is counted in can
+            never disagree (two items with the same encoded date always
+            get distinct indexes). The rows are counted in two parts:
+
+            - Every other row *except* the one below: a single annotated
+              `COUNT` -- one query, regardless of source size -- of the
+              rows that sort strictly before this one (unique per source
+              by `key`, so a strict "less than" on the full tuple never
+              includes this item itself). This is what replaces
+              `calculate_episode_number`'s approach of iterating every
+              candidate row in Python, which is an O(n) query cost paid
+              on every call -- `format_dict` calls the equivalent of this
+              once per filename evaluation, so that cost was effectively
+              O(n^2) per source rename.
+            - `published` unset, no `new_metadata.published` (no related
+              row, or one written without `ingest_metadata`), but metadata
+              in the legacy `metadata` column or the related row, set
+              directly (bypassing
+              `ingest_metadata` -- not reachable through this codebase's
+              own indexing/ingest code paths, but a supported direct
+              field assignment, e.g. in tests or a not-yet-migrated
+              import): `episode_date` falls back to `upload_date` for
+              these, which -- unlike `new_metadata.published` -- is
+              derived from JSON metadata in Python and so can't appear
+              in the `COUNT` above (`_episode_date_coalesce()`'s
+              docstring). Evaluated in Python; every row produced by the
+              normal indexing pipeline gets a `new_metadata` row (via
+              `sync.tasks.migrate_to_metadata`/`download_media_metadata`,
+              whose `.published` already covers `upload_date` -- see
+              `Metadata.ingest_metadata`), so this group is expected to
+              be empty or tiny.
+
+            `created` is only `None` for an unsaved instance (it has
+            `auto_now_add=True`, populated on save); that case falls back
+            to the current time rather than passing `None` into an `__lt`
+            query lookup, which Django raises on.
+        '''
+        date, created, key = this_item = self._episode_sort_key()
+        sql_day, legacy_day = self._same_day_others()
+        before = sql_day.filter(
+            models.Q(episode_date_sort__lt=date) |
+            models.Q(episode_date_sort=date, created__lt=created) |
+            models.Q(episode_date_sort=date, created=created, key__lt=key)
+        ).count()
+        before += sum(
+            1 for other in legacy_day()
+            if other._episode_sort_key() < this_item
+        )
+        return before + 1
+
+    def _episode_sort_key(self):
+        '''
+            (`episode_date`, `created`, `key`): the same-day order. An
+            unsaved instance has no `created` yet (`auto_now_add=True`) and
+            uses the current time instead.
+        '''
+        return (
+            self.episode_date,
+            _aware_utc(
+                self.created if self.created is not None else timezone.now()
+            ),
+            self.key,
+        )
+
+    def _same_day_others(self):
+        '''
+            This source's other media whose `episode_date` falls on this
+            item's UTC day, split as `_same_day_index` describes:
+            (`sql_day`, `legacy_day`). `sql_day` is a queryset annotated
+            with `episode_date_sort`; `legacy_day()` evaluates the few rows
+            SQL can't date and yields the same-day ones.
+        '''
+        day_start = self.episode_date.replace(
+            hour=0, minute=0, second=0, microsecond=0,
+        )
+        day_end = day_start + timedelta(days=1)
+
+        others = Media.objects.filter(source_id=self.source_id)
+        if self.pk is not None:
+            others = others.exclude(pk=self.pk)
+        # new_metadata__published is NULL both without a related row and
+        # for one written without going through ingest_metadata. Either
+        # metadata store can supply upload_date (loaded_metadata merges
+        # the related row in), so a row with either is dated in Python.
+        legacy_metadata_only = models.Q(
+            published__isnull=True,
+            new_metadata__published__isnull=True,
+        ) & (
+            models.Q(metadata__isnull=False)
+            | models.Q(new_metadata__isnull=False)
+        )
+        sql_day = others.exclude(legacy_metadata_only).annotate(
+            episode_date_sort=_episode_date_coalesce(),
+        ).filter(
+            episode_date_sort__gte=day_start,
+            episode_date_sort__lt=day_end,
+        )
+
+        def legacy_day():
+            for other in others.filter(legacy_metadata_only):
+                if day_start <= other.episode_date < day_end:
+                    yield other
+
+        return sql_day, legacy_day
+
+    def _episode_day_index(self):
+        '''
+            The same-day index `episode_mmddnn` and `nfo_episode_number`
+            use.
+
+            For a source whose `media_format` does not use
+            `{episode_mmddnn}` this is the live `_same_day_index`. For one
+            that does, a downloaded file keeps the index its name already
+            carries (`_episode_day_index_from_name`), and every other
+            same-day item takes the free indexes, in same-day order,
+            around the ones those files hold. Without this, an earlier
+            same-day item indexed after a later one was downloaded would
+            take that file's number: its download target would be the
+            existing file, which yt-dlp (`overwrites: None`) reports as
+            already downloaded, and it would be attached to that file.
+
+            A downloaded file whose name carries no index for the current
+            day (a legacy name, or `episode_date` moved to another day)
+            is numbered like an item not yet downloaded, and a rename then
+            moves it. Two files that already share an index (from before
+            this rule) both keep it.
+
+            Accepted limitation: without `{episode_mmddnn}` nothing
+            freezes the index. Deleting a media keeps its place (upstream's
+            media_post_delete re-creates a skipped placeholder with the
+            same key and date), but once an earlier same-day row is gone
+            for good (that placeholder deleted too, e.g. by a later
+            cleanup_removed_media pass) a later item's `<episode>` moves
+            down on its next NFO rewrite. Upstream's
+            `calculate_episode_number()` counts across the whole year and
+            drifts the same way. Bridge-created sources use
+            `{episode_mmddnn}` and are unaffected.
+        '''
+        media_format = str(self.source.media_format)
+        if 'episode_mmddnn' not in _format_field_names(media_format):
+            return self._same_day_index()
+        mmdd = self.episode_date.strftime('%m%d')
+        own = self._frozen_day_index(media_format, mmdd)
+        if own is not None:
+            return own
+
+        # One pass over the day's other rows (one query, plus the rare
+        # rows SQL can't date) gives both this item's live position and
+        # the indexes downloaded files keep; the cost is bounded by that
+        # day's upload count, not the source's size.
+        this_item = self._episode_sort_key()
+        sql_day, legacy_day = self._same_day_others()
+        sql_rows = (
+            (
+                (
+                    _aware_utc(other.episode_date_sort),
+                    _aware_utc(other.created),
+                    other.key,
+                ),
+                other,
+            )
+            for other in sql_day.only(
+                'pk', 'key', 'created', 'downloaded', 'media_file',
+            )
+        )
+        legacy_rows = (
+            (other._episode_sort_key(), other) for other in legacy_day()
+        )
+        before = 0
+        frozen = []
+        for sort_key, other in chain(sql_rows, legacy_rows):
+            if sort_key < this_item:
+                before += 1
+            index = other._frozen_day_index(media_format, mmdd)
+            if index is not None:
+                frozen.append((sort_key, index))
+        if not frozen:
+            return before + 1
+
+        rank = before + 1 - sum(
+            1 for sort_key, _ in frozen if sort_key < this_item
+        )
+        taken = {index for _, index in frozen}
+        index = 0
+        while rank:
+            index += 1
+            if index not in taken:
+                rank -= 1
+        return index
+
+    def _frozen_day_index(self, media_format, mmdd):
+        '''
+            The same-day index this media's downloaded file name carries
+            for `mmdd`, or `None`.
+        '''
+        if not (self.downloaded and self.media_file):
+            return None
+        return _episode_day_index_from_name(
+            str(self.media_file.name), media_format, mmdd,
+        )
+
+    @property
+    def episode_yyyy(self):
+        '''4-digit year of `episode_date`, for `media_format`.'''
+        return self.episode_date.strftime('%Y')
+
+    def _episode_mmdd_and_index(self):
+        '''
+            Returns ("MMDD" of `episode_date`, same-day index), logging a
+            warning when the index exceeds the two digits
+            `episode_mmddnn` normally uses.
+        '''
+        day_index = self._episode_day_index()
+        if day_index > EPISODE_DAY_INDEX_TWO_DIGIT_MAX:
+            log.warning(
+                f'Media.episode_mmddnn: more than 99 same-day items for '
+                f'source {self.source} on {self.episode_date.date()}: '
+                f'{self.key} is number {day_index}'
+            )
+        return self.episode_date.strftime('%m%d'), day_index
+
+    @staticmethod
+    def _nfo_episode_number_for(mmdd, day_index):
+        '''
+            The single formula for the disjoint NFO/overflow episode
+            number for a given (MMDD, day_index) pair -- shared by
+            `nfo_episode_number` and, for `day_index > 99`,
+            `episode_mmddnn`, so the two can never drift from each
+            other. See `nfo_episode_number`'s docstring for the two
+            ranges this produces.
+        '''
+        if day_index <= EPISODE_DAY_INDEX_TWO_DIGIT_MAX:
+            return int(mmdd) * 100 + day_index
+        return (
+            EPISODE_OVERFLOW_BASE
+            + int(mmdd) * EPISODE_OVERFLOW_MMDD_FACTOR
+            + day_index
+        )
+
+    @property
+    def episode_mmddnn(self):
+        '''
+            "MMDD" (from `episode_date`) plus the same-day index from
+            `_same_day_index`, zero-padded to two digits, e.g. '091401' for
+            the first item on September 14th.
+
+            More than 99 same-day items logs a warning and, instead of
+            naively concatenating the unpadded (3+ digit) index (which,
+            for a variable-width MMDD + index string, can produce the
+            same digits as a *different* (MMDD, index) pair once parsed
+            back with `int()` -- e.g. '0101' + '110' and '1011' + '10'
+            both give 101110), returns `str(nfo_episode_number)`: the
+            same disjoint, overflow-range number `nfo_episode_number`
+            uses for the NFO `<episode>` value (both go through
+            `_nfo_episode_number_for`). This keeps
+            `int(episode_mmddnn) == nfo_episode_number` true in every
+            case, so the filename and the NFO always agree on this
+            item's number.
+        '''
+        mmdd, day_index = self._episode_mmdd_and_index()
+        if day_index > EPISODE_DAY_INDEX_TWO_DIGIT_MAX:
+            return str(self._nfo_episode_number_for(mmdd, day_index))
+        return f'{mmdd}{day_index:02}'
+
+    @property
+    def nfo_episode_number(self):
+        '''
+            The non-playlist NFO <episode> value, computed from the same
+            (MMDD, day_index) pair as `episode_mmddnn` without ever giving
+            two such pairs the same number:
+
+            - index <= 99: `int(mmdd) * 100 + day_index`, e.g. 91401 for
+              ('0914', 1) (at most 123199) -- equal to `int(episode_mmddnn)`
+              for that range, since `episode_mmddnn` is `f'{mmdd}{day_index:02}'`.
+            - index > 99: 10_000_000 + MMDD * 10_000 + index, a range that
+              cannot overlap the first one. `int()` of a variable-width
+              '0101' + '110' would otherwise equal '1011' + '10'. These
+              items sort after the regular episodes of their season.
+              `episode_mmddnn` returns `str()` of this same value for
+              index > 99, so `int(episode_mmddnn) == nfo_episode_number`
+              always holds.
+        '''
+        mmdd, day_index = self._episode_mmdd_and_index()
+        return self._nfo_episode_number_for(mmdd, day_index)
+
     def calculate_episode_number(self):
         if self.source.is_playlist:
             sorted_media = Media.objects.filter(
@@ -1191,8 +1745,9 @@ class Media(models.Model):
                             log.debug(f'{self!s}: {fuzzy_path!s} => {new_file_path!s}')
                             fuzzy_path.rename(new_file_path)
 
-                    # The thumbpath inside the .nfo file may have changed
-                    if self.source.write_nfo and self.source.copy_thumbnails:
+                    # The thumbpath, <season> or <episode> inside the .nfo
+                    # file may have changed
+                    if self.source.write_nfo:
                         write_text_file(new_prefix_path / self.nfopath.name, self.nfoxml)
                         log.info(f'Wrote new ".nfo" file for: {self!s}')
 
