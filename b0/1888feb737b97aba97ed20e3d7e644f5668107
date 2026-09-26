@@ -1,0 +1,19 @@
+docs/solutions/workflow/django-tests-in-the-release-image.md
+  s_cde573e8b7efda::t_352c469d805000 79,84-88
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "b01888feb737b97aba97ed20e3d7e644f5668107",
+  "prompts": {},
+  "sessions": {
+    "s_cde573e8b7efda": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c802e626-0714-4643-af4d-3a3809c6112c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
