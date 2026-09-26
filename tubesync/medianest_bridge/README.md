@@ -585,14 +585,12 @@ uuid, none of which can carry either.
 `medianest_bridge/contract/bridge-openapi.v1.yaml` is a vendored, read-only
 copy of the canonical contract (MediaNest repo,
 `docs/planning/tubesync-integration/bridge-openapi.v1.yaml` @
-`479b97ea4fa990def968f99db7052b04cafd5e0d`, a description-only re-vendor
-scoping the source-defaults 503 to the requested source type).
-**Note:** that SHA is the contract worktree's own local commit on
-`plex/m3a-contract-source-defaults` as of this PR -- a pre-merge branch
-commit, not yet on the canonical repo's `main`. Re-sync this field (and
-re-verify the sha256 below) once that branch merges, the same way every
-prior re-vendor here has recorded whatever commit was canonical at the
-time. History: T1 vendored `ce17a28773a6f3866c9c9235ae4eae04f4bafff4`; T2
+`0e7d2375b42ac99505b11c4c1b88294f234d8d03`, the squash merge of MediaNest
+#2404 to `main`, a description-only re-vendor scoping the source-defaults
+503 to the requested source type). Its contract file is byte-identical to
+the pre-merge branch commit `479b97ea4fa990def968f99db7052b04cafd5e0d` this
+copy first recorded; only the header's SHA and the fixture's sha256 below
+changed when re-synced to the merged commit. History: T1 vendored `ce17a28773a6f3866c9c9235ae4eae04f4bafff4`; T2
 re-vendored `713f9b4ac9efc24e0f285f9af58a50276f29ebb9`
 (`REQUEST_TOO_LARGE` joining `Error.code`'s enum); T4 re-vendored
 `35a9c069fe4f1512ff7b606c33c0c2a11c7efa76` (description-only, DECISIONS
@@ -614,7 +612,7 @@ fixes the configuration, while the create-time 503 remains a backstop
 only, reconciled as an unknown outcome (never blind-retried) -- matching
 `views_write.py`'s own `ValidateSourceView`/`CreateSourceView` docstrings;
 and this re-vendor (`479b97ea4fa990def968f99db7052b04cafd5e0d`,
-2026-09-25) scopes the source-defaults 503 to the requested source type
+2026-09-25, merged as `0e7d2375b42ac99505b11c4c1b88294f234d8d03`) scopes the source-defaults 503 to the requested source type
 (as `_source_defaults_or_error()` validates it), limits "serves no
 endpoint" to a disabled bridge, and states that a bridge reporting
 `sourceDefaults` says `healthy` (never `not_configured`) with nothing

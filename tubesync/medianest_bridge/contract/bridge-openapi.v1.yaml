@@ -2,7 +2,10 @@
 #
 # Canonical source: KingInYellows/medianest,
 #   docs/planning/tubesync-integration/bridge-openapi.v1.yaml
-#   @ 479b97ea4fa990def968f99db7052b04cafd5e0d (2026-09-25)
+#   @ 0e7d2375b42ac99505b11c4c1b88294f234d8d03 (2026-09-26, the squash
+#   merge of MediaNest #2404 to main; its contract file is byte-identical to
+#   the pre-merge branch commit 479b97ea4fa990def968f99db7052b04cafd5e0d,
+#   2026-09-25, that this copy first recorded)
 #   (Description-only: the source-defaults 503 is scoped to the requested
 #   source type, ProviderUnavailable's "serves no endpoint" to a disabled
 #   bridge, and the sourceDefaults promises to bridges that report the
