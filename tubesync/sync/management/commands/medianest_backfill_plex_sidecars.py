@@ -393,6 +393,41 @@ class Command(BaseCommand):
             images_already_queued = bool(changes.get('copy_channel_images'))
             working_source = form.instance
 
+        # Image-queue gate: saving an overlay that turns
+        # copy_channel_images on (_save_overlay() below) fires
+        # source_pre_save, which unconditionally queues
+        # download_source_images for this same save -- before
+        # _process_tvshow_and_images()'s own `images_already_queued`
+        # handling ever runs. That task opens
+        # every file it writes (thumbnail.jpg, banner.jpg, background.jpg,
+        # poster.jpg, season-poster.jpg) with a plain open(..., 'wb'),
+        # which follows a symlink (even a dangling one) and writes through
+        # it, and a source directory resolving outside DOWNLOAD_ROOT is
+        # unsafe too. Refuse the source in both modes before anything is
+        # saved, rather than letting the save queue the job first.
+        if images_already_queued:
+            unsafe = self._unsafe_image_queue_problems(working_source)
+            if unsafe:
+                summary['errors'] += 1
+                message = (
+                    f'{source}: turning copy_channel_images on queues '
+                    "TubeSync's own image download, which would write "
+                    'through ' + '; '.join(unsafe) + '; replace the '
+                    'link(s) with regular files (or move the directory '
+                    'inside DOWNLOAD_ROOT) and re-run'
+                )
+                if apply_changes:
+                    log.error(
+                        f'medianest_backfill_plex_sidecars: {message}'
+                    )
+                    self.stdout.write(self.style.ERROR(f'  SKIPPED: {message}'))
+                else:
+                    self.stdout.write(self.style.WARNING(
+                        '  NOTE: --apply would skip this source without '
+                        f'saving it: {message}'
+                    ))
+                return
+
         downloaded = list(
             Media.objects.filter(source=source, downloaded=True)
             .select_related('source').order_by('key')
@@ -1277,17 +1312,25 @@ class Command(BaseCommand):
             already scheduled it for this same save, in which case this
             command must not also schedule a second job, but still counts
             it either way so dry-run's prediction and apply's actual
-            behaviour report the same `images_enqueued` count.
+            behaviour report the same `images_enqueued` count. When
+            `images_already_queued` is true, the caller
+            (`_process_source()`) has already refused the source before
+            saving it if `_unsafe_image_queue_problems()` found a symlinked
+            image destination or a directory outside DOWNLOAD_ROOT, so
+            `unsafe` below is never nonempty on that path.
 
             A source directory resolving outside DOWNLOAD_ROOT is an error
             in both modes and nothing is written or queued: write_text_file
             creates its temporary file in the target directory before its
             own containment check, so the tvshow.nfo write would put a file
-            outside the root before failing.
+            outside the root before failing. This still covers a source
+            whose overlay does not turn `copy_channel_images` on (already
+            on beforehand): that case is not covered by the
+            `images_already_queued` gate above.
         '''
         directory = Path(source.directory_path)
-        download_root = Path(settings.DOWNLOAD_ROOT).resolve()
-        if not directory.resolve().is_relative_to(download_root):
+        if self._resolves_outside_download_root(directory):
+            download_root = Path(settings.DOWNLOAD_ROOT).resolve()
             if images_already_queued:
                 # source_pre_save queued it with the save; count it as the
                 # normal path does.
@@ -1340,11 +1383,7 @@ class Command(BaseCommand):
         if unsafe:
             self.stdout.write(self.style.WARNING(
                 '  NOTE: not queueing the channel image download: ' +
-                '; '.join(unsafe) + (
-                    '. Turning copy_channel_images on queues it anyway; '
-                    'replace the link(s) with regular files first.'
-                    if images_already_queued else '.'
-                )
+                '; '.join(unsafe) + '.'
             ))
         if images_already_queued and poster_exists:
             # source_pre_save queues it whatever is on disk, and it writes
@@ -1402,6 +1441,39 @@ class Command(BaseCommand):
             for name in _SOURCE_IMAGE_NAMES
             if (directory / name).is_symlink()
         ]
+
+    def _resolves_outside_download_root(self, directory):
+        '''
+            True when `directory` (a Path) resolves outside DOWNLOAD_ROOT.
+        '''
+        download_root = Path(settings.DOWNLOAD_ROOT).resolve()
+        return not directory.resolve().is_relative_to(download_root)
+
+    def _unsafe_image_queue_problems(self, source):
+        '''
+            Why an overlay save that turns `source.copy_channel_images` on
+            must be refused BEFORE it is saved, as a list (empty when it is
+            safe): source_pre_save queues `download_source_images`
+            unconditionally on that save, and the task opens every file it
+            writes with a plain open(..., 'wb'), which follows a symlink
+            (even a dangling one) and writes through it -- so this must run
+            before `_save_overlay()`, not after. A missing directory is
+            fine here: the save's own pre_save creates it before the task
+            runs, so `_image_write_problems()` is called with
+            `assume_directory_exists=True`.
+        '''
+        directory = Path(source.directory_path)
+        problems = []
+        if self._resolves_outside_download_root(directory):
+            download_root = Path(settings.DOWNLOAD_ROOT).resolve()
+            problems.append(
+                f'source directory {directory} resolves outside '
+                f'{download_root}'
+            )
+        problems.extend(
+            self._image_write_problems(source, assume_directory_exists=True)
+        )
+        return problems
 
     def _print_summary(self, summary, apply_changes):
         self.stdout.write('')

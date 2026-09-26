@@ -194,7 +194,13 @@ owner. This file records what the tag would contain and what was verified.
      any of those is a symlink, even a dangling one, or while the source
      directory is missing and no save in this run recreates it (the task
      never creates it, so it would fail and retry); it prints a note
-     instead. A symlinked `poster.jpg` also counts as present.
+     instead. A symlinked `poster.jpg` also counts as present. When an
+     overlay would turn `copy_channel_images` on while such a link exists
+     (or the source directory resolves outside `DOWNLOAD_ROOT`), saving
+     the overlay would queue TubeSync's own image download unconditionally
+     -- so the command refuses the source as an error in both modes
+     *before* saving anything, rather than saving it and only noting the
+     problem afterwards.
    - A source directory that resolves outside `DOWNLOAD_ROOT` is an error
      in both modes: neither `tvshow.nfo` nor the image download is
      written or queued (`write_text_file()` would otherwise create its
@@ -340,3 +346,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep, for the backfill: a source directory resolving outside `DOWNLOAD_ROOT` writes nothing (no `tvshow.nfo`, no temporary file, no image job) and is an error in both modes with equal summaries; a missing source directory that nothing recreates queues no image download, while one a save recreates still does (dry-run and apply equal). Each test was checked to fail with its fix reverted.
 - A download that finishes between the source save and the post-save in-flight count is documented under "Known limits" instead of fixed.
+
+## Verification (2026-09-26, tenth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 631 tests OK at the stack tip (T1-T3 unchanged). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 639 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep, for the backfill: an overlay that would turn `copy_channel_images` on is refused before it is saved, in both modes with equal summaries, when an image destination is a symlink or the source directory resolves outside `DOWNLOAD_ROOT`; TubeSync's own `source_pre_save` image job is never queued and the source row is unchanged. Each test was checked to fail with the gate removed.

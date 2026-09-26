@@ -2260,3 +2260,65 @@ class BackfillReviewFollowUp9TestCase(BackfillFollowUpMixin, TestCase):
                 self.assertNotIn('does not exist', output)
             self.assertEqual(summary_of(dry), summary_of(applied))
             self.assertTrue(source.directory_path.is_dir())
+
+
+class BackfillReviewFollowUp10TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Tenth review pass: an overlay that would turn copy_channel_images
+        on is refused, in both modes, BEFORE it is ever saved, when a file
+        the resulting image download would write is a symlink or the
+        source directory resolves outside DOWNLOAD_ROOT. Saving that
+        overlay fires source_pre_save, which queues download_source_images
+        unconditionally for the same save -- ahead of this command's own
+        images_already_queued handling in _process_tvshow_and_images() --
+        so the gate must run, and refuse the source, before any save.
+    '''
+
+    def test_a_symlinked_image_destination_refuses_the_overlay(self):
+        with temp_download_root(), tempfile.TemporaryDirectory() as outside:
+            source, media, old_path = self.make_downloaded()
+            link = source.directory_path / 'banner.jpg'
+            link.symlink_to(Path(outside) / 'banner.jpg')
+            with (
+                patch(f'{self.COMMAND}.TaskHistory') as mock_th,
+                patch('sync.signals.download_source_images') as mock_signal,
+            ):
+                dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+                applied, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            mock_th.schedule.assert_not_called()
+            mock_signal.assert_not_called()
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('errors: 1', output)
+                self.assertIn(f'{link} is a symlink', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            source.refresh_from_db()
+            self.assertFalse(source.copy_channel_images)
+            self.assertFalse((Path(outside) / 'banner.jpg').exists())
+
+    def test_a_source_directory_outside_the_root_refuses_the_overlay(self):
+        with temp_download_root(), tempfile.TemporaryDirectory() as outside:
+            source = make_bridge_source()
+            directory = source.directory_path
+            directory.parent.mkdir(parents=True, exist_ok=True)
+            directory.symlink_to(outside, target_is_directory=True)
+            with (
+                patch(f'{self.COMMAND}.TaskHistory') as mock_th,
+                patch('sync.signals.download_source_images') as mock_signal,
+            ):
+                dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+                applied, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            mock_th.schedule.assert_not_called()
+            mock_signal.assert_not_called()
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('errors: 1', output)
+                self.assertIn('resolves outside', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            source.refresh_from_db()
+            self.assertFalse(source.copy_channel_images)
+            self.assertEqual(list(Path(outside).iterdir()), [])
