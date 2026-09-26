@@ -1,0 +1,21 @@
+docs/solutions/workflow/bot-review-waves-and-github-rate-limits.md
+  s_cde573e8b7efda::t_cc6d26ae189d1a 68-70
+docs/solutions/workflow/django-tests-in-the-release-image.md
+  s_cde573e8b7efda::t_ea98ba467b89dc 39-40,48,59-66
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "fad3cfdbf8c3efd22bd35ed061de10a5270b3014",
+  "prompts": {},
+  "sessions": {
+    "s_cde573e8b7efda": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c802e626-0714-4643-af4d-3a3809c6112c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
