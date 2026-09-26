@@ -20,28 +20,41 @@ leaves the working tree root-owned and unreadable to the developer.
 
 ## Guidance
 
-From a checkout root:
+Save this as a script and run it from a checkout root:
 
 ```bash
-cp tubesync/tubesync/local_settings.py.container tubesync/tubesync/local_settings.py
+#!/usr/bin/env bash
+set -u
+settings=tubesync/tubesync/local_settings.py   # gitignored; never commit it
+if [ -e "$settings" ]; then
+  echo "$settings already exists; move it aside first" >&2
+  exit 1
+fi
+cp tubesync/tubesync/local_settings.py.container "$settings"
+trap 'rm -f "$settings"' EXIT   # removed even when the run is interrupted
 docker run --rm --entrypoint /usr/bin/python3 \
   -v "$PWD/tubesync:/app" -v "$SCRATCH/tsconfig:/config" \
   -v "$SCRATCH/tsdownloads:/downloads" -w /app \
   ghcr.io/kinginyellows/tubesync:bridge-v1.0.0 \
-  manage.py test sync medianest_bridge --verbosity=1
-rm -f tubesync/tubesync/local_settings.py        # gitignored; never commit it
+  manage.py test --verbosity=1
 find . -path ./.git -prune -o ! -user "$(whoami)" -print   # must print nothing
 ```
 
 - Always pass `--entrypoint /usr/bin/python3`.
 - Use scratch directories for `/config` and `/downloads`, never real ones.
-- Wrap the steps in a script that removes `local_settings.py` even when the run
-  is interrupted. An interrupted run otherwise leaves it behind.
+- `manage.py test` with no labels runs every installed app, `common`
+  included, as CI does. `manage.py test sync medianest_bridge` is a narrower
+  run that skips `common`.
+- The script refuses to overwrite an existing `local_settings.py` and deletes
+  only the copy it made.
 
-Lint with CI's exact rule set (from `.github/workflows/ci.yaml`):
+Lint with CI's exact rule set (from `.github/workflows/ci.yaml`), from the
+`tubesync/` directory as CI does. From the checkout root, ruff also scans
+`patches/yt_dlp/` and reports F821 errors that CI never sees.
 
 ```bash
-ruff check --isolated --target-version py312 --select 'C4,E4,E7,E9,F' \
+cd tubesync && ruff check --isolated --target-version py312 \
+  --select 'C4,E4,E7,E9,F' \
   --ignore 'C408,C409,C410,E701,E722,E731,I001,UP017,UP018'
 ```
 

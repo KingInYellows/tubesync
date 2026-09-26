@@ -32,13 +32,21 @@ still reported most of the quota remaining, but calls failed with
   Report that list to the user instead of fixing it automatically.
 - Resolve Cursor's "Verified ..." threads **without replying**. Replies
   re-trigger Cursor automation and can loop.
-- When GraphQL is limited, use REST, which has its own quota:
+- When GraphQL is limited, move reads and edits to REST. REST has its own
+  primary quota, but the secondary limits cover REST too, so this spreads
+  the load; it does not bypass them:
   - read a PR: `gh api repos/OWNER/REPO/pulls/N`;
   - edit a body: `gh api -X PATCH repos/OWNER/REPO/pulls/N -F body=@file`;
   - reply to a thread: `gh api -X POST repos/OWNER/REPO/pulls/N/comments/<id>/replies -F body=@file`;
   - check CI: `gh api repos/OWNER/REPO/commits/<sha>/check-runs`.
-- Resolving threads needs GraphQL (`resolveReviewThread`). Space the calls by
-  a few seconds and retry in the background until they succeed.
+- Resolving threads needs GraphQL (`resolveReviewThread`). Make the calls
+  one at a time, a few seconds apart. After a secondary-limit error, wait
+  for the `Retry-After` header's seconds if there is one (or until
+  `x-ratelimit-reset` when `x-ratelimit-remaining` is 0), otherwise at
+  least one minute. Double the wait on each further error, and stop after
+  a small, fixed number of retries (for example five) and report what is
+  left. GitHub's docs warn that continuing to call while limited can get
+  the integration banned.
 - Get an independent read-only review of your *own* fix commits before
   pushing. It catches most of what the next bot wave would raise, in one
   round instead of several.
@@ -57,4 +65,6 @@ Any stacked-PR sweep on a repository with several AI reviewers enabled.
 
 Useful poll: count unresolved threads per PR with GraphQL `reviewThreads`
 (filter `isResolved == false`). Fall back to REST `pulls/N/comments` when
-GraphQL is refused.
+GraphQL is refused, and poll CI no more than once a minute. See GitHub's
+[rate limits for the GraphQL API](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api)
+and [for the REST API](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api).
