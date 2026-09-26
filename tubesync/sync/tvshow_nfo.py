@@ -431,7 +431,9 @@ def _foreign_nfo_reason(nfo_path, source):
             must not silently clobber just because it cannot parse them.
             A zero-byte file is not treated this way: it carries no
             content to protect, so it is still replaceable, same as an
-            absent one.
+            absent one;
+          - a symlink, dangling or not: writing would replace the link
+            itself with a regular file.
     '''
     return _read_tvshow_nfo(nfo_path, source)[1]
 
@@ -439,8 +441,14 @@ def _foreign_nfo_reason(nfo_path, source):
 def _read_tvshow_nfo(nfo_path, source):
     '''
         (parsed root or None, `_foreign_nfo_reason`'s reason), reading and
-        parsing the file once for both callers.
+        parsing the file once for both callers. A live symlink's target is
+        still parsed, so `resolve_show_title()` uses its `<title>`.
     '''
+    if nfo_path.is_symlink():
+        root = None
+        if nfo_path.exists():
+            root = _read_tvshow_nfo(nfo_path.resolve(), source)[0]
+        return root, 'it is a symlink'
     if not nfo_path.exists():
         return None, None
     raw = nfo_path.read_bytes()
