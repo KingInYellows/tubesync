@@ -1,0 +1,24 @@
+docs/solutions/workflow/bot-review-waves-and-github-rate-limits.md
+  s_2fd14c67bb8172::t_390123e2503354 35-37,42-49
+  s_2fd14c67bb8172::t_5bb0b78b3e6cdb 68-70
+docs/solutions/workflow/django-tests-in-the-release-image.md
+  s_2fd14c67bb8172::t_a3f4895c9c081c 23,26-34,39,45-49,51-53,56-57
+docs/solutions/README.md
+  s_2fd14c67bb8172::t_52211b69b79c5f 5-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "56d641c5817b8e1b2f14d59561cf5affa7b52957",
+  "prompts": {},
+  "sessions": {
+    "s_2fd14c67bb8172": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "98fd25e6-a859-4d85-b54d-3528af753d69",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
