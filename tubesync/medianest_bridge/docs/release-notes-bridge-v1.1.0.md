@@ -173,6 +173,12 @@ owner. This file records what the tag would contain and what was verified.
      next to the resolved current file that these checks never saw, and
      record the resolved new path, not the target (the rename would look
      failed after the move and later runs would find the target occupied).
+     More generally, paths must be canonical: a run whose media storage
+     location (`DOWNLOAD_ROOT`) goes through a symlink is refused before
+     anything happens, and a source any of whose downloaded rows is
+     recorded through a symlinked directory is refused before it is saved
+     (another row's video, seen through the alias, would otherwise look
+     like an unclaimed sidecar and be moved).
    - **Foreign episode NFOs.** An existing `.nfo` at the target that is not
      this media's own (`<episodedetails>` whose `<id>`/`<uniqueid>` is its
      key), or is a symlink, is never overwritten -- for a rename, an
@@ -385,3 +391,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 641 tests OK at the stack tip; 389, 451 and 528 at Plex T1, T2 and T3. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 649 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep, closing two classes rather than single cases: every NFO read in the stack (`tvshow.nfo` in T2; the episode NFO at the target and beside the old video in the backfill) treats a path that is not a regular file as foreign and never reads it, so a FIFO cannot block and a directory cannot raise; and a rename refuses a current or target directory reached through a symlink inside `DOWNLOAD_ROOT`, because `rename_files()` resolves both. Each test was checked to fail with its fix reverted; the FIFO tests use an alarm that raises a `BaseException`, so a regression fails the test instead of hanging the run.
+
+## Verification (2026-09-26, fourteenth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 643 tests OK at the stack tip (T1-T3 unchanged: 389, 451 and 528). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 651 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep, making canonical paths a precondition instead of a per-media check: a symlinked media storage location refuses the whole run in both modes, and a source with any downloaded row recorded through a symlinked directory is refused in both modes (equal summaries) before anything is saved or moved. Two earlier tests now meet this earlier refusal and were updated to expect it. Each new test was checked to fail with its check removed.

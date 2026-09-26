@@ -147,6 +147,7 @@ from medianest_bridge.source_forms import (
 from sync.choices import TaskQueue, Val, YouTube_SourceType
 from sync.forms import SourceForm
 from sync.models import Media, Source
+from sync.models._migrations import media_file_storage
 from sync.tasks import download_source_images
 from sync.tvshow_nfo import tvshow_nfo_needs_write, write_tvshow_nfo
 from sync.utils import write_text_file
@@ -269,6 +270,18 @@ class Command(BaseCommand):
                 'MEDIANEST_BRIDGE_SOURCE_DEFAULTS is invalid; refusing to '
                 'change anything:\n' +
                 '\n'.join(f'  - {message}' for message in config_errors)
+            )
+        # rename_files() records every new path relative to the storage
+        # location after resolving it; a location reached through a
+        # symlink makes that fail after the video has moved, before the
+        # row or its sidecars follow. Refuse the run, in both modes.
+        storage_root = Path(media_file_storage.location)
+        if storage_root.resolve() != storage_root.absolute():
+            raise CommandError(
+                f'the media storage location {storage_root} goes through a '
+                f'symlink (it resolves to {storage_root.resolve()}); '
+                'rename_files() cannot record paths under it. Point '
+                'DOWNLOAD_ROOT at the real directory; nothing was changed.'
             )
         if apply_changes:
             self._check_running_as_download_owner()
@@ -452,6 +465,37 @@ class Command(BaseCommand):
         media_files = {
             Path(media.media_file.path) for media in downloaded if media.media_file
         }
+        # Every ownership check compares recorded paths lexically, while
+        # rename_files() resolves them. A row recorded through a symlinked
+        # directory below the storage location (an alias of another
+        # directory there) would make those comparisons miss: another
+        # row's video, seen through the alias, would look like an
+        # unclaimed sidecar and be moved. Refuse the whole source, in both
+        # modes, before anything is saved or moved.
+        storage_root = Path(media_file_storage.location)
+        aliases = sorted({
+            str(linked) for linked in (
+                self._symlinked_ancestor(path.parent, storage_root)
+                for path in media_files
+            ) if linked is not None
+        })
+        if aliases:
+            summary['errors'] += 1
+            message = (
+                'downloaded media are recorded through symlinked '
+                'directories (' + ', '.join(aliases) + '); '
+                'rename_files() resolves paths through them, so ownership '
+                'checks could not be trusted. Record the real paths and re-run'
+            )
+            if apply_changes:
+                log.error(f'medianest_backfill_plex_sidecars: {source}: {message}')
+                self.stdout.write(self.style.ERROR(f'  SKIPPED: {message}'))
+            else:
+                self.stdout.write(self.style.WARNING(
+                    '  NOTE: --apply would skip this source without saving '
+                    f'it: {message}'
+                ))
+            return
         # Where every video was before this run moved anything; a dry-run
         # leaves other media's sidecars there (see _claimed_by_other_media).
         self._original_media_files = frozenset(media_files)

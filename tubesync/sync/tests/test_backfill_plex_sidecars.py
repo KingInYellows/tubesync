@@ -1845,8 +1845,9 @@ class BackfillReviewFollowUp5TestCase(BackfillFollowUpMixin, TestCase):
                 '--source', str(source.uuid), '--apply',
             )
             self.assertIsNotNone(exc)
-            self.assertIn('not in place', output)
-            self.assertIn('resolves outside', output)
+            # Review pass 14's source-level check refuses a row recorded
+            # through a symlinked directory before this per-media one.
+            self.assertIn('recorded through symlinked directories', output)
             self.assertFalse(nfo.exists())
 
     def test_a_sidecar_onto_an_earlier_medias_projected_video_is_refused(self):
@@ -2498,7 +2499,9 @@ class BackfillReviewFollowUp13TestCase(BackfillFollowUpMixin, TestCase):
             media.save()
             for output, error in self.run_both(source):
                 self.assertIsNotNone(error)
-                self.assertIn('goes through a symlink', output)
+                # The source-level check (review pass 14) now refuses it
+                # before the per-media one is reached.
+                self.assertIn('recorded through symlinked directories', output)
                 self.assertIn(str(alias), output)
                 self.assertIn('renamed: 0', output)
             self.assertTrue(moved.exists())
@@ -2540,3 +2543,73 @@ class BackfillReviewFollowUp13TestCase(BackfillFollowUpMixin, TestCase):
             for output in (dry, applied):
                 self.assertIn('tvshow_written: 0', output)
             self.assertFalse(tvshow.is_file())
+
+
+@contextmanager
+def symlinked_download_root():
+    '''Like temp_download_root(), but DOWNLOAD_ROOT is a symlink.'''
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        real = Path(tmp_dir) / 'real'
+        real.mkdir()
+        link = Path(tmp_dir) / 'link'
+        link.symlink_to(real, target_is_directory=True)
+        with (
+            override_settings(DOWNLOAD_ROOT=str(link)),
+            patch.object(media_file_storage, 'location', str(link)),
+        ):
+            yield link
+
+
+class BackfillReviewFollowUp14TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Fourteenth review pass: a storage location reached through a
+        symlink refuses the whole run, and a source with any row recorded
+        through a symlinked directory is refused before anything moves.
+    '''
+
+    def test_a_symlinked_storage_location_refuses_the_run(self):
+        with symlinked_download_root():
+            source, media, old_path = self.make_downloaded()
+            for args in ((), ('--apply',)):
+                with self.subTest(args=args):
+                    output, error = run_backfill_capture(
+                        '--source', str(source.uuid), *args,
+                    )
+                    self.assertIsNotNone(error)
+                    self.assertIn('goes through a symlink', str(error))
+                    self.assertIn('nothing was changed', str(error))
+            self.assertTrue(old_path.exists())
+            media.refresh_from_db()
+            self.assertEqual(Path(media.media_file.path), old_path)
+
+    def test_another_row_recorded_through_an_alias_refuses_the_source(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, first, first_path = self.make_downloaded(key='aaa')
+            real = source.directory_path / 'real-dir'
+            real.mkdir()
+            alias = source.directory_path / 'alias'
+            alias.symlink_to(real, target_is_directory=True)
+            second = Media.objects.create(key='bbb', source=source, metadata=metadata)
+            (real / 'other.mkv').write_bytes(b'other video')
+            second.media_file.name = str(
+                (alias / 'other.mkv').relative_to(media_file_storage.location)
+            )
+            second.downloaded = True
+            second.save()
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('recorded through symlinked directories', output)
+                self.assertIn(str(alias), output)
+                self.assertIn('renamed: 0', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertTrue(first_path.exists())
+            self.assertEqual((real / 'other.mkv').read_bytes(), b'other video')
+            source.refresh_from_db()
+            self.assertFalse(source.copy_channel_images)  # never saved
