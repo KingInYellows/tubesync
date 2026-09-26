@@ -10,7 +10,9 @@
 '''
 import json
 import logging
+import os
 import re
+import signal
 import tempfile
 import time
 from contextlib import contextmanager
@@ -1045,3 +1047,48 @@ class TvshowNfoFollowUp6TestCase(TestCase):
             self.assertEqual(resolve_show_title(self.source), 'Gaming')
             tree = ElementTree.fromstring(media.nfoxml)
         self.assertEqual(tree.find('showtitle').text, 'Gaming')
+
+
+class TvshowNfoFollowUp12TestCase(TestCase):
+    '''A tvshow.nfo path that is not a regular file is foreign, never read.'''
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+        _clear_show_title_cache()
+        self.source = make_source()
+        # Reading a FIFO blocks; fail the test instead of hanging the run.
+        signal.signal(signal.SIGALRM, self._timed_out)
+        signal.alarm(10)
+
+    def tearDown(self):
+        signal.alarm(0)
+        _clear_show_title_cache()
+
+    @staticmethod
+    def _timed_out(signum, frame):
+        raise TimeoutError('a tvshow.nfo read blocked')
+
+    def _nfo_path(self):
+        return self.source.directory_path / 'tvshow.nfo'
+
+    def test_a_non_regular_tvshow_nfo_is_left_alone(self):
+        for kind, make in (
+            ('fifo', os.mkfifo),
+            ('directory', lambda path: path.mkdir()),
+        ):
+            with self.subTest(kind=kind), temp_download_root():
+                _clear_show_title_cache()
+                self.source.make_directory()
+                make(self._nfo_path())
+                media = Media.objects.create(
+                    key=f'm-{kind}', source=self.source, metadata=metadata,
+                )
+                with patch('sync.tvshow_nfo.log') as mock_log:
+                    write_tvshow_nfo(self.source)
+                self.assertIn(
+                    'not a regular file', mock_log.warning.call_args.args[0],
+                )
+                self.assertFalse(self._nfo_path().is_file())
+                self.assertEqual(resolve_show_title(self.source), 'test uploader')
+                tree = ElementTree.fromstring(media.nfoxml)
+                self.assertEqual(tree.find('showtitle').text, 'test uploader')
