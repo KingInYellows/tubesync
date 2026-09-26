@@ -466,7 +466,9 @@ choices inline -- most notably, TubeSync's `MediaState.UNKNOWN` maps to
   and returns `503 PROVIDER_UNAVAILABLE` when it's invalid, identical to
   `POST /sources`' own check below (`views_write.py`'s
   `_source_defaults_or_error()` is the one shared implementation both
-  views call). This is the 503 that matters for retries: MediaNest calls
+  views call). Only the requested type's block (and `"*"`) is
+  field-checked; a parse error, an unknown top-level key, an uncovered
+  type or a non-object block fails every type. This is the 503 that matters for retries: MediaNest calls
   this endpoint before `POST /sources` and treats any validate failure
   as a definite, user-retryable failure, so a broken configuration fails
   cleanly here and the user can re-submit once an operator fixes it --
