@@ -13,6 +13,7 @@ from django.utils import timezone
 from common.models import TaskHistory
 from sync.models import Media, Source
 
+from .. import config
 from .base import BridgeTestCase, BridgeTransactionTestCase
 from .test_endpoints import assert_matches_schema
 
@@ -180,6 +181,157 @@ class ValidateSourceEndpointTestCase(BridgeTestCase):
         self.assertEqual(response.status_code, 401)
 
 
+class ValidateSourceDefaultsCheckTestCase(BridgeTestCase):
+    '''
+        T3 (source-defaults amendment): POST /sources/validate's own
+        MEDIANEST_BRIDGE_SOURCE_DEFAULTS check -- see
+        ValidateSourceView's own docstring for the ordering this mirrors
+        (relative to schema/URL-shape validation) and why this is the
+        503 that matters for MediaNest's retry semantics, unlike
+        CreateSourceEndpointTestCase's identical create-time backstop
+        check.
+    '''
+
+    def _valid_body(self, **overrides):
+        body = {
+            'sourceType': 'channel',
+            'canonicalKey': 'UCabcdefghijklmnopqrstuv',
+            'canonicalUrl': 'https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv',
+        }
+        body.update(overrides)
+        return body
+
+    def test_invalid_config_returns_503_and_persists_nothing(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_SOURCE_DEFAULTS='{not json')
+        before = (Source.objects.count(), TaskHistory.objects.count())
+        response = post_json(
+            self.client, VALIDATE_URL, self._valid_body(), **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(json.loads(response.content)['code'], 'PROVIDER_UNAVAILABLE')
+        after = (Source.objects.count(), TaskHistory.objects.count())
+        self.assertEqual(after, before)
+
+    def test_invalid_config_never_echoes_the_raw_env_value(self):
+        secret_marker = 'super-secret-path-marker-should-not-leak'
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps(
+                {
+                    '*': {},
+                    'channel': {
+                        'media_format': secret_marker + '-{not_a_real_format_key}',
+                    },
+                },
+            ),
+        )
+        response = post_json(
+            self.client, VALIDATE_URL, self._valid_body(), **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn(secret_marker, response.content.decode('utf-8'))
+
+    def test_unset_config_still_succeeds_normally(self):
+        self.enable_bridge()  # MEDIANEST_BRIDGE_SOURCE_DEFAULTS left unset
+        response = post_json(
+            self.client, VALIDATE_URL, self._valid_body(), **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_only_the_requested_types_overlay_can_block_it(self):
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps({
+                'channel': {'media_format': '{not_a_real_format_key}'},
+                'playlist': {'write_nfo': True},
+            }),
+        )
+        playlist = self._valid_body(
+            sourceType='playlist',
+            canonicalKey='PLabcdefghij',
+            canonicalUrl='https://www.youtube.com/playlist?list=PLabcdefghij',
+        )
+        response = post_json(
+            self.client, VALIDATE_URL, playlist, **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        response = post_json(
+            self.client, VALIDATE_URL, self._valid_body(), **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 503)
+
+    def test_an_unknown_field_in_the_other_type_does_not_block_it(self):
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps({
+                'channel': {'write_nfo': True},
+                'playlist': {'not_a_real_field': True},
+            }),
+        )
+        response = post_json(
+            self.client, VALIDATE_URL, self._valid_body(), **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        playlist = self._valid_body(
+            sourceType='playlist',
+            canonicalKey='PLabcdefghij',
+            canonicalUrl='https://www.youtube.com/playlist?list=PLabcdefghij',
+        )
+        response = post_json(
+            self.client, VALIDATE_URL, playlist, **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 503)
+
+    def test_valid_explicit_config_still_succeeds_normally(self):
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps({'*': {'write_nfo': True}}),
+        )
+        response = post_json(
+            self.client, VALIDATE_URL, self._valid_body(), **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_schema_error_returns_400_not_503_even_with_broken_config(self):
+        '''
+            Ordering: a caller-fixable 400 (missing required field) wins
+            over the bridge-configuration 503 -- the defaults check runs
+            AFTER schema validation, matching CreateSourceView.post's own
+            ordering. See ValidateSourceView's own docstring.
+        '''
+        self.enable_bridge(MEDIANEST_BRIDGE_SOURCE_DEFAULTS='{not json')
+        response = post_json(self.client, VALIDATE_URL, {
+            'sourceType': 'channel',
+            'canonicalKey': 'UCabcdefghijklmnopqrstuv',
+            # canonicalUrl missing -- a schema error.
+        }, **self.auth_header())
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(json.loads(response.content)['code'], 'SOURCE_INVALID')
+
+    def test_url_shape_error_returns_400_not_503_even_with_broken_config(self):
+        '''
+            Ordering: the URL-shape cross-check (400) also wins over the
+            503 -- the defaults check runs AFTER it, not before.
+        '''
+        self.enable_bridge(MEDIANEST_BRIDGE_SOURCE_DEFAULTS='{not json')
+        response = post_json(self.client, VALIDATE_URL, {
+            'sourceType': 'channel',
+            'canonicalKey': 'PLabcdefghij',
+            'canonicalUrl': 'https://www.youtube.com/playlist?list=PLabcdefghij',
+        }, **self.auth_header())
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(json.loads(response.content)['code'], 'SOURCE_INVALID')
+
+    def test_shape_valid_request_with_broken_config_503s_not_200s(self):
+        '''
+            The flip side of the two ordering tests above: once a
+            request clears schema/URL-shape validation, a broken
+            configuration must still block it -- the 503 check does run,
+            it just isn't first.
+        '''
+        self.enable_bridge(MEDIANEST_BRIDGE_SOURCE_DEFAULTS='{not json')
+        response = post_json(
+            self.client, VALIDATE_URL, self._valid_body(), **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 503)
+
+
 class CreateSourceEndpointTestCase(BridgeTestCase):
 
     def _valid_channel_body(self, **overrides):
@@ -288,6 +440,34 @@ class CreateSourceEndpointTestCase(BridgeTestCase):
         self.assertEqual(body['code'], 'SOURCE_CONFLICT')
         self.assertEqual(body['existingSourceUuid'], existing_uuid)
         self.assertEqual(Source.objects.count(), 1)  # no second row created
+
+    def test_config_check_runs_before_key_collision_conflict_check(self):
+        '''
+            Documented ordering (CreateSourceView's own docstring): the
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS check runs before any DB
+            conflict query -- including the key-collision 409 check --
+            currently untested until this. A broken configuration must
+            503 even when the request would otherwise hit a genuine 409
+            SOURCE_CONFLICT.
+        '''
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        first = post_json(
+            self.client, SOURCES_URL, self._valid_channel_body(), **self.auth_header(),
+        )
+        self.assertEqual(first.status_code, 201)
+
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_READ_ONLY='false',
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS='{not json',
+        )
+        second = post_json(
+            self.client, SOURCES_URL,
+            self._valid_channel_body(name='Different Name', directory='different_dir'),
+            **self.auth_header(),
+        )
+        self.assertEqual(second.status_code, 503)
+        self.assertEqual(json.loads(second.content)['code'], 'PROVIDER_UNAVAILABLE')
+        self.assertEqual(Source.objects.count(), 1)  # only the first create persisted
 
     def test_name_collision_without_key_collision_returns_400_namespace_conflict(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
@@ -548,7 +728,9 @@ class CreateSourceRaceConditionTestCase(BridgeTransactionTestCase):
         original_build_source_form = views_write.build_source_form
         created = {}
 
-        def build_source_form_with_injected_race(*, source_type, key, name, directory):
+        def build_source_form_with_injected_race(
+            *, source_type, key, name, directory, defaults_overlay=None,
+        ):
             if 'concurrent' not in created:
                 created['concurrent'] = Source.objects.create(
                     source_type='i', key=key,
@@ -556,6 +738,7 @@ class CreateSourceRaceConditionTestCase(BridgeTransactionTestCase):
                 )
             return original_build_source_form(
                 source_type=source_type, key=key, name=name, directory=directory,
+                defaults_overlay=defaults_overlay,
             )
 
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
@@ -1032,3 +1215,282 @@ class BodySizeHardeningOnWriteRoutesTestCase(BridgeTestCase):
         }
         response = post_json(self.client, VALIDATE_URL, big_body, **self.auth_header())
         self.assertEqual(response.status_code, 413)
+
+
+class SourceDefaultsCreateTestCase(BridgeTestCase):
+    '''
+        T3: MEDIANEST_BRIDGE_SOURCE_DEFAULTS applied at create time. See
+        test_config.py for source_defaults()/validate_source_defaults()
+        unit tests and test_readiness.py for the sourceDefaults
+        component -- this class only checks the end-to-end wiring through
+        POST /sources.
+    '''
+
+    def _valid_channel_body(self, **overrides):
+        body = {
+            'sourceType': 'channel',
+            'canonicalKey': 'UCabcdefghijklmnopqrstuv',
+            'canonicalUrl': 'https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv',
+            'name': 'Test Channel',
+            'directory': 'test_channel',
+        }
+        body.update(overrides)
+        return body
+
+    def _valid_playlist_body(self, **overrides):
+        body = {
+            'sourceType': 'playlist',
+            'canonicalKey': 'PLabcdefghij',
+            'canonicalUrl': 'https://www.youtube.com/playlist?list=PLabcdefghij',
+            'name': 'Test Playlist',
+            'directory': 'test_playlist',
+        }
+        body.update(overrides)
+        return body
+
+    def test_unset_env_applies_builtin_profile_to_channel(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        response = post_json(
+            self.client, SOURCES_URL, self._valid_channel_body(), **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 201)
+        source = Source.objects.get()
+        self.assertTrue(source.write_nfo)
+        self.assertTrue(source.copy_thumbnails)
+        self.assertTrue(source.copy_channel_images)
+        self.assertFalse(source.index_streams)
+        self.assertEqual(
+            source.media_format,
+            config._BUILTIN_SOURCE_DEFAULTS_PROFILE['media_format'],
+        )
+
+    def test_unset_env_applies_builtin_profile_to_playlist(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        response = post_json(
+            self.client, SOURCES_URL, self._valid_playlist_body(), **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 201)
+        source = Source.objects.get()
+        self.assertTrue(source.write_nfo)
+        self.assertTrue(source.copy_thumbnails)
+        self.assertTrue(source.copy_channel_images)
+        self.assertFalse(source.index_streams)
+        self.assertEqual(
+            source.media_format,
+            config._BUILTIN_SOURCE_DEFAULTS_PROFILE['media_format'],
+        )
+
+    def test_empty_object_escape_hatch_uses_plain_model_defaults(self):
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_READ_ONLY='false', MEDIANEST_BRIDGE_SOURCE_DEFAULTS='{}',
+        )
+        response = post_json(
+            self.client, SOURCES_URL, self._valid_channel_body(), **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 201)
+        source = Source.objects.get()
+        blank = Source()
+        self.assertEqual(source.write_nfo, blank.write_nfo)
+        self.assertEqual(source.copy_thumbnails, blank.copy_thumbnails)
+        self.assertEqual(source.copy_channel_images, blank.copy_channel_images)
+        self.assertEqual(source.media_format, blank.media_format)
+
+    def test_per_type_overlay_only_affects_that_type(self):
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_READ_ONLY='false',
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps({
+                'channel': {'write_nfo': True},
+                'playlist': {},
+            }),
+        )
+        channel_response = post_json(
+            self.client, SOURCES_URL, self._valid_channel_body(), **self.auth_header(),
+        )
+        playlist_response = post_json(
+            self.client, SOURCES_URL, self._valid_playlist_body(), **self.auth_header(),
+        )
+        self.assertEqual(channel_response.status_code, 201)
+        self.assertEqual(playlist_response.status_code, 201)
+        channel = Source.objects.get(source_type='i')
+        playlist = Source.objects.get(source_type='p')
+        self.assertTrue(channel.write_nfo)
+        blank = Source()
+        self.assertEqual(playlist.write_nfo, blank.write_nfo)
+
+    def test_star_block_merges_under_both_types(self):
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_READ_ONLY='false',
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps({'*': {'write_nfo': True}}),
+        )
+        channel_response = post_json(
+            self.client, SOURCES_URL, self._valid_channel_body(), **self.auth_header(),
+        )
+        playlist_response = post_json(
+            self.client, SOURCES_URL, self._valid_playlist_body(), **self.auth_header(),
+        )
+        self.assertEqual(channel_response.status_code, 201)
+        self.assertEqual(playlist_response.status_code, 201)
+        self.assertTrue(Source.objects.get(source_type='i').write_nfo)
+        self.assertTrue(Source.objects.get(source_type='p').write_nfo)
+
+    def test_list_shaped_overlay_field_persists_from_comma_string_and_list(self):
+        '''
+            sponsorblock_categories is the one SourceForm field whose
+            model-level stored representation (a comma-joined string,
+            e.g. "sponsor,selfpromo") isn't the shape its auto-generated
+            form field expects (a list) -- see source_forms.py's
+            LIST_SHAPED_FIELDS comment and
+            coerce_list_shaped_fields(). A MEDIANEST_BRIDGE_SOURCE_DEFAULTS
+            overlay may supply either shape; both must persist
+            identically on a REAL create (not just pass the synthetic
+            config-check form).
+        '''
+        for value in ('sponsor,selfpromo', ['sponsor', 'selfpromo']):
+            with self.subTest(value=value):
+                Source.objects.all().delete()
+                self.enable_bridge(
+                    MEDIANEST_BRIDGE_READ_ONLY='false',
+                    MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps(
+                        {'*': {'sponsorblock_categories': value}},
+                    ),
+                )
+                response = post_json(
+                    self.client, SOURCES_URL, self._valid_channel_body(),
+                    **self.auth_header(),
+                )
+                self.assertEqual(response.status_code, 201)
+                source = Source.objects.get()
+                self.assertEqual(
+                    source.sponsorblock_categories.selected_choices,
+                    ['sponsor', 'selfpromo'],
+                )
+
+    def test_invalid_json_config_returns_503_and_persists_nothing(self):
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_READ_ONLY='false',
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS='{not json',
+        )
+        response = post_json(
+            self.client, SOURCES_URL, self._valid_channel_body(), **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(json.loads(response.content)['code'], 'PROVIDER_UNAVAILABLE')
+        self.assertEqual(Source.objects.count(), 0)
+
+    def test_unknown_field_config_returns_503_and_persists_nothing(self):
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_READ_ONLY='false',
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps(
+                {'channel': {'not_a_real_field': True}},
+            ),
+        )
+        response = post_json(
+            self.client, SOURCES_URL, self._valid_channel_body(), **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(json.loads(response.content)['code'], 'PROVIDER_UNAVAILABLE')
+        self.assertEqual(Source.objects.count(), 0)
+
+    def test_forbidden_field_config_returns_503_and_persists_nothing(self):
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_READ_ONLY='false',
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps(
+                {'channel': {'directory': 'nope'}},
+            ),
+        )
+        response = post_json(
+            self.client, SOURCES_URL, self._valid_channel_body(), **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(json.loads(response.content)['code'], 'PROVIDER_UNAVAILABLE')
+        self.assertEqual(Source.objects.count(), 0)
+
+    def test_invalid_media_format_in_config_returns_503_and_persists_nothing(self):
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_READ_ONLY='false',
+            # "*": {} covers playlist so this isolates the media_format
+            # check itself, not the type-coverage requirement (see
+            # test_uncovered_type_config_returns_503_and_persists_nothing
+            # below).
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps(
+                {'*': {}, 'channel': {'media_format': '{not_a_real_format_key}'}},
+            ),
+        )
+        response = post_json(
+            self.client, SOURCES_URL, self._valid_channel_body(), **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(json.loads(response.content)['code'], 'PROVIDER_UNAVAILABLE')
+        self.assertEqual(Source.objects.count(), 0)
+
+    def test_uncovered_type_config_returns_503_and_persists_nothing(self):
+        '''
+            A MEDIANEST_BRIDGE_SOURCE_DEFAULTS object that configures
+            `channel` but leaves `playlist` covered by neither its own
+            key nor "*" must fail loudly -- an operator who configures
+            only `channel` must not have `playlist` sources silently
+            created on plain model defaults with no signal that anything
+            is different for that type.
+        '''
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_READ_ONLY='false',
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps(
+                {'channel': {'write_nfo': True}},
+            ),
+        )
+        response = post_json(
+            self.client, SOURCES_URL, self._valid_playlist_body(), **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(json.loads(response.content)['code'], 'PROVIDER_UNAVAILABLE')
+        self.assertEqual(Source.objects.count(), 0)
+
+    def test_invalid_config_error_never_leaks_env_value(self):
+        secret_marker = 'super-secret-path-marker-should-not-leak'
+        self.enable_bridge(
+            MEDIANEST_BRIDGE_READ_ONLY='false',
+            MEDIANEST_BRIDGE_SOURCE_DEFAULTS=json.dumps(
+                {
+                    '*': {},
+                    'channel': {
+                        'media_format': secret_marker + '-{not_a_real_format_key}',
+                    },
+                },
+            ),
+        )
+        response = post_json(
+            self.client, SOURCES_URL, self._valid_channel_body(), **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn(secret_marker, response.content.decode('utf-8'))
+
+
+class BuildSourceFormOverlayTestCase(BridgeTestCase):
+    '''
+        build_source_form() applies the overlay before the request's own
+        type/key/name/directory, so an overlay can never replace them even
+        if one got past config.source_defaults()'s forbidden-field check.
+    '''
+
+    def test_request_identity_fields_win_over_the_overlay(self):
+        from ..source_forms import build_source_form, contract_source_type_to_tubesync
+        source_type = contract_source_type_to_tubesync('channel')
+        form = build_source_form(
+            source_type=source_type,
+            key='UCabcdefghijklmnopqrstuv',
+            name='request-name',
+            directory='request-directory',
+            defaults_overlay={
+                'source_type': contract_source_type_to_tubesync('playlist'),
+                'key': 'overlay-key',
+                'name': 'overlay-name',
+                'directory': 'overlay-directory',
+                'write_nfo': True,
+            },
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data['source_type'], source_type)
+        self.assertEqual(form.cleaned_data['key'], 'UCabcdefghijklmnopqrstuv')
+        self.assertEqual(form.cleaned_data['name'], 'request-name')
+        self.assertEqual(form.cleaned_data['directory'], 'request-directory')
+        self.assertTrue(form.cleaned_data['write_nfo'])

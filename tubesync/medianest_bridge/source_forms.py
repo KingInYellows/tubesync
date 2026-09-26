@@ -42,7 +42,26 @@
        attempting to build a whole SourceForm for the directory-less
        validate case -- see its own docstring for why a synthetic
        placeholder directory/name is not an acceptable substitute either.
+
+    3. (T3) build_source_form() also accepts an optional
+       `defaults_overlay` -- config.source_defaults()'s per-type
+       operator-configured field overrides (MEDIANEST_BRIDGE_SOURCE_DEFAULTS),
+       applied onto default_form_data() before the request's own
+       type/key/name/directory. build_synthetic_source_form() and
+       extract_form_errors(value_free=True) below exist so
+       config.load_validated_source_defaults() can run that same overlay
+       through this module's own validation path (for the
+       `sourceDefaults` readiness component and both
+       POST /sources/validate's and POST /sources' own pre-checks)
+       without a real request or a saved row -- see
+       build_synthetic_source_form()'s own docstring for why a synthetic
+       placeholder is acceptable there when it was rejected for
+       /sources/validate above. The config-check path reports
+       value-free field/code pairs (extract_form_errors(value_free=True))
+       so a rejected overlay value is never echoed back.
 '''
+import uuid
+
 from django.conf import settings
 from django.core.exceptions import SuspiciousFileOperation, ValidationError
 from django.forms.models import model_to_dict
@@ -76,7 +95,42 @@ _ERRORS = {
 # mismatch as of this writing; if a future upstream field gains a similar
 # custom field/widget pairing, add it here rather than special-casing it
 # ad hoc at each call site.
-_LIST_SHAPED_FIELDS = {'sponsorblock_categories'}
+LIST_SHAPED_FIELDS = {'sponsorblock_categories'}
+
+# T3: fields a MEDIANEST_BRIDGE_SOURCE_DEFAULTS overlay may never set, and
+# that config.source_defaults() rejects outright if named in an overlay:
+# the four fields the create contract itself always supplies
+# (CreateSourceRequest's sourceType/canonicalKey/name/directory, mapped by
+# build_source_form() below), plus target_schedule -- one fixed timestamp
+# is meaningless as a default for every source, and a null/"" value passes
+# the never-saved synthetic form check yet fails every create's INSERT.
+SOURCE_DEFAULTS_FORBIDDEN_FIELDS = frozenset({
+    'source_type', 'key', 'name', 'directory', 'target_schedule',
+})
+
+
+def allowed_source_default_fields():
+    '''
+        Every SourceForm field a MEDIANEST_BRIDGE_SOURCE_DEFAULTS overlay
+        may set: SourceForm.base_fields minus
+        SOURCE_DEFAULTS_FORBIDDEN_FIELDS. Kept here rather than in
+        config.py because SourceForm's field set is this module's own
+        concern (default_form_data() already reads it the same way).
+    '''
+    return frozenset(SourceForm.base_fields.keys()) - SOURCE_DEFAULTS_FORBIDDEN_FIELDS
+
+
+def boolean_source_default_fields():
+    '''
+        The allowed overlay fields backed by a model BooleanField. A form
+        checkbox treats any non-empty string other than "false" as True,
+        so an overlay value like "0" or "off" would silently become True;
+        config.source_defaults() requires a JSON true/false for these.
+    '''
+    return frozenset(
+        name for name in allowed_source_default_fields()
+        if 'BooleanField' == Source._meta.get_field(name).get_internal_type()
+    )
 
 
 def contract_source_type_to_tubesync(contract_source_type):
@@ -107,14 +161,33 @@ def validate_canonical_url(contract_source_type, canonical_key, canonical_url):
     return errors
 
 
+def coerce_list_shaped_fields(data):
+    '''
+        Mutates and returns `data` in place: normalizes any
+        LIST_SHAPED_FIELDS value to the list shape the auto-generated
+        form field expects (see LIST_SHAPED_FIELDS' own comment). Shared
+        by default_form_data() (TubeSync's own model default is the
+        comma-joined string form) and build_source_form()/
+        build_synthetic_source_form() (a MEDIANEST_BRIDGE_SOURCE_DEFAULTS
+        overlay could supply either shape -- a plain string like the model
+        default, or already a list).
+    '''
+    for field in LIST_SHAPED_FIELDS:
+        if field in data and not isinstance(data[field], list):
+            # The model's own string form is comma-separated
+            # ("sponsor,selfpromo"), one choice per item.
+            data[field] = [
+                choice.strip() for choice in str(data[field] or '').split(',')
+                if choice.strip()
+            ]
+    return data
+
+
 def default_form_data():
     '''TubeSync's own Source model defaults for every SourceForm field.'''
     blank = Source()
     data = model_to_dict(blank, fields=list(SourceForm.base_fields.keys()))
-    for field in _LIST_SHAPED_FIELDS:
-        if field in data and not isinstance(data[field], list):
-            data[field] = [data[field]] if data[field] else []
-    return data
+    return coerce_list_shaped_fields(data)
 
 
 def validate_source_type_and_key(*, source_type, key):
@@ -146,7 +219,7 @@ def validate_source_type_and_key(*, source_type, key):
     return errors
 
 
-def build_source_form(*, source_type, key, name, directory):
+def build_source_form(*, source_type, key, name, directory, defaults_overlay=None):
     '''
         Returns a SourceForm with is_valid() already evaluated (so
         .errors/.cleaned_data are populated either way). Used by
@@ -154,8 +227,22 @@ def build_source_form(*, source_type, key, name, directory):
         and directory, so this always builds a complete, real form; there
         is no directory-less variant of this function (see
         validate_source_type_and_key() for that case).
+
+        `defaults_overlay` (T3): config.source_defaults()'s per-type dict
+        of SourceForm field overrides, applied onto default_form_data()
+        BEFORE source_type/key/name/directory below -- so an overlay can
+        never override what the request itself supplies, even if it
+        somehow named one of those keys (config.source_defaults() already
+        rejects that at parse time; this ordering is a second,
+        structural guarantee of the same thing). Only bridge-created
+        sources go through this overlay -- the HTML UI builds its own
+        SourceForm directly in sync/views/sources.py, untouched by this
+        module.
     '''
     data = default_form_data()
+    if defaults_overlay:
+        data.update(defaults_overlay)
+        coerce_list_shaped_fields(data)
     data['source_type'] = source_type
     data['key'] = key
     data['name'] = name
@@ -163,6 +250,91 @@ def build_source_form(*, source_type, key, name, directory):
     form = SourceForm(data=data)
     form.is_valid()
     return form
+
+
+def build_synthetic_source_form(*, contract_source_type, overlay):
+    '''
+        Builds a real SourceForm from default_form_data() overlaid with
+        `overlay` (already validated against
+        allowed_source_default_fields() by config.source_defaults() --
+        this function does not re-check that), plus a synthetic-but-safe
+        key/name/directory that is NEVER saved and used for nothing
+        beyond satisfying SourceForm's own required-field/clean()
+        machinery. Used by config.load_validated_source_defaults() to run
+        a MEDIANEST_BRIDGE_SOURCE_DEFAULTS overlay through the exact same
+        field-level checks (is_valid()) plus run_edit_source_checks()
+        (media-format-produces-a-filename, directory-traversal) that a
+        real POST /sources create applies via build_source_form() above
+        -- so a broken overlay is caught by readiness and by both
+        POST /sources/validate's and POST /sources' own pre-checks
+        instead of only failing every subsequent real create one at a
+        time. This is not a config-check-only helper: every real create
+        or validate call also runs load_validated_source_defaults()
+        (views_write.py's ValidateSourceView.post and
+        CreateSourceView.post both call it, via
+        _source_defaults_or_error()), so this function's own field/
+        edit-check pass runs on every request, not just readiness polls.
+
+        Why a synthetic key/name/directory is acceptable HERE when
+        validate_source_type_and_key()'s own docstring explicitly
+        rejected the same idea for POST /sources/validate: that rejection
+        was about a caller-supplied *request*, where a placeholder value
+        could fail (or wrongly succeed) for a reason that has nothing to
+        do with what the caller actually asked to validate. Here there is
+        no request being validated -- only server-side configuration that
+        applies identically to every future create of that source type --
+        so a fixed synthetic placeholder cannot mask or misrepresent a
+        caller's own input; there is none.
+
+        Uniqueness is irrelevant to "is this configuration well-formed"
+        and must not depend on what happens to already exist in the
+        database (a real key/name/directory collision here would make
+        configuration validity flap based on unrelated data). Rather than
+        relying on the synthetic values below being merely unlikely to
+        collide, validate_unique() is overridden to a no-op explicitly.
+    '''
+    data = default_form_data()
+    data.update(overlay)
+    coerce_list_shaped_fields(data)
+    data['source_type'] = contract_source_type_to_tubesync(contract_source_type)
+    placeholder = f'medianest-bridge-config-check-{uuid.uuid4().hex}'
+    data['key'] = placeholder
+    data['name'] = placeholder
+    data['directory'] = placeholder
+    form = SourceForm(data=data)
+    form.validate_unique = lambda: None
+    form.is_valid()
+    return form
+
+
+def extract_form_errors(form, *, value_free=False):
+    '''
+        Plain-text "field: message" strings from form.errors, via
+        Django's own ErrorDict.get_json_data() -- str(form.errors) would
+        render as Django's own HTML (`<ul class="errorlist">...</ul>`),
+        which a JSON/API consumer must never receive (T4 verifier MEDIUM
+        finding, reproduced live in a POST /sources response).
+
+        A real create's errors go straight back to the caller that sent
+        the rejected values. `value_free=True` is for the config-check
+        path instead (readiness's `sourceDefaults` component, and both
+        POST /sources/validate's and POST /sources' own
+        MEDIANEST_BRIDGE_SOURCE_DEFAULTS pre-checks), where a rejected
+        overlay value must never be echoed back to anyone: Django's
+        built-in messages can interpolate the rejected value (a
+        ChoiceField's invalid_choice is "Select a valid choice. %(value)s
+        is not one of the available choices."), so a built-in error is
+        reported by its code. The bridge's own messages (_ERRORS) carry no
+        code and are fixed strings, so they are kept either way.
+    '''
+    messages = []
+    for field, field_errors in form.errors.get_json_data().items():
+        for error in field_errors:
+            detail = error['message']
+            if value_free:
+                detail = error.get('code') or detail
+            messages.append(f'{field}: {detail}')
+    return messages
 
 
 def run_edit_source_checks(form):

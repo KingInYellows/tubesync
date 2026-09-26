@@ -328,6 +328,7 @@ text never contains the bearer token.
 | `MEDIANEST_BRIDGE_STORAGE_WARN_BYTES` | `5368709120` (5 GiB) | `storage` readiness component reports `degraded` at or below this many free bytes on `DOWNLOAD_ROOT`. |
 | `MEDIANEST_BRIDGE_STORAGE_CRITICAL_BYTES` | `1073741824` (1 GiB) | `storage` readiness component reports `unavailable` at or below this many free bytes. Defaults are round numbers, not derived from any measured workload -- an operator with a better sense of their own disk growth rate should override them. |
 | `MEDIANEST_BRIDGE_YOUTUBE_PROBE_ENABLED` | `true` | Any value other than exactly `false` (case-insensitive) is treated as `true`. Enables the `youtube` readiness component's real network probe (a `GET https://www.youtube.com/generate_204`, no auth/cookies, cached 120s). Meaningful only under the shared-egress-namespace deployment wiring (DECISIONS #29, M6b routing doc) where this process shares yt-dlp's VPN egress -- set to `false` for any deployment that does NOT use that wiring, where a probe result would describe the wrong network path; the component then honestly reports `not_configured`. See `medianest_bridge/readiness.py`'s module docstring for the full design rationale. |
+| `MEDIANEST_BRIDGE_SOURCE_DEFAULTS` | unset (built-in profile) | JSON object of `POST /sources` field overrides, keyed by contract source type (`channel`, `playlist`) plus an optional shared `"*"` block merged under both before the per-type block wins on conflict. Read fresh per call, like every other variable here. **Unset**: both types get the built-in profile -- `write_nfo`, `copy_thumbnails`, `copy_channel_images` all `true`, `index_streams` `false`, and `media_format` set to `"Season {episode_yyyy}/s{episode_yyyy}e{episode_mmddnn} - {title_full_bounded} [{key}].{ext}"` (T1's date-based Plex-TV-Shows keys; a playlist is treated as its own show using the same scheme). **`{}`** (an explicitly empty top-level JSON object): the escape hatch back to plain `Source` model defaults for both types -- distinct from "unset". Any other JSON value: only `SourceForm` fields are allowed, EXCLUDING `source_type`/`key`/`name`/`directory` (the create contract itself owns those) and `target_schedule` (one fixed timestamp is meaningless as a default for every source). Boolean fields must be JSON `true`/`false`; a `media_format` whose rendered path has a `..` segment and a `filter_text` that is not a valid regular expression (both checked on the value the source form would store, so `.{ext:.0}.` or a list-typed `filter_text` cannot slip past) are rejected. Error details name the field and error code, never the configured value. Every source type must be COVERED -- either its own key is present (any value, including an explicit `{}`, which is a per-type opt-out that deliberately ignores `"*"` too) or `"*"` is present (covering both types). A type covered by neither is a configuration error, not a silent "no overrides": an operator who configures only `channel` must not get `playlist` sources created with plain defaults and no signal anything differs for that type. An unknown field, a forbidden field, an uncovered type, or a value that fails the same field-level/`run_edit_source_checks()` validation a real create applies is a configuration error -- see the `sourceDefaults` readiness component below and `POST /sources`' own 503 in that state. Never silently falls back to model defaults on an invalid value. |
 | `LISTEN_HOST` | `127.0.0.1` | **Not a `medianest_bridge` setting** -- read by `gunicorn.py` to choose gunicorn's bind address. Must stay loopback (the default) for the CIDR gate's `X-Real-IP` trust to hold; see the warning behavior described just above. |
 
 None of these are registered as Django settings in `settings.py` -- the app
@@ -390,11 +391,22 @@ reads are `GET`; T3 writes are `POST`.
 - `GET /health/live` -- liveness only, no database access.
 - `GET /health/ready` -- per-component readiness (`application`,
   `database`, `queues`, `workers`, `ytDlp`, `ffmpeg`, `storage`, `youtube`,
-  `cookies`, `plex`). Components that cannot be cheaply/honestly verified
+  `cookies`, `plex`, plus `sourceDefaults` -- Plex T3, OPTIONAL in the contract,
+  see below). Components that cannot be cheaply/honestly verified
   from the web process report `unknown`, never a fabricated `healthy` --
   see `medianest_bridge/readiness.py`'s module docstring for exactly which
   components and why, and for the (contract-silent, documented-here)
-  overall-status aggregation rule.
+  overall-status aggregation rule. `sourceDefaults` (DECISIONS #54) reports
+  whether `MEDIANEST_BRIDGE_SOURCE_DEFAULTS` currently parses and validates
+  -- `healthy` if so, `unavailable` (with the specific error(s) in `detail`,
+  never the env var's own raw value) otherwise. A `healthy` result names,
+  in `detail`, any type whose explicit `{}` opts it out of a non-empty
+  `"*"` block (the documented opt-out, but also what a half-edited
+  configuration looks like), and an unexpected error in the check is
+  logged and reported as `unavailable`. It's deliberately excluded
+  from the contract's `components.required` list, so an older MediaNest
+  caller pinned to a pre-Plex-T3 fixture stays conformant against a
+  bridge that now reports it.
 - `GET /meta` -- bridge version, upstream `VERSION` string (known stale
   relative to the actual checked-out commit -- see the upstream audit), and
   `upstreamCommit`.
@@ -447,6 +459,21 @@ choices inline -- most notably, TubeSync's `MediaState.UNKNOWN` maps to
   without a live metadata fetch, out of scope here) -- also codified in
   the contract's own schema description. Not blocked by
   `MEDIANEST_BRIDGE_READ_ONLY` (see the read-only gate section above).
+  Also checks `MEDIANEST_BRIDGE_SOURCE_DEFAULTS` for the requested
+  `sourceType` (after the request's schema and URL-shape checks, before
+  its `sourceType`/`canonicalKey` field-level checks, so a request whose
+  key fails those still gets the 503 while the configuration is broken)
+  and returns `503 PROVIDER_UNAVAILABLE` when it's invalid, identical to
+  `POST /sources`' own check below (`views_write.py`'s
+  `_source_defaults_or_error()` is the one shared implementation both
+  views call). Only the requested type's block (and `"*"`) is
+  field-checked; a parse error, an unknown top-level key, an uncovered
+  type or a non-object block fails every type. This is the 503 that matters for retries: MediaNest calls
+  this endpoint before `POST /sources` and treats any validate failure
+  as a definite, user-retryable failure, so a broken configuration fails
+  cleanly here and the user can re-submit once an operator fixes it --
+  see `POST /sources`' own bullet below for why its create-time 503 is
+  only a backstop.
 - `POST /sources` -- create-or-adopt on the canonical key. A `key`
   collision (an existing source already uses it) returns `409
   SOURCE_CONFLICT` with `existingSourceUuid`, adopt semantics, and always
@@ -463,11 +490,30 @@ choices inline -- most notably, TubeSync's `MediaState.UNKNOWN` maps to
   MediaNest must supply as `canonicalKey`. Fields the request schema
   doesn't supply (media format, resolution, codecs, filters, etc.) use
   TubeSync's own `Source` model defaults, obtained via `model_to_dict()`
-  on a blank instance -- never a bridge-invented default. `profile` is
+  on a blank instance, overlaid with this bridge's own configured
+  profile (Plex T3: `MEDIANEST_BRIDGE_SOURCE_DEFAULTS`, see "Environment
+  variables" above) -- never a bridge-invented default outside that
+  documented, operator-controlled overlay. A `MEDIANEST_BRIDGE_SOURCE_DEFAULTS`
+  that fails to parse, or whose overlay for the requested `sourceType`
+  fails validation, fails the whole request with `503
+  PROVIDER_UNAVAILABLE` (checked before any DB query) rather than
+  silently falling back to plain model defaults -- see the
+  `sourceDefaults` readiness component above, which reports the same
+  underlying check. This create-time check is a **backstop**, not the
+  primary defense: `POST /sources/validate` (above) runs the identical
+  check first, and MediaNest calls it before `POST /sources`, so a
+  broken configuration should already have failed there with a 503
+  MediaNest treats as a definite, re-submittable failure. A 503 reaching
+  a caller from create's own check specifically has no dedicated retry
+  semantics on the MediaNest side (its `translateBridgeWriteError` has
+  no 503 case), so it is reconciled as an unknown outcome rather than
+  retried -- do not rely on MediaNest retrying a create-time 503 on its
+  own; the validate-time 503 is the one that gets a clean, user-visible
+  retry. `profile` is
   accepted and structurally validated but not currently mapped onto any
   TubeSync field (no contract-level field-name/enum-value mapping exists
-  yet); created sources use TubeSync's own defaults for everything
-  `profile` might have described. **Side effect, deliberate:** a
+  yet); created sources use TubeSync's own (bridge-overlaid) defaults for
+  everything `profile` might have described. **Side effect, deliberate:** a
   successful create goes through `Source`'s real `.save()`, firing
   `sync/signals.py`'s `post_save` receiver exactly as the HTML UI would
   -- schedules `check_source_directory_exists`, conditionally
@@ -539,16 +585,44 @@ uuid, none of which can carry either.
 `medianest_bridge/contract/bridge-openapi.v1.yaml` is a vendored, read-only
 copy of the canonical contract (MediaNest repo,
 `docs/planning/tubesync-integration/bridge-openapi.v1.yaml` @
-`35a9c069fe4f1512ff7b606c33c0c2a11c7efa76`, re-vendored for T4). History:
-T1 vendored `ce17a28773a6f3866c9c9235ae4eae04f4bafff4`; T2 re-vendored
-`713f9b4ac9efc24e0f285f9af58a50276f29ebb9` (`REQUEST_TOO_LARGE` joining
-`Error.code`'s enum); T4's re-vendor is description-only (DECISIONS #27:
-codifies `/sources/validate`'s slice-1 scope and
+`479b97ea4fa990def968f99db7052b04cafd5e0d`, a description-only re-vendor
+scoping the source-defaults 503 to the requested source type).
+**Note:** that SHA is the contract worktree's own local commit on
+`plex/m3a-contract-source-defaults` as of this PR -- a pre-merge branch
+commit, not yet on the canonical repo's `main`. Re-sync this field (and
+re-verify the sha256 below) once that branch merges, the same way every
+prior re-vendor here has recorded whatever commit was canonical at the
+time. History: T1 vendored `ce17a28773a6f3866c9c9235ae4eae04f4bafff4`; T2
+re-vendored `713f9b4ac9efc24e0f285f9af58a50276f29ebb9`
+(`REQUEST_TOO_LARGE` joining `Error.code`'s enum); T4 re-vendored
+`35a9c069fe4f1512ff7b606c33c0c2a11c7efa76` (description-only, DECISIONS
+#27: codifies `/sources/validate`'s slice-1 scope and
 `ValidatedSource.displayName`'s placeholder, both already implemented
-exactly this way since T3) -- no schema/enum changes, so no bridge
-behavior changed here, only the contract's own prose catching up to it.
-Do not edit this file directly -- re-vendor from the canonical source
-instead.
+exactly this way since T3); `a7689cdc7a87f93f0ddc8a5c8efd9d9ec7c88eda`
+(2026-09-24) added the OPTIONAL `sourceDefaults` property under
+`HealthReady.components.properties` (DECISIONS #54) -- NOT added to that
+object's `required` list, so `contract_fixtures.json`'s
+`health_ready_component_names` is unchanged;
+`f84aa1853cf8b3ba2cd4c68be6dca8b997e64731` (2026-09-25) declared
+`POST /sources`' own 503 `ProviderUnavailable` response;
+`118834c5c4e1611ac51694334feeb93d2b4ae1f2` (2026-09-25) further declared
+`POST /sources/validate`'s own 503 `ProviderUnavailable` response and
+rewords the shared `ProviderUnavailable` response description (and
+DECISIONS #54) to say MediaNest treats the validate-time 503 as a
+definite, re-submittable failure the user can retry once an operator
+fixes the configuration, while the create-time 503 remains a backstop
+only, reconciled as an unknown outcome (never blind-retried) -- matching
+`views_write.py`'s own `ValidateSourceView`/`CreateSourceView` docstrings;
+and this re-vendor (`479b97ea4fa990def968f99db7052b04cafd5e0d`,
+2026-09-25) scopes the source-defaults 503 to the requested source type
+(as `_source_defaults_or_error()` validates it), limits "serves no
+endpoint" to a disabled bridge, and states that a bridge reporting
+`sourceDefaults` says `healthy` (never `not_configured`) with nothing
+configured, and may put a `detail` on a healthy status.
+Only response/description text changed across these last four
+re-vendors -- no `components.schemas` shape changed, confirmed by
+`test_contract_conformance.py`'s own PyYAML cross-check. Do not edit this
+file directly -- re-vendor from the canonical source instead.
 
 `medianest_bridge/contract/contract_fixtures.json` is a small JSON
 extraction (required fields + enums for the schemas this app exercises)
@@ -565,7 +639,16 @@ from the YAML rather than hand-edited.
 
 `medianest_bridge/tests/` (Django test runner, same as upstream):
 
-- `test_config.py` -- env var parsing/defaults/fail-closed behavior.
+- `test_config.py` -- env var parsing/defaults/fail-closed behavior,
+  including `MEDIANEST_BRIDGE_SOURCE_DEFAULTS` (Plex T3): unset -> built-in
+  profile, `{}` -> the no-overrides escape hatch, invalid JSON/unknown
+  field/forbidden field -> `SourceDefaultsConfigError`, `*`-block
+  merging, a type covered by neither its own key nor `*` ->
+  `SourceDefaultsConfigError` (not a silent no-overrides fallback), an
+  explicit per-type `{}` -> an allowed opt-out that ignores `*` too, and
+  `validate_source_defaults()`'s own field-level/
+  `run_edit_source_checks()` pass (a bad `media_format`, no raw env
+  value ever echoed in an error message).
 - `test_auth.py` -- client-IP resolution, CIDR allow/deny,
   `hmac.compare_digest` patch-asserted as the actual comparison mechanism.
 - `test_dispatch.py` -- the full gate order end-to-end: disabled,
@@ -579,7 +662,10 @@ from the YAML rather than hand-edited.
   real s6-overlay deployment) and that `youtube`'s real probe result
   (mocked, never a live network call) is actually wired through to the
   response. See `test_readiness.py::YoutubeProbeTestCase` for the probe's
-  own success/timeout/refused/disabled/caching behavior.
+  own success/timeout/refused/disabled/caching behavior, and
+  `test_readiness.py::SourceDefaultsCheckTestCase` (Plex T3) for the
+  `sourceDefaults` component's healthy/unavailable/overall-aggregation
+  behavior and its own "never echoes the raw env value" assertion.
 - `test_contract_conformance.py` -- the fixture/YAML sha256 lock described
   above.
 - `test_basicauth_exemption.py` -- redesigned for T2's prefix-based
@@ -613,7 +699,11 @@ from the YAML rather than hand-edited.
   still-pending task, directory-traversal rejection, that validate never
   persists anything, contract-shape conformance for every success
   response, and body-size hardening against a real write route with a
-  real JSON payload.
+  real JSON payload. `SourceDefaultsCreateTestCase` (Plex T3, in the same
+  file) covers the built-in profile landing on a created channel/
+  playlist, the `{}` escape hatch, `*`/per-type merge, and an invalid
+  `MEDIANEST_BRIDGE_SOURCE_DEFAULTS` producing `503 PROVIDER_UNAVAILABLE`
+  with nothing persisted and no raw env value in the response body.
 
 Run with `cd tubesync && python3 manage.py test medianest_bridge` (or omit
 the app label to run the full suite, upstream included).

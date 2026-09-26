@@ -102,6 +102,30 @@
     out of T1's scope and remains out of T4's (no new endpoints, per the
     T4 brief).
 
+    `sourceDefaults` (T3, OPTIONAL in the contract -- see
+    bridge-openapi.v1.yaml's HealthReady.components.properties, added
+    without joining `required` so an older MediaNest caller pinned to a
+    pre-T3 fixture stays conformant against a bridge that now reports
+    it): reports whether MEDIANEST_BRIDGE_SOURCE_DEFAULTS (config.py's
+    source_defaults()/validate_source_defaults()) currently parses and
+    validates -- "healthy" if so, "unavailable" (with the specific
+    error(s) in `detail`, never the env var's own raw value) otherwise.
+    A healthy result names, in `detail`, any type an explicit per-type
+    `{}` opts out of a non-empty `"*"` block. An unexpected error in the
+    check is logged and reported as "unavailable".
+    This component calls config.validate_source_defaults() (the error
+    list alone); POST /sources/validate and POST /sources call the same
+    underlying config.load_validated_source_defaults() directly, via
+    views_write.py's shared _source_defaults_or_error() helper, since
+    they also need its parsed per-type overlays, not just the error
+    list -- validate_source_defaults() is that same function's error
+    list (`load_validated_source_defaults()[1]`), so this component and
+    both endpoints' 503s can never disagree about whether the
+    configuration is valid. Unlike `youtube`, this has no dedicated
+    cache -- it shares collect_components()'s ordinary 5s TTL, since
+    it's a local env-var/DB-free check (no network call, no subprocess,
+    nothing that benefits from a longer TTL).
+
     Failure isolation: every check function is called through
     _run_check(), which converts an unexpected exception into "unknown"
     (never lets one check's bug crash the whole /health/ready response)
@@ -546,6 +570,31 @@ def check_cookies():
     return _status('not_configured', detail='no cookies file configured')
 
 
+def check_source_defaults():
+    from common.logger import log
+    from . import config
+    try:
+        errors = config.validate_source_defaults()
+        opt_outs = config.source_defaults_star_opt_outs()
+    except Exception:
+        # Every expected configuration problem is already an entry in
+        # `errors`; this is a bug in the check itself. Say so in the log
+        # rather than letting _run_check() turn it into a silent unknown.
+        log.exception('medianest_bridge: sourceDefaults check failed')
+        return _status(
+            'unavailable',
+            detail='the source defaults could not be checked; see the bridge log',
+        )
+    if errors:
+        return _status('unavailable', detail='; '.join(errors))
+    if opt_outs:
+        return _status('healthy', detail=(
+            f'{", ".join(opt_outs)}: an explicit {{}} opts out of every '
+            '"*" field'
+        ))
+    return _status('healthy')
+
+
 def check_plex():
     try:
         from sync.choices import MediaServerType, Val
@@ -574,6 +623,7 @@ CHECKS = {
     'youtube': check_youtube,
     'cookies': check_cookies,
     'plex': check_plex,
+    'sourceDefaults': check_source_defaults,
 }
 
 # Components whose degraded/unavailable status affects overall aggregation.
