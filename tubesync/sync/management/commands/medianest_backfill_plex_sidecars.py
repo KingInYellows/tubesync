@@ -1007,12 +1007,15 @@ class Command(BaseCommand):
             Writes (apply) or predicts (dry-run) `source`'s tvshow.nfo,
             then enqueues (or predicts enqueueing) `download_source_images`
             when `copy_channel_images` is on and poster.jpg is still
-            missing -- unless `images_already_queued` says
-            source_pre_save's own copy_channel_images-turned-on check
-            already scheduled it for this same save, in which case this
-            command must not also schedule a second job, but still counts
-            it either way so dry-run's prediction and apply's actual
-            behaviour report the same `images_enqueued` count.
+            missing, or when the overlay is turning `copy_channel_images`
+            on (`images_already_queued`) even if poster.jpg already exists
+            (source_pre_save queues that job regardless). Unless
+            `images_already_queued` says source_pre_save's own
+            copy_channel_images-turned-on check already scheduled it for
+            this same save, in which case this command must not also
+            schedule a second job, but still counts it either way so
+            dry-run's prediction and apply's actual behaviour report the
+            same `images_enqueued` count.
         '''
         if apply_changes:
             try:
@@ -1037,7 +1040,18 @@ class Command(BaseCommand):
                 summary['tvshow_written'] += 1
 
         poster_path = Path(source.directory_path) / 'poster.jpg'
-        if source.copy_channel_images and not poster_path.exists():
+        poster_exists = poster_path.exists()
+        if images_already_queued and poster_exists:
+            # source_pre_save queues it whatever is on disk, and it writes
+            # the images unconditionally.
+            self.stdout.write(self.style.WARNING(
+                '  NOTE: turning copy_channel_images on queues TubeSync\'s '
+                'own image download, which replaces the existing '
+                'poster/banner/thumbnail images.'
+            ))
+        if source.copy_channel_images and (
+            images_already_queued or not poster_exists
+        ):
             if apply_changes:
                 if not images_already_queued:
                     # TaskHistory.schedule(..., remove_duplicates=True) --

@@ -947,6 +947,19 @@ class BackfillFailureHandlingTestCase(TestCase):
             mock_th.schedule.assert_not_called()
             self.assertIn('images_enqueued: 0', output)
 
+    def test_turning_channel_images_on_with_a_poster_counts_the_job(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            (source.directory_path / 'poster.jpg').write_bytes(b'poster')
+            for args in ((), ('--apply',)):
+                with self.subTest(args=args):
+                    Source.objects.filter(pk=source.pk).update(
+                        copy_channel_images=False,
+                    )
+                    output = run_backfill('--source', str(source.uuid), *args)
+                    self.assertIn('images_enqueued: 1', output)
+                    self.assertIn('replaces the existing', output)
+
     def test_locked_media_prints_a_stdout_line(self):
         with temp_download_root():
             source, media, old_path = self.make_downloaded()
