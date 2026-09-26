@@ -435,7 +435,9 @@ def _foreign_nfo_reason(nfo_path, source):
             content to protect, so it is still replaceable, same as an
             absent one;
           - a symlink, dangling or not: writing would replace the link
-            itself with a regular file.
+            itself with a regular file;
+          - anything else that is not a regular file, such as a directory
+            or a FIFO (reading a FIFO would block).
     '''
     return _read_tvshow_nfo(nfo_path, source)[1]
 
@@ -453,6 +455,9 @@ def _read_tvshow_nfo(nfo_path, source):
         return root, 'it is a symlink'
     if not nfo_path.exists():
         return None, None
+    if not nfo_path.is_file():
+        # A directory or FIFO: reading it would fail or block.
+        return None, 'it is not a regular file'
     raw = nfo_path.read_bytes()
     if not raw:
         return None, None
@@ -533,7 +538,8 @@ def write_tvshow_nfo(source):
         with transaction.atomic():
             content = build_tvshow_nfo(source)
         _invalidate_show_title_cache(source)
-        if nfo_path.exists() and nfo_path.read_bytes() == content.encode('utf-8'):
+        # is_file(), not exists(): reading a FIFO would block.
+        if nfo_path.is_file() and nfo_path.read_bytes() == content.encode('utf-8'):
             return
         reason = _foreign_nfo_reason(nfo_path, source)
         if reason:
