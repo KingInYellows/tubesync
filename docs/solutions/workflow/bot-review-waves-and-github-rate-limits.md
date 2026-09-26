@@ -65,8 +65,9 @@ Any stacked-PR sweep on a repository with several AI reviewers enabled.
 
 Useful poll: count unresolved threads per PR with GraphQL `reviewThreads`
 (filter `isResolved == false`). REST has no equivalent: `pulls/N/comments`
-lists individual review comments with no resolved state, so it can only
-show new comments since a time, not how many threads are still open.
+lists every review comment (or, with `since`, those updated after a time)
+but carries no resolved state, so it cannot show how many threads are
+still open.
 When GraphQL is refused, wait for it before counting unresolved threads.
 Poll CI no more than once a minute. See GitHub's
 [rate limits for the GraphQL API](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api)

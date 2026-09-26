@@ -36,6 +36,8 @@ trap 'rm -f "$settings"' EXIT
 scratch="${SCRATCH:-$(mktemp -d)}"   # never the real /config or /downloads
 mkdir -p "$scratch/tsconfig" "$scratch/tsdownloads"
 cp tubesync/tubesync/local_settings.py.container "$settings"
+# CI copies local_settings.py.example, which ends with DEBUG = False.
+printf '\nDEBUG = False\n' >> "$settings"
 status=0
 # TUBESYNC_DEBUG=True as in CI; settings.py reads it for DJANGO_HUEY and
 # LOGGING. "|| status=$?" keeps set -e from exiting before the check below.
@@ -43,7 +45,7 @@ docker run --rm --entrypoint /usr/bin/python3 -e TUBESYNC_DEBUG=True \
   -v "$PWD/tubesync:/app" -v "$scratch/tsconfig:/config" \
   -v "$scratch/tsdownloads:/downloads" -w /app \
   ghcr.io/kinginyellows/tubesync:bridge-v1.0.0 \
-  manage.py test --verbosity=1 || status=$?
+  manage.py test --no-input --buffer --verbosity=1 || status=$?
 # find's own errors (an unreadable directory) are reported as foreign too.
 foreign=$(find . -path ./.git -prune -o ! -user "$(whoami)" -print 2>&1 || true)
 if [ -n "$foreign" ]; then
@@ -54,8 +56,14 @@ exit "$status"   # the test run's own status when it failed
 ```
 
 - Always pass `--entrypoint /usr/bin/python3`.
-- Pass `-e TUBESYNC_DEBUG=True`, as `.github/workflows/ci.yaml` does, so
-  settings are built the way CI builds them.
+- Match CI's settings. `.github/workflows/ci.yaml` runs with
+  `TUBESYNC_DEBUG=True`, which `settings.py` reads while building
+  `DJANGO_HUEY` and `LOGGING`, and then copies `local_settings.py.example`,
+  which sets `DEBUG = False` at the end. The script does both. It still
+  copies `local_settings.py.container`, because `.example` puts the config
+  and download directories inside the checkout, where the container's root
+  user would leave root-owned files. The one remaining difference is
+  `.example`'s own `LOGGING`.
 - Use scratch directories for `/config` and `/downloads`, never real ones.
 - `manage.py test` with no labels runs every installed app, `common`
   included, as CI does. `manage.py test sync medianest_bridge` is a narrower
