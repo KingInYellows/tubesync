@@ -1270,14 +1270,37 @@ class Command(BaseCommand):
             Writes (apply) or predicts (dry-run) `source`'s tvshow.nfo,
             then enqueues (or predicts enqueueing) `download_source_images`
             when `copy_channel_images` is on and poster.jpg is still
-            missing, and no file it writes is a symlink nor its directory
-            outside DOWNLOAD_ROOT (see _image_write_problems()) -- unless `images_already_queued` says
+            missing, the source directory exists (or, in a dry-run, a save
+            would create it) and no file the job writes is a symlink (see
+            _image_write_problems()) -- unless `images_already_queued` says
             source_pre_save's own copy_channel_images-turned-on check
             already scheduled it for this same save, in which case this
             command must not also schedule a second job, but still counts
             it either way so dry-run's prediction and apply's actual
             behaviour report the same `images_enqueued` count.
+
+            A source directory resolving outside DOWNLOAD_ROOT is an error
+            in both modes and nothing is written or queued: write_text_file
+            creates its temporary file in the target directory before its
+            own containment check, so the tvshow.nfo write would put a file
+            outside the root before failing.
         '''
+        directory = Path(source.directory_path)
+        download_root = Path(settings.DOWNLOAD_ROOT).resolve()
+        if not directory.resolve().is_relative_to(download_root):
+            if images_already_queued:
+                # source_pre_save queued it with the save; count it as the
+                # normal path does.
+                summary['images_enqueued'] += 1
+            summary['errors'] += 1
+            message = (
+                f'{source}: source directory {directory} resolves outside '
+                f'{download_root}; not writing tvshow.nfo or queueing '
+                'channel images'
+            )
+            log.error(f'medianest_backfill_plex_sidecars: {message}')
+            self.stdout.write(self.style.ERROR(f'  FAILED: {message}'))
+            return
         if apply_changes:
             try:
                 if write_tvshow_nfo(source, raise_errors=True):
@@ -1303,17 +1326,21 @@ class Command(BaseCommand):
         poster_path = Path(source.directory_path) / 'poster.jpg'
         poster_exists = _occupied(poster_path)
         # The image download writes every _SOURCE_IMAGE_NAMES file with a
-        # plain open(), which follows a symlink (even a dangling one) or a
-        # source directory resolving outside DOWNLOAD_ROOT and writes
-        # wherever it points. This command never queues it then.
+        # plain open(), which follows a symlink (even a dangling one) and
+        # writes wherever it points, and never creates the directory. This
+        # command never queues it then. A dry-run whose overlay changes a
+        # field assumes the directory source_pre_save creates on save.
         unsafe = (
-            self._image_write_problems(source)
+            self._image_write_problems(
+                source,
+                assume_directory_exists=overlay_changed and not apply_changes,
+            )
             if source.copy_channel_images else []
         )
         if unsafe:
             self.stdout.write(self.style.WARNING(
-                '  NOTE: not queueing the channel image download, which '
-                'would write through: ' + '; '.join(unsafe) + (
+                '  NOTE: not queueing the channel image download: ' +
+                '; '.join(unsafe) + (
                     '. Turning copy_channel_images on queues it anyway; '
                     'replace the link(s) with regular files first.'
                     if images_already_queued else '.'
@@ -1355,18 +1382,23 @@ class Command(BaseCommand):
                     )
             summary['images_enqueued'] += 1
 
-    def _image_write_problems(self, source):
+    def _image_write_problems(self, source, assume_directory_exists=False):
         '''
             Why `download_source_images` must not run for `source`, as a
-            list (empty when it may): its directory resolves outside
-            DOWNLOAD_ROOT, or one of the files it writes is a symlink.
+            list (empty when it may): its directory does not exist (the
+            task opens its files without creating it, so it would fail and
+            retry), or one of the files it writes is a symlink, which it
+            would write through. The caller has already refused a
+            directory resolving outside DOWNLOAD_ROOT.
         '''
         directory = Path(source.directory_path)
-        download_root = Path(settings.DOWNLOAD_ROOT).resolve()
-        if not directory.resolve().is_relative_to(download_root):
-            return [f'{directory} resolves outside {download_root}']
+        if not directory.is_dir() and not assume_directory_exists:
+            return [
+                f'{directory} does not exist and nothing in this run '
+                'creates it'
+            ]
         return [
-            f'{directory / name} is a symlink'
+            f'{directory / name} is a symlink, which it would write through'
             for name in _SOURCE_IMAGE_NAMES
             if (directory / name).is_symlink()
         ]

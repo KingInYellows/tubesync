@@ -18,6 +18,7 @@
 import copy
 import logging
 import os
+import shutil
 import tempfile
 from contextlib import contextmanager
 from io import StringIO
@@ -2199,3 +2200,63 @@ class BackfillReviewFollowUp8TestCase(BackfillFollowUpMixin, TestCase):
                 self.assertIn('images_enqueued: 0', output)
                 self.assertIn('resolves outside', output)
             self.assertFalse((Path(outside) / 'poster.jpg').exists())
+
+
+class BackfillReviewFollowUp9TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Ninth review pass: a source directory outside DOWNLOAD_ROOT writes
+        nothing in either mode, and a missing source directory that no save
+        recreates queues no image download.
+    '''
+
+    def test_a_source_directory_outside_the_root_writes_nothing(self):
+        with temp_download_root(), tempfile.TemporaryDirectory() as outside:
+            source = make_bridge_source(copy_channel_images=True)
+            directory = source.directory_path
+            directory.parent.mkdir(parents=True, exist_ok=True)
+            directory.symlink_to(outside, target_is_directory=True)
+            with patch(f'{self.COMMAND}.TaskHistory') as mock_th:
+                dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+                applied, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            mock_th.schedule.assert_not_called()
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('resolves outside', output)
+                self.assertIn('tvshow_written: 0', output)
+                self.assertIn('images_enqueued: 0', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertEqual(list(Path(outside).iterdir()), [])
+
+    def test_a_missing_directory_nothing_recreates_queues_no_download(self):
+        with temp_download_root():
+            source = make_bridge_source(copy_channel_images=True)
+            source.make_directory()
+            with patch(f'{self.COMMAND}.TaskHistory'):
+                run_backfill('--source', str(source.uuid), '--apply')
+            # The profile is applied, so the next run saves nothing and
+            # nothing recreates the directory.
+            shutil.rmtree(source.directory_path)
+            with patch(f'{self.COMMAND}.TaskHistory') as mock_th:
+                dry = run_backfill('--source', str(source.uuid))
+                applied = run_backfill('--source', str(source.uuid), '--apply')
+            mock_th.schedule.assert_not_called()
+            for output in (dry, applied):
+                self.assertIn('images_enqueued: 0', output)
+                self.assertIn('does not exist', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertFalse(source.directory_path.exists())
+
+    def test_a_missing_directory_a_save_recreates_still_queues(self):
+        with temp_download_root():
+            source = make_bridge_source(copy_channel_images=True)
+            with patch(f'{self.COMMAND}.TaskHistory') as mock_th:
+                dry = run_backfill('--source', str(source.uuid))
+                applied = run_backfill('--source', str(source.uuid), '--apply')
+            mock_th.schedule.assert_called_once()
+            for output in (dry, applied):
+                self.assertIn('images_enqueued: 1', output)
+                self.assertNotIn('does not exist', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertTrue(source.directory_path.is_dir())

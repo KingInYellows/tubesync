@@ -191,9 +191,14 @@ owner. This file records what the tag would contain and what was verified.
    - The channel-image download writes `thumbnail.jpg`, `banner.jpg`,
      `background.jpg`, `poster.jpg` and `season-poster.jpg` with a plain
      `open()`, which follows a symlink. The command never queues it while
-     any of those is a symlink, even a dangling one, or the source
-     directory resolves outside `DOWNLOAD_ROOT`; it prints a note instead.
-     A symlinked `poster.jpg` also counts as present.
+     any of those is a symlink, even a dangling one, or while the source
+     directory is missing and no save in this run recreates it (the task
+     never creates it, so it would fail and retry); it prints a note
+     instead. A symlinked `poster.jpg` also counts as present.
+   - A source directory that resolves outside `DOWNLOAD_ROOT` is an error
+     in both modes: neither `tvshow.nfo` nor the image download is
+     written or queued (`write_text_file()` would otherwise create its
+     temporary file there before its own containment check fails).
    - Dry-run turns `TUBESYNC_SHRINK_OLD` off while reading metadata, so it
      writes nothing to the database. Apply counts the episode NFO
      `rename_files()` wrote as written, matching the dry-run.
@@ -246,7 +251,11 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
   name; with the rename cascade on, the queued
   `rename_all_media_for_source` can then rename it without this command's
   checks. The post-save in-flight count reports it, but cannot cancel the
-  queued cascade. Run the backfill with `TUBESYNC_RENAME_ALL_SOURCES=false`
+  queued cascade. It counts only rows not yet marked downloaded, so a
+  download that finishes between the save and that count (already marked
+  downloaded, its lock still held, its own rename not yet run) is missed;
+  counting every locked row would also count TubeSync's brief cleanup
+  and migration locks on downloaded media. Run the backfill with `TUBESYNC_RENAME_ALL_SOURCES=false`
   (and the sources out of `TUBESYNC_RENAME_SOURCES`) to close this window.
 - Index-only sources (`download_media` off) only carry approximate
   listing dates until an item is downloaded, so their numbering can move.
@@ -324,3 +333,10 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 626 tests OK at the stack tip (T1-T3 unchanged). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 634 tests OK.
 - `ruff check` run as CI runs it (from `tubesync/`, reading `ruff.toml`): only the two known hits.
 - New this sweep, for the backfill: a symlink at any file the channel-image download writes, or a source directory resolving outside `DOWNLOAD_ROOT`, queues no image download in either mode; and a download marked skipped while it runs still counts as `in_flight` (dry-run and apply summaries equal). Each test was checked to fail with its fix reverted.
+
+## Verification (2026-09-26, ninth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 629 tests OK at the stack tip (T1-T3 unchanged). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 637 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep, for the backfill: a source directory resolving outside `DOWNLOAD_ROOT` writes nothing (no `tvshow.nfo`, no temporary file, no image job) and is an error in both modes with equal summaries; a missing source directory that nothing recreates queues no image download, while one a save recreates still does (dry-run and apply equal). Each test was checked to fail with its fix reverted.
+- A download that finishes between the source save and the post-save in-flight count is documented under "Known limits" instead of fixed.

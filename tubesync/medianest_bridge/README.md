@@ -794,8 +794,10 @@ is never overwritten, nor carried onto the target NFO name by either
 move set (`rename_files()` would overwrite it there). No channel-image
 download is queued while any file it writes (`thumbnail.jpg`,
 `banner.jpg`, `background.jpg`, `poster.jpg`, `season-poster.jpg`) is a
-symlink, even a dangling one, or the source directory resolves outside
-`DOWNLOAD_ROOT`: it would write through them.
+symlink, even a dangling one (it would write through them), or while the
+source directory is missing and no save in this run recreates it. A
+source directory that resolves outside `DOWNLOAD_ROOT` is an error in both
+modes: no `tvshow.nfo` is written and no image download queued.
 Adopting an
 earlier half-finished move (the video already sits at its target but the
 database row does not, from a prior run that moved the file and then
