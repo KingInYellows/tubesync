@@ -1,0 +1,21 @@
+tubesync/sync/tests/test_tvshow_nfo.py
+  s_237fbbbabfe3a4::t_0be72ec473b4c8 268-275
+tubesync/sync/tvshow_nfo.py
+  s_237fbbbabfe3a4::t_b8f55f3c7081c0 184,186-194,197,201-211,257-259
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "99febf7e5d950569f32b2fa08811249abd124890",
+  "prompts": {},
+  "sessions": {
+    "s_237fbbbabfe3a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2373b7aa-381c-4fe7-83a0-be4487388411",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
