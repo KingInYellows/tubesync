@@ -1186,12 +1186,7 @@ class CascadeGateTestCase(TestCase):
             )
 
 
-class BackfillReviewFollowUpTestCase(TestCase):
-    '''
-        Review follow-up: rename_files()'s key sweep, projected targets,
-        adoption safety, targeted source saves, downloads that finish or
-        are still running during a run, and dry-run side effects.
-    '''
+class BackfillFollowUpMixin:
 
     COMMAND = 'sync.management.commands.medianest_backfill_plex_sidecars'
     TARGET_NAME = 's2017e091101 - no fancy stuff title [vid1]'
@@ -1210,6 +1205,14 @@ class BackfillReviewFollowUpTestCase(TestCase):
 
     def target_dir(self, source):
         return source.directory_path / 'Season 2017'
+
+
+class BackfillReviewFollowUpTestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Review follow-up: rename_files()'s key sweep, projected targets,
+        adoption safety, targeted source saves, downloads that finish or
+        are still running during a run, and dry-run side effects.
+    '''
 
     def test_an_orphan_with_the_key_is_listed_and_then_moved(self):
         with temp_download_root():
@@ -1442,3 +1445,186 @@ class BackfillReviewFollowUpTestCase(TestCase):
                     '--source', str(source.uuid), '--apply',
                 )
             self.assertIn('unable to acquire lock media:x', output)
+
+
+class BackfillReviewFollowUp3TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Third review pass: foreign episode NFOs, symlinked paths,
+        directories and destination collisions in the move sets, the
+        in-flight scope, and the channel-image job.
+    '''
+
+    def target_nfo(self, source):
+        return self.target_dir(source) / f'{self.TARGET_NAME}.nfo'
+
+    def test_a_foreign_nfo_is_kept_for_an_in_place_media(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            run_backfill('--source', str(source.uuid), '--apply')
+            nfo = self.target_nfo(source)
+            foreign = '<episodedetails><title>Mine</title></episodedetails>'
+            nfo.write_text(foreign)
+            output, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            self.assertIsNotNone(exc)
+            self.assertIn("it is not this media's episode NFO", output)
+            self.assertEqual(nfo.read_text(), foreign)
+
+    def test_this_medias_own_stale_nfo_is_rewritten_in_place(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            run_backfill('--source', str(source.uuid), '--apply')
+            nfo = self.target_nfo(source)
+            nfo.write_text(
+                '<episodedetails><title>Stale</title><id>vid1</id></episodedetails>'
+            )
+            output = run_backfill('--source', str(source.uuid), '--apply')
+            self.assertIn('nfo_written: 1', output)
+            self.assertNotIn('Stale', nfo.read_text())
+
+    def test_a_foreign_nfo_is_kept_when_adopting(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            target = self.target_dir(source) / f'{self.TARGET_NAME}.mkv'
+            target.parent.mkdir(parents=True)
+            old_path.rename(target)
+            foreign = '<episodedetails><title>Mine</title></episodedetails>'
+            self.target_nfo(source).write_text(foreign)
+            output, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            self.assertIsNotNone(exc)
+            self.assertIn('adopted: 1', output)
+            self.assertEqual(self.target_nfo(source).read_text(), foreign)
+
+    def test_this_medias_own_nfo_does_not_block_a_rename(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            nfo = self.target_nfo(source)
+            nfo.parent.mkdir(parents=True)
+            nfo.write_text('<episodedetails><uniqueid>vid1</uniqueid></episodedetails>')
+            output = run_backfill('--source', str(source.uuid), '--apply')
+            self.assertIn('renamed: 1', output)
+            self.assertIn('<episode>', nfo.read_text())
+
+    def test_a_symlinked_current_file_is_refused(self):
+        with temp_download_root(), tempfile.TemporaryDirectory() as outside:
+            source, media, old_path = self.make_downloaded()
+            real = Path(outside) / 'real.mkv'
+            real.write_bytes(b'outside')
+            old_path.unlink()
+            old_path.symlink_to(real)
+            output, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            self.assertIsNotNone(exc)
+            self.assertIn('is a symlink', output)
+            self.assertTrue(old_path.is_symlink())
+            self.assertEqual(real.read_bytes(), b'outside')
+
+    def test_a_target_directory_outside_the_root_is_refused(self):
+        with temp_download_root(), tempfile.TemporaryDirectory() as outside:
+            source, media, old_path = self.make_downloaded()
+            self.target_dir(source).symlink_to(outside)
+            output, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            self.assertIsNotNone(exc)
+            self.assertIn('resolves outside', output)
+            self.assertTrue(old_path.exists())
+            self.assertEqual(list(Path(outside).iterdir()), [])
+
+    def test_a_directory_sharing_the_old_stem_is_refused(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            extras = old_path.with_name(old_path.stem + '.extras')
+            extras.mkdir()
+            output, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            self.assertIsNotNone(exc)
+            self.assertIn('directories would be moved with it', output)
+            self.assertTrue(old_path.exists())
+            self.assertTrue(extras.is_dir())
+
+    def test_a_key_match_with_a_taken_destination_is_refused(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            # The stem pass moves this one to the target .nfo name ...
+            old_path.with_suffix('.nfo').write_text('<episodedetails><id>vid1</id></episodedetails>')
+            # ... so this key match, which maps to the same name, would
+            # be left behind.
+            orphan = source.directory_path / 'leftovers' / 'old [vid1].nfo'
+            orphan.parent.mkdir()
+            orphan.write_text('orphan')
+            output, exc = run_backfill_capture('--source', str(source.uuid))
+            self.assertIsNotNone(exc)
+            self.assertIn('destination is already taken', output)
+            self.assertIn(str(orphan), output)
+
+    def test_in_flight_is_only_counted_for_a_media_format_change(self):
+        overlay = '{"*": {"days_to_keep": 30}}'
+        with (
+            temp_download_root(),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, media, old_path = self.make_downloaded()
+            busy = Media.objects.create(key='busy1', source=source, metadata=metadata)
+            Media.objects.filter(pk=busy.pk).update(skip=False, manual_skip=False)
+            lock = huey_lock_task(f'media:{busy.uuid}', queue=Val(TaskQueue.DB))
+            lock.acquire()
+            try:
+                output = run_backfill('--source', str(source.uuid), '--apply')
+            finally:
+                lock.release()
+            self.assertIn('days_to_keep: 14 -> 30', output)
+            self.assertIn('in_flight: 0', output)
+
+    def test_turning_channel_images_on_with_a_poster_counts_the_job(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            (source.directory_path / 'poster.jpg').write_bytes(b'poster')
+            for args in ((), ('--apply',)):
+                with self.subTest(args=args):
+                    Source.objects.filter(pk=source.pk).update(
+                        copy_channel_images=False,
+                    )
+                    output = run_backfill('--source', str(source.uuid), *args)
+                    self.assertIn('images_enqueued: 1', output)
+                    self.assertIn('replaces the existing', output)
+
+    @override_settings(SHRINK_OLD_MEDIA_METADATA=True)
+    def test_dry_run_restores_the_shrink_setting(self):
+        from django.conf import settings as live_settings
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            run_backfill('--source', str(source.uuid))
+        self.assertTrue(live_settings.SHRINK_OLD_MEDIA_METADATA)
+
+    def test_a_directory_sharing_the_old_stem_is_refused_without_key(self):
+        overlay = (
+            '{"*": {"media_format": '
+            '"Season {episode_yyyy}/s{episode_yyyy}e{episode_mmddnn}.{ext}"}}'
+        )
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, media, old_path = self.make_downloaded()
+            extras = old_path.with_name(old_path.stem + '.extras')
+            extras.mkdir()
+            output, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            self.assertIsNotNone(exc)
+            self.assertIn('directories would be moved with it', output)
+            self.assertTrue(old_path.exists())
+            self.assertTrue(extras.is_dir())

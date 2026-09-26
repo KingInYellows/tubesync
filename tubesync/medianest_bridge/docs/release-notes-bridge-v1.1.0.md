@@ -138,14 +138,26 @@ owner. This file records what the tag would contain and what was verified.
      also moves every path under the source directory whose name contains
      the media's key. The dry-run lists each of those moves
      (`key_matched_moves`), and a match that is another media's video, a
-     sidecar of one, or a directory makes the media an error instead.
+     sidecar of one, or a directory (in either move set), or whose
+     destination is already taken (`rename_files()` would leave it behind),
+     makes the media an error instead. So does a current file that is a
+     symlink or resolves outside `DOWNLOAD_ROOT`, or a target directory
+     that resolves outside it.
+   - **Foreign episode NFOs.** An existing `.nfo` at the target that is not
+     this media's own (`<episodedetails>` whose `<id>`/`<uniqueid>` is its
+     key) is never overwritten -- for a rename, an already-in-place media
+     or an adoption alike; it is reported as an error.
    - **Targeted source save.** Only the overlay fields that change are
      saved, onto a freshly read row, so concurrent edits and
      `target_schedule` are kept and other fields are not re-normalized.
    - **Downloads during the run.** Media that finish downloading while
      `--apply` runs are processed before it ends; media still busy (their
      `media:<uuid>` lock is held) after a `media_format` change are
-     counted as `in_flight` and fail the run so it is repeated.
+     counted as `in_flight` and fail the run so it is repeated (only when
+     the run changed `media_format`).
+   - Turning `copy_channel_images` on makes TubeSync's own signal queue an
+     image download even when `poster.jpg` exists, and that download
+     replaces the existing images; both modes count it and print a note.
    - Dry-run turns `TUBESYNC_SHRINK_OLD` off while reading metadata, so it
      writes nothing to the database. Apply counts the episode NFO
      `rename_files()` wrote as written, matching the dry-run.
@@ -168,7 +180,7 @@ owner. This file records what the tag would contain and what was verified.
 
 ## Contract
 
-The contract gains one additive, optional component, `HealthReady.components.sourceDefaults`, which is not in `required` (MediaNest DECISIONS #54). Both `POST /sources` and `POST /sources/validate` now also declare a 503 `ProviderUnavailable` response for a broken `MEDIANEST_BRIDGE_SOURCE_DEFAULTS`. `info.version` stays `1.0.0`. The vendored copy was re-synced from the canonical MediaNest branch commit `118834c5c4e1611ac51694334feeb93d2b4ae1f2` (#2404), and `contract_fixtures.json` `source_sha256` was re-locked.
+The contract gains one additive, optional component, `HealthReady.components.sourceDefaults`, which is not in `required` (MediaNest DECISIONS #54). Both `POST /sources` and `POST /sources/validate` now also declare a 503 `ProviderUnavailable` response for a broken `MEDIANEST_BRIDGE_SOURCE_DEFAULTS`. `info.version` stays `1.0.0`. The vendored copy was re-synced from the canonical MediaNest branch commit `479b97ea4fa990def968f99db7052b04cafd5e0d` (#2404; description-only on top of the 503 declarations: the source-defaults 503 is per requested source type, and a bridge reporting `sourceDefaults` says `healthy` with nothing configured), and `contract_fixtures.json` `source_sha256` was re-locked.
 
 MediaNest calls `POST /sources/validate` before `POST /sources` and treats any validate failure as fatal for the whole submission (`acquisition-source-write.dispatch.ts`'s `validate_source_failed`), so a broken source-defaults configuration therefore fails at validate-time as a real, actionable 503 the user can re-submit once an operator fixes it -- this is the 503 that matters for retries. `POST /sources`' own identical 503 remains a backstop for a race between the validate call and the create call that follows it (MediaNest's own error translation has no 503 case for a create-time failure specifically, so that path is reconciled as an unknown outcome rather than retried).
 
@@ -209,8 +221,8 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - New this sweep: the rename-cascade gate (source not saved when the cascade is enabled and a refusal exists; proceeds when the cascade is disabled or nothing is refused; dry-run's informational note), the widened target-side sidecar-collision check, an adoption with a leftover stray sidecar, the per-source directory snapshot replacing a per-media `Path.rglob` walk, `TaskHistory.schedule(remove_duplicates=True)` for the channel-image job, stdout lines for every per-media/per-source failure, and `write_tvshow_nfo()`/`tvshow_nfo_needs_write()` sharing one `build_tvshow_nfo()` call.
 - Not verifiable offline: Plex's actual NFO-agent parsing, which should be confirmed on the pilot source during the migration runbook.
 
-## Verification (2026-09-26, review follow-up sweep)
+## Verification (2026-09-25, second review follow-up sweep)
 
-- `manage.py test sync medianest_bridge` in `ghcr.io/kinginyellows/tubesync:bridge-v1.0.0` (worktree mounted, `local_settings.py` from `local_settings.py.container`, `--entrypoint /usr/bin/python3`): 571 tests OK at the stack tip; 383, 434 and 507 at Plex T1, T2 and T3.
+- `manage.py test sync medianest_bridge` in `ghcr.io/kinginyellows/tubesync:bridge-v1.0.0` (worktree mounted, `local_settings.py` from `local_settings.py.container`, `--entrypoint /usr/bin/python3`): 590 tests OK at the stack tip; 386, 440 and 514 at Plex T1, T2 and T3 (after the third review pass, which added the foreign-episode-NFO, symlink, directory and collision refusals and the contract re-vendor at `479b97ea`).
 - `ruff check` with CI's rule set: no new findings.
 - New tests cover the kept episode numbers, the NFO rewrite on rename, the `tvshow.nfo` checksum and preserved titles, the source-defaults checks on stored values, and every backfill change listed above.

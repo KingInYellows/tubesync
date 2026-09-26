@@ -113,14 +113,14 @@
 '''
 import copy
 import os
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from uuid import UUID
+from xml.etree import ElementTree
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.forms.models import model_to_dict
-from django.test.utils import override_settings
 from django.utils.translation import gettext_lazy as _
 from django_huey import lock_task as huey_lock_task
 from huey.exceptions import TaskLockedException
@@ -166,6 +166,27 @@ _SUMMARY_FIELDS = (
 )
 
 
+@contextmanager
+def _shrink_old_metadata_off():
+    '''
+        Reading metadata with TUBESYNC_SHRINK_OLD (SHRINK_OLD_MEDIA_METADATA)
+        on rewrites it in the database (Media.loaded_metadata ->
+        reduce_data -> ingest_metadata); a dry-run must not. This changes
+        the setting for the whole process, which is this command's own
+        `manage.py` process -- it is an operator-run, one-shot command.
+    '''
+    missing = object()
+    previous = getattr(settings, 'SHRINK_OLD_MEDIA_METADATA', missing)
+    settings.SHRINK_OLD_MEDIA_METADATA = False
+    try:
+        yield
+    finally:
+        if previous is missing:
+            del settings.SHRINK_OLD_MEDIA_METADATA
+        else:
+            settings.SHRINK_OLD_MEDIA_METADATA = previous
+
+
 class Command(BaseCommand):
 
     help = (
@@ -198,10 +219,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         if options['apply']:
             return self._run(options, apply_changes=True)
-        # Reading metadata with TUBESYNC_SHRINK_OLD (SHRINK_OLD_MEDIA_METADATA)
-        # on rewrites it in the database (Media.loaded_metadata ->
-        # reduce_data -> ingest_metadata); a dry-run must not.
-        with override_settings(SHRINK_OLD_MEDIA_METADATA=False):
+        with _shrink_old_metadata_off():
             return self._run(options, apply_changes=False)
 
     def _run(self, options, apply_changes):
@@ -393,7 +411,7 @@ class Command(BaseCommand):
             self._process_late_downloads(
                 source, working_source, downloaded, summary, media_files,
             )
-            if overlay_changed:
+            if 'media_format' in changes:
                 self._count_in_flight(source, summary)
 
         self._process_tvshow_and_images(
@@ -747,19 +765,23 @@ class Command(BaseCommand):
             return 'adopted'
         problem = None
         moves = self._sidecar_moves(current, target)
-        key_moves = self._key_matched_moves(media, current, target, moves)
+        key_moves, key_collisions = self._key_matched_moves(
+            media, current, target, moves,
+        )
         occupied = [
             destination for other, destination in moves
             if destination != other and destination.exists()
         ]
         # A target-side .nfo this media's own move does NOT bring (no
-        # matching old-name file exists beside `current`) is left alone by
-        # rename_files() but would be silently overwritten by this
-        # command's own _handle_episode_nfo() right after the video moves.
+        # matching old-name file exists beside `current`) would be
+        # overwritten by rename_files()'s own NFO rewrite right after the
+        # video moves, unless it is already this media's own.
         move_destinations = {destination for _, destination in moves}
         if media.source.write_nfo:
             nfo_path = self._sidecar_path(media, '.nfo')
-            if nfo_path not in move_destinations and nfo_path.exists():
+            if nfo_path not in move_destinations and self._foreign_episode_nfo(
+                media, nfo_path,
+            ):
                 occupied.append(nfo_path)
         claimed = [
             other for other, _ in moves if other in media_files
@@ -767,17 +789,27 @@ class Command(BaseCommand):
             other for other, _ in key_moves
             if self._claimed_by_other_media(other, current, target, media_files)
         ]
-        directories = [other for other, _ in key_moves if other.is_dir()]
+        directories = [
+            other for other, _ in moves + key_moves if other.is_dir()
+        ]
         if not current.exists():
             problem = f'current file {current} is missing'
         elif target.exists() or target in media_files:
             problem = f'target {target} is already occupied'
+        elif (path_problem := self._path_problem(current, target)):
+            problem = path_problem
+        elif key_collisions:
+            problem = (
+                'key-matched path(s) whose destination is already taken, '
+                'which rename_files() would leave behind: ' +
+                ', '.join(str(path) for path in key_collisions)
+            )
         elif claimed:
             problem = 'other media files would be moved with it: ' + ', '.join(
                 str(path) for path in claimed
             )
         elif directories:
-            problem = 'directories match its key: ' + ', '.join(
+            problem = 'directories would be moved with it: ' + ', '.join(
                 str(path) for path in directories
             )
         elif occupied:
@@ -809,6 +841,50 @@ class Command(BaseCommand):
         summary['errors'] += 1
         log.error(f'medianest_backfill_plex_sidecars: {message}')
         self.stdout.write(self.style.ERROR(f'  FAILED: {message}'))
+
+    def _path_problem(self, current, target):
+        '''
+            Why rename_files() must not move `current` to `target`, or
+            None: it resolves `current` before moving it, so a symlinked
+            current file could pull in a file from outside DOWNLOAD_ROOT,
+            and a target directory that resolves outside DOWNLOAD_ROOT
+            would take the video there and then fail to record it.
+        '''
+        if current.is_symlink():
+            return f'current file {current} is a symlink'
+        download_root = Path(settings.DOWNLOAD_ROOT).resolve()
+        try:
+            resolved = current.resolve(strict=True)
+        except OSError as exc:
+            return f'current file {current} cannot be resolved: {exc}'
+        if not resolved.is_relative_to(download_root):
+            return f'current file {current} resolves outside {download_root}'
+        if not target.parent.resolve().is_relative_to(download_root):
+            return f'target directory {target.parent} resolves outside {download_root}'
+        return None
+
+    def _foreign_episode_nfo(self, media, nfo_path):
+        '''
+            True when `nfo_path` holds something other than this media's
+            own episode NFO (an `<episodedetails>` whose `<id>` or
+            `<uniqueid>` is this media's key), which must not be
+            overwritten.
+        '''
+        if not nfo_path.exists():
+            return False
+        raw = nfo_path.read_bytes()
+        if not raw:
+            return False
+        try:
+            root = ElementTree.fromstring(raw)
+        except ElementTree.ParseError:
+            return True
+        key = str(media.key).strip()
+        return root.tag != 'episodedetails' or not any(
+            (element.text or '').strip() == key
+            for element in root
+            if element.tag in ('id', 'uniqueid')
+        )
 
     def _adoption_problem(self, target):
         '''
@@ -856,29 +932,35 @@ class Command(BaseCommand):
             media's key (Path.rglob, so files and directories alike), and
             moves it next to the new video under the new stem plus the
             path's own suffixes -- skipping the video itself, paths the
-            stem pass already moved, paths already at their destination,
-            and destinations that exist (rename_files() checks that as it
-            goes, so the stem pass's destinations count too).
+            stem pass already moved and paths already at their destination.
+            Returns (moves, collisions): a path whose destination exists or
+            an earlier move takes (the stem pass's destinations count too)
+            is skipped by rename_files() and so left behind under its old
+            name; those are returned as collisions.
         '''
         if '{key}' not in str(media.source.media_format):
-            return []
+            return [], []
         top_dir = Path(media.source.directory_path)
         if not top_dir.is_dir():
-            return []
+            return [], []
         (new_dir, new_stem) = directory_and_stem(target)
         stem_moved = {other for other, _ in sidecar_moves}
         taken = {target} | {destination for _, destination in sidecar_moves}
         moves = []
+        collisions = []
         for path in sorted(top_dir.rglob('*' + glob_quote(str(media.key)) + '*')):
             if path == current or path in stem_moved:
                 continue
             (_, path_stem) = directory_and_stem(path, True)
             destination = new_dir / (new_stem + path.name[len(path_stem):])
-            if destination == path or destination in taken or destination.exists():
+            if destination == path:
+                continue
+            if destination in taken or destination.exists():
+                collisions.append(path)
                 continue
             taken.add(destination)
             moves.append((path, destination))
-        return moves
+        return moves, collisions
 
     def _stray_snapshot(self, source):
         '''
@@ -980,6 +1062,12 @@ class Command(BaseCommand):
             else:
                 summary['nfo_unchanged'] += 1
             return
+        if self._foreign_episode_nfo(media, nfo_path):
+            self._media_error(
+                summary, f'{media}: not overwriting {nfo_path}: it is not '
+                "this media's episode NFO",
+            )
+            return
         if apply_changes:
             write_text_file(nfo_path, content)
         summary['nfo_written'] += 1
@@ -1037,7 +1125,18 @@ class Command(BaseCommand):
                 summary['tvshow_written'] += 1
 
         poster_path = Path(source.directory_path) / 'poster.jpg'
-        if source.copy_channel_images and not poster_path.exists():
+        poster_exists = poster_path.exists()
+        if images_already_queued and poster_exists:
+            # source_pre_save queues it whatever is on disk, and it writes
+            # the images unconditionally.
+            self.stdout.write(self.style.WARNING(
+                '  NOTE: turning copy_channel_images on queues TubeSync\'s '
+                'own image download, which replaces the existing '
+                'poster/banner/thumbnail images.'
+            ))
+        if source.copy_channel_images and (
+            images_already_queued or not poster_exists
+        ):
             if apply_changes:
                 if not images_already_queued:
                     # TaskHistory.schedule(..., remove_duplicates=True) --
