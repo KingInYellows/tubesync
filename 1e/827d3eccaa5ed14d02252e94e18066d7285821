@@ -1,0 +1,25 @@
+tubesync/sync/tvshow_nfo.py
+  s_2fd14c67bb8172::t_7333fb8027991a 434-436,444-445,447-451
+tubesync/sync/models/media.py
+  s_2fd14c67bb8172::t_d4546787e5a2c2 1192-1194,1196,1198
+tubesync/medianest_bridge/README.md
+  s_2fd14c67bb8172::t_c1425673de34e8 140-142
+tubesync/sync/tests/test_tvshow_nfo.py
+  s_2fd14c67bb8172::t_15dcc28281edb6 926-980
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "1e827d3eccaa5ed14d02252e94e18066d7285821",
+  "prompts": {},
+  "sessions": {
+    "s_2fd14c67bb8172": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "98fd25e6-a859-4d85-b54d-3528af753d69",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
