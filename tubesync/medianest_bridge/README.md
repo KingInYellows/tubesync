@@ -777,8 +777,9 @@ non-zero, as it does when media were skipped as locked or a selected
 source has no T3 profile (a handle-based channel), so re-run it once the
 cause is fixed. A missing current file, one that is not a regular file
 (a directory), an occupied target for the video (on disk -- a dangling
-symlink counts -- or claimed by another media earlier in the same run),
-an occupied destination for any sidecar `rename_files()` would move, OR an
+symlink counts -- or claimed by another media earlier in the same run,
+as its video or a sidecar destination, dry-run included), an occupied or
+so-claimed destination for any sidecar `rename_files()` would move, OR an
 already-occupied target-side `.nfo` that no move of this media's own
 would bring (this command's own NFO write would otherwise silently
 clobber it right after the video moves), is an error -- nothing moves. A
@@ -788,8 +789,10 @@ the source directory whose name contains the media's key; the dry-run
 lists those moves (`key_matched_moves`), and one that would take another
 media's video or sidecar, or a directory, or whose destination is already
 taken, is an error, as is a current file or target directory reaching
-outside `DOWNLOAD_ROOT` through a symlink. An existing episode `.nfo`
-that is not this media's own (or is a symlink) is never overwritten.
+outside `DOWNLOAD_ROOT` through a symlink; a media already at its target
+gets the same checks before its NFO and thumbnail are written. An
+existing episode `.nfo` that is not this media's own (or is a symlink)
+is never overwritten.
 Adopting an
 earlier half-finished move (the video already sits at its target but the
 database row does not, from a prior run that moved the file and then

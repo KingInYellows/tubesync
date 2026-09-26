@@ -1798,3 +1798,122 @@ class BackfillReviewFollowUp4TestCase(BackfillFollowUpMixin, TestCase):
             self.assertIn(str(stray), output)
             self.assertNotIn(str(completed), output)
             self.assertTrue(stray.exists())
+
+
+class BackfillReviewFollowUp5TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Fifth review pass: already-in-place media get the rename's path
+        checks, destinations an earlier media claims (or, in a dry-run,
+        is projected to claim) are occupied, and a symlinked tvshow.nfo is
+        never replaced.
+    '''
+
+    def place(self, source):
+        '''Runs one apply that renames the media into place.'''
+        run_backfill('--source', str(source.uuid), '--apply')
+
+    def test_a_directory_at_an_in_place_target_is_refused(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            self.place(source)
+            target = self.target_dir(source) / f'{self.TARGET_NAME}.mkv'
+            nfo = self.target_dir(source) / f'{self.TARGET_NAME}.nfo'
+            target.unlink()
+            target.mkdir()
+            nfo.unlink()
+            output, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            self.assertIsNotNone(exc)
+            self.assertIn('not in place', output)
+            self.assertIn('is not a regular file', output)
+            self.assertIn('already_in_place: 0', output)
+            self.assertFalse(nfo.exists())
+
+    def test_an_in_place_media_reached_through_an_outside_symlink_is_refused(self):
+        with temp_download_root(), tempfile.TemporaryDirectory() as outside:
+            source, media, old_path = self.make_downloaded()
+            self.place(source)
+            moved = Path(outside) / 'Season 2017'
+            self.target_dir(source).rename(moved)
+            self.target_dir(source).symlink_to(moved)
+            nfo = moved / f'{self.TARGET_NAME}.nfo'
+            nfo.unlink()
+            output, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            self.assertIsNotNone(exc)
+            self.assertIn('not in place', output)
+            self.assertIn('resolves outside', output)
+            self.assertFalse(nfo.exists())
+
+    def test_a_sidecar_onto_an_earlier_medias_projected_video_is_refused(self):
+        names = {'aaa': 'foo.en.mkv', 'bbb': 'foo.mkv'}
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, first, _ = self.make_downloaded(key='aaa')
+            _, second, second_path = self.make_downloaded(key='bbb', source=source)
+            # bbb's old .en.mkv sidecar would move to foo.en.mkv, aaa's target.
+            sidecar = second_path.with_name(second_path.stem + '.en.mkv')
+            sidecar.write_bytes(b'subtitle track')
+            with patch.object(
+                Media, 'filename', property(lambda media: names[media.key]),
+            ):
+                dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+                applied, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('sidecar target(s) already occupied', output)
+                self.assertIn('renamed: 1', output)
+                self.assertIn('errors: 1', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertEqual(sidecar.read_bytes(), b'subtitle track')
+            self.assertEqual(
+                (source.directory_path / 'foo.en.mkv').read_bytes(),
+                b'fake-mkv-bytes',
+            )
+
+    def test_a_video_onto_an_earlier_medias_projected_sidecar_is_refused(self):
+        names = {'aaa': 'foo.mkv', 'bbb': 'foo.en.mkv'}
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, first, first_path = self.make_downloaded(key='aaa')
+            self.make_downloaded(key='bbb', source=source)
+            # aaa's old .en.mkv sidecar moves to foo.en.mkv, bbb's target.
+            sidecar = first_path.with_name(first_path.stem + '.en.mkv')
+            sidecar.write_bytes(b'subtitle track')
+            with patch.object(
+                Media, 'filename', property(lambda media: names[media.key]),
+            ):
+                dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+                applied, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('is already occupied', output)
+                self.assertIn('renamed: 1', output)
+                self.assertIn('errors: 1', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertEqual(
+                (source.directory_path / 'foo.en.mkv').read_bytes(),
+                b'subtitle track',
+            )
+
+    def test_a_dangling_tvshow_nfo_symlink_survives_apply(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            tvshow = source.directory_path / 'tvshow.nfo'
+            tvshow.symlink_to(source.directory_path / 'missing.nfo')
+            dry = run_backfill('--source', str(source.uuid))
+            applied = run_backfill('--source', str(source.uuid), '--apply')
+            for output in (dry, applied):
+                self.assertIn('tvshow_written: 0', output)
+            self.assertTrue(tvshow.is_symlink())
+            self.assertFalse(tvshow.exists())
