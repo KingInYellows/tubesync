@@ -331,6 +331,9 @@ def _overlay_value_errors(overlay, form):
     else:
         media_format = overlay.get('media_format')
         filter_text = overlay.get('filter_text')
+        if filter_text is not None and not isinstance(filter_text, str):
+            # What the form's CharField would store for it.
+            filter_text = str(filter_text)
     errors = []
     if isinstance(media_format, str) and any(
         '..' == part.strip() for part in re.split(r'[\\/]', media_format)

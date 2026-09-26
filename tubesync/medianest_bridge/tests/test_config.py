@@ -447,6 +447,14 @@ class SourceDefaultsStoredValueChecksTestCase(SourceDefaultsEnvMixin, BridgeTest
         errors = config.validate_source_defaults()
         self.assertIn('channel: filter_text: not a valid regular expression', errors)
 
+    def test_a_list_filter_text_is_checked_even_when_the_form_is_invalid(self):
+        self.set_defaults({'*': {
+            'filter_text': [']('], 'source_resolution': 'nope',
+        }})
+        errors = config.validate_source_defaults()
+        self.assertIn('channel: source_resolution: invalid_choice', errors)
+        self.assertIn('channel: filter_text: not a valid regular expression', errors)
+
     def test_an_invalid_form_still_gets_the_raw_checks(self):
         self.set_defaults({'*': {
             'media_format': '../{key}.{ext}', 'source_resolution': 'nope',
