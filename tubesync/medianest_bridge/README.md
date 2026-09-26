@@ -780,7 +780,10 @@ foreign target-side `.jpg` is left alone and does not block the rename.
 With `{key}` in the profile, `rename_files()` also moves every path under
 the source directory whose name contains the media's key; the dry-run
 lists those moves (`key_matched_moves`), and one that would take another
-media's video or sidecar, or a directory, is an error. Adopting an
+media's video or sidecar, or a directory, or whose destination is already
+taken, is an error, as is a current file or target directory reaching
+outside `DOWNLOAD_ROOT` through a symlink. An existing episode `.nfo`
+that is not this media's own is never overwritten. Adopting an
 earlier half-finished move (the video already sits at its target but the
 database row does not, from a prior run that moved the file and then
 failed before saving) that left a stray same-key sidecar behind, or whose
