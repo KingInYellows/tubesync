@@ -19,13 +19,16 @@
     dry-run's counts are computed the same way a real run's are, not by a
     separately-maintained approximation:
       - The T3 overlay is validated through the same SourceForm in both
-        modes (_overlay_form()). Dry-run binds it to an in-memory copy of
-        the source and points media.source at that copy, so
+        modes (_overlay_form()), bound to an in-memory copy of the source,
+        and media.source points at that copy, so
         `media.filepath`/`media.nfoxml` etc. reflect the WOULD-BE values
         without saving anything.
-      - In apply mode, the source is saved (only when a field actually
-        changes) before the per-media loop runs, so the same property
-        reads reflect the real new values.
+      - In apply mode, only the overlay fields that change are saved, onto
+        a freshly read row (_save_overlay()), before the per-media loop
+        runs, so the same property reads reflect the real new values and
+        a concurrent edit to any other field is kept.
+      - Dry-run turns SHRINK_OLD_MEDIA_METADATA off, since reading
+        metadata with it on writes the shrunk metadata back.
       - Sidecar paths come from the profile filename in both modes
         (_sidecar_path()), and tvshow.nfo uses the same
         tvshow_nfo_needs_write() decision the real write does -- including,
@@ -37,18 +40,25 @@
     transaction (rename_files() saves media_file as soon as the video
     moves) and its NFO/thumbnail are written afterwards, so no later
     failure can roll back the media_file update of a file that already
-    moved. A missing current file, an occupied target for the video, an
-    occupied destination for any sidecar rename_files() would move, OR an
-    already-occupied target-side .nfo/.jpg that no move of this media's
-    own would bring (this command's own NFO/thumbnail write would
-    otherwise silently clobber it right after the video moves), is an
-    error (nothing moves and the media's sidecars are skipped). Adopting
-    an earlier half-finished move that left stray same-key sidecars
-    behind is also an error (nothing is adopted, moved or deleted).
+    moved. A missing current file, an occupied target for the video (on
+    disk or claimed earlier in this run), an occupied destination for any
+    sidecar rename_files() would move, OR an already-occupied target-side
+    .nfo that no move of this media's own would bring (this command's own
+    NFO write would otherwise silently clobber it right after the video
+    moves), is an error (nothing moves and the media's sidecars are
+    skipped). So is a path rename_files()'s `{key}` sweep would take that
+    belongs to another media, or is a directory; the sweep's other moves
+    are listed. Adopting an earlier half-finished move that left stray
+    same-key sidecars behind, or whose target is a symlink or resolves
+    outside DOWNLOAD_ROOT, is also an error (nothing is adopted, moved or
+    deleted). Media that finish downloading during --apply are processed
+    before it ends, and after a media_format change media still busy
+    downloading are counted as in flight.
     Every per-media failure is both logged and printed to stdout, so the
     final "see the output above" is accurate. Each source is isolated
     from the others, and the command exits non-zero when anything errored
-    or was skipped as locked -- re-run it once the cause is fixed.
+    or was skipped as locked or in flight -- re-run it once the cause is
+    fixed.
     --apply refuses to run unless the effective user owns DOWNLOAD_ROOT,
     so everything it creates stays writable by TubeSync
     (`docker exec -u app ...`).
@@ -103,12 +113,14 @@
 '''
 import copy
 import os
+from contextlib import nullcontext
 from pathlib import Path
 from uuid import UUID
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.forms.models import model_to_dict
+from django.test.utils import override_settings
 from django.utils.translation import gettext_lazy as _
 from django_huey import lock_task as huey_lock_task
 from huey.exceptions import TaskLockedException
@@ -118,7 +130,7 @@ from common.models import TaskHistory
 from common.utils import directory_and_stem, glob_quote
 from medianest_bridge.config import load_validated_source_defaults
 from medianest_bridge.source_forms import (
-    _LIST_SHAPED_FIELDS, _coerce_list_shaped_fields, extract_form_errors,
+    LIST_SHAPED_FIELDS, coerce_list_shaped_fields, extract_form_errors,
     run_edit_source_checks,
 )
 from sync.choices import TaskQueue, Val, YouTube_SourceType
@@ -149,8 +161,8 @@ _TUBESYNC_TO_CONTRACT_SOURCE_TYPE = {
 
 _SUMMARY_FIELDS = (
     'sources', 'media_seen', 'renamed', 'adopted', 'already_in_place',
-    'nfo_written', 'nfo_unchanged', 'thumbs_copied',
-    'tvshow_written', 'images_enqueued', 'locked', 'errors',
+    'key_matched_moves', 'nfo_written', 'nfo_unchanged', 'thumbs_copied',
+    'tvshow_written', 'images_enqueued', 'locked', 'in_flight', 'errors',
 )
 
 
@@ -184,7 +196,15 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        apply_changes = options['apply']
+        if options['apply']:
+            return self._run(options, apply_changes=True)
+        # Reading metadata with TUBESYNC_SHRINK_OLD (SHRINK_OLD_MEDIA_METADATA)
+        # on rewrites it in the database (Media.loaded_metadata ->
+        # reduce_data -> ingest_metadata); a dry-run must not.
+        with override_settings(SHRINK_OLD_MEDIA_METADATA=False):
+            return self._run(options, apply_changes=False)
+
+    def _run(self, options, apply_changes):
 
         defaults_by_type, config_errors = load_validated_source_defaults()
         if config_errors:
@@ -225,12 +245,12 @@ class Command(BaseCommand):
                 ))
 
         self._print_summary(summary, apply_changes)
-        if summary['errors'] or summary['locked']:
+        if summary['errors'] or summary['locked'] or summary['in_flight']:
             raise CommandError(
-                f'{summary["errors"]} error(s) and {summary["locked"]} '
-                'locked media; see the output above. Nothing was deleted; '
-                're-run once the cause is fixed (locked media are retried '
-                'by the next run).'
+                f'{summary["errors"]} error(s), {summary["locked"]} locked '
+                f'and {summary["in_flight"]} in-flight media; see the output '
+                'above. Nothing was deleted; re-run once the cause is fixed '
+                '(locked and in-flight media are picked up by the next run).'
             )
 
     def _check_running_as_download_owner(self):
@@ -291,18 +311,13 @@ class Command(BaseCommand):
         working_source = source
         images_already_queued = False
         overlay_changed = False
-        form = None
         changes = {}
         if overlay:
             original = {field: getattr(source, field, None) for field in overlay}
-            # Apply binds the form directly to `source` -- ModelForm
-            # validation updates it in memory as soon as is_valid() runs,
-            # well before form.save() persists anything, so working_source
-            # already reflects the would-be values either way. Dry-run
-            # binds a copy, so nothing here mutates the real `source`.
-            form = self._overlay_form(
-                source if apply_changes else copy.copy(source), overlay,
-            )
+            # Bound to a copy in both modes: ModelForm validation writes
+            # every form field into its instance, and apply saves only the
+            # changed overlay fields onto a fresh row (_save_overlay()).
+            form = self._overlay_form(copy.copy(source), overlay)
             if not form.is_valid():
                 summary['errors'] += 1
                 messages = '; '.join(extract_form_errors(form))
@@ -328,10 +343,12 @@ class Command(BaseCommand):
         media_files = {
             Path(media.media_file.path) for media in downloaded if media.media_file
         }
+        # Where every video was before this run moved anything; a dry-run
+        # leaves other media's sidecars there (see _claimed_by_other_media).
+        self._original_media_files = frozenset(media_files)
         # Both modes read media.filepath/media.source.* against the
-        # would-be values from here on: apply's `working_source` either IS
-        # `source` (already mutated in memory by form validation above) or
-        # is `source` unchanged; dry-run's is the unsaved copy.
+        # would-be values from here on: `working_source` is the validated
+        # copy (or `source` itself when there is no overlay).
         for media in downloaded:
             media.source = working_source
 
@@ -358,7 +375,9 @@ class Command(BaseCommand):
                 # Saving when no overlay field changes would still fire
                 # source_post_save and its save_all_media_for_source
                 # cascade on every re-run.
-                form.save()
+                working_source = self._save_overlay(source, changes)
+                for media in downloaded:
+                    media.source = working_source
         elif cascade_would_fire:
             refused = self._count_refused_media(downloaded, media_files)
             if refused:
@@ -370,11 +389,82 @@ class Command(BaseCommand):
         for media in downloaded:
             summary['media_seen'] += 1
             self._process_media(media, apply_changes, summary, media_files)
+        if apply_changes:
+            self._process_late_downloads(
+                source, working_source, downloaded, summary, media_files,
+            )
+            if overlay_changed:
+                self._count_in_flight(source, summary)
 
         self._process_tvshow_and_images(
             working_source, apply_changes, summary, images_already_queued,
             overlay_changed,
         )
+
+    def _save_overlay(self, source, changes):
+        '''
+            Saves only the changed overlay fields onto a freshly read row,
+            so a concurrent edit to any other field since this run read the
+            source (including target_schedule, which the scheduler
+            rewrites) is kept, and unchanged fields are not re-normalized
+            by the form. A save with `update_fields` still fires
+            source_pre_save/source_post_save, and so the rename cascade the
+            gate above accounts for. Returns the saved row.
+        '''
+        fresh = Source.objects.get(pk=source.pk)
+        for field, value in changes.items():
+            Source._meta.get_field(field).save_form_data(fresh, value)
+        fresh.save(update_fields=sorted(changes))
+        return fresh
+
+    def _process_late_downloads(
+        self, source, working_source, downloaded, summary, media_files,
+    ):
+        '''
+            Processes media that finished downloading after this run read
+            the source's downloaded media, so a download that was already
+            running lands in the profile layout by the end of the run
+            instead of staying under the old name. Repeats until no new
+            ones appear (bounded, in case downloads keep finishing).
+        '''
+        seen = {media.pk for media in downloaded}
+        for _attempt in range(3):
+            late = list(
+                Media.objects.filter(source=source, downloaded=True)
+                .exclude(pk__in=seen).order_by('key')
+            )
+            if not late:
+                return
+            for media in late:
+                seen.add(media.pk)
+                media.source = working_source
+                if media.media_file:
+                    media_files.add(Path(media.media_file.path))
+            for media in late:
+                summary['media_seen'] += 1
+                self.stdout.write(f'  finished downloading during this run: {media}')
+                self._process_media(media, True, summary, media_files)
+
+    def _count_in_flight(self, source, summary):
+        '''
+            Counts media of `source` that could be downloading right now:
+            not downloaded yet, wanted, and holding their `media:<uuid>`
+            lock (download_media_file holds it for the whole download). A
+            download that started before this run saved the new
+            media_format finishes into the old layout, so the run exits
+            non-zero and asks for a re-run once those are done.
+        '''
+        candidates = Media.objects.filter(
+            source=source, downloaded=False, skip=False, manual_skip=False,
+        ).only('pk', 'uuid', 'key', 'title')
+        for media in candidates:
+            lock = huey_lock_task(f'media:{media.uuid}', queue=Val(TaskQueue.DB))
+            if lock.is_locked():
+                summary['in_flight'] += 1
+                self.stdout.write(self.style.WARNING(
+                    f'  IN FLIGHT: {media} is busy (likely downloading) and '
+                    'may finish under the old name; re-run once it is done.'
+                ))
 
     def _cascade_enabled_for(self, source):
         '''
@@ -447,7 +537,7 @@ class Command(BaseCommand):
             sync/views/sources.py::EditSourceMixin.form_valid()'s two extra
             checks -- keep the two in step if that view changes. Binding
             the form updates `source` in memory (ModelForm validation
-            does), so dry-run passes a copy.
+            does), so callers pass a copy.
         '''
         data = model_to_dict(source, fields=list(SourceForm.base_fields.keys()))
         for field, value in data.items():
@@ -456,7 +546,7 @@ class Command(BaseCommand):
             if hasattr(value, 'selected_choices'):
                 data[field] = list(value.selected_choices)
         data.update(overlay)
-        _coerce_list_shaped_fields(data)
+        coerce_list_shaped_fields(data)
         form = SourceForm(data=data, instance=source)
         if form.is_valid():
             run_edit_source_checks(form)
@@ -483,11 +573,11 @@ class Command(BaseCommand):
             CommaSepChoice but configured as a string or list, so both
             sides compare as a sorted list of individual choices.
         '''
-        if field not in _LIST_SHAPED_FIELDS:
+        if field not in LIST_SHAPED_FIELDS:
             return value
         if hasattr(value, 'selected_choices'):
             value = list(value.selected_choices)
-        value = _coerce_list_shaped_fields({field: value})[field]
+        value = coerce_list_shaped_fields({field: value})[field]
         return sorted(
             choice for item in value for choice in str(item).split(',') if choice
         )
@@ -505,34 +595,40 @@ class Command(BaseCommand):
     def _process_media(self, media, apply_changes, summary, media_files):
         try:
             if apply_changes:
-                with (
+                locks = (
                     huey_lock_task(
                         f'index_media:{media.uuid}', queue=Val(TaskQueue.FS),
                     ),
                     huey_lock_task(
                         f'media:{media.uuid}', queue=Val(TaskQueue.DB),
                     ),
-                ):
-                    # No transaction: rename_files() saves media_file right
-                    # after it moves the video and then keeps going (sidecar
-                    # moves, its own NFO rewrite). Rolling that save back
-                    # on a later failure would leave the database pointing
-                    # at a file that has already moved.
-                    if self._rename_media(media, summary, True, media_files):
-                        self._handle_episode_nfo(media, summary, True)
-                        self._handle_thumbnail(media, summary, True)
-            elif self._rename_media(media, summary, False, media_files):
-                self._handle_episode_nfo(media, summary, False)
-                self._handle_thumbnail(media, summary, False)
-        except TaskLockedException:
+                )
+            else:
+                locks = (nullcontext(), nullcontext())
+            with locks[0], locks[1]:
+                # No transaction: rename_files() saves media_file right
+                # after it moves the video and then keeps going (sidecar
+                # moves, its own NFO rewrite). Rolling that save back on a
+                # later failure would leave the database pointing at a
+                # file that has already moved.
+                outcome = self._rename_media(
+                    media, summary, apply_changes, media_files,
+                )
+                if outcome:
+                    self._handle_episode_nfo(
+                        media, summary, apply_changes,
+                        renamed=outcome == 'renamed',
+                    )
+                    self._handle_thumbnail(media, summary, apply_changes)
+        except TaskLockedException as exc:
             summary['locked'] += 1
             log.warning(
                 f'medianest_backfill_plex_sidecars: {media} is locked by '
-                'another task; skipping it this run.'
+                f'another task ({exc}); skipping it this run.'
             )
             self.stdout.write(self.style.WARNING(
-                f'  LOCKED: {media} is locked by another task; will be '
-                'retried next run.'
+                f'  LOCKED: {media} is locked by another task ({exc}); will '
+                'be retried next run.'
             ))
         except Exception:
             summary['errors'] += 1
@@ -546,89 +642,95 @@ class Command(BaseCommand):
     def _rename_media(self, media, summary, apply_changes, media_files):
         '''
             Moves the video to its profile path (apply) or reports whether
-            it would (dry-run). Returns True when the media is (or would
-            be) at its profile path, so its sidecars can be written there.
+            it would (dry-run). Returns 'renamed', 'adopted' or 'in_place'
+            when the media is (or would be) at its profile path, so its
+            sidecars can be written there, and None otherwise.
 
             When the current file is gone but the profile path holds a
-            file no other media claims, an earlier run moved it and then
-            failed to save media_file (rename_files() moves before it
-            saves), so the row is pointed at it ("adopted"). `media_files`
-            is updated after every successful rename/adoption (both
-            modes), so a later media processed in this same run cannot
-            adopt a target an earlier one just claimed here -- only the
-            initial per-source snapshot taken before this loop started.
+            regular file no other media claims, inside DOWNLOAD_ROOT and not
+            a symlink, an earlier run moved it and then failed to save
+            media_file (rename_files() moves before it saves), so the row
+            is pointed at it ("adopted"). `media_files` is updated after
+            every successful rename/adoption (both modes), so a later media
+            processed in this same run cannot adopt or rename onto a target
+            an earlier one just claimed here -- including, in dry-run, a
+            target that is only projected, not yet on disk.
 
-            Counted as an error, returning False: a downloaded row with no
-            media_file; a missing current file with nothing to adopt; a
-            target video that already exists; a sidecar destination that
-            already exists -- either one rename_files() would overwrite
-            directly, or a target-side .nfo/.jpg no move of this media's
-            own would bring, which this command's own NFO/thumbnail write
-            would otherwise silently clobber right after the video moves;
-            a "sidecar" that is another media's own video (rename_files()
-            would move it without updating that media's row); an
-            already-in-place row whose video file is actually missing; an
-            already-in-place row, or an adopted half-finished move, with a
-            same-key sidecar left behind outside its target directory
-            (see _stray_sidecars()).
+            rename_files() moves two sets of files after the video: every
+            file next to it sharing its old stem (_sidecar_moves()) and,
+            when the source's media_format contains `{key}`, every path
+            anywhere under the source directory whose name contains the
+            media's key (_key_matched_moves()). Both are checked here and
+            the second set is listed, so a dry-run shows every move apply
+            would make.
+
+            Counted as an error, returning None: a downloaded row with no
+            media_file; a missing current file with nothing to adopt; an
+            adoption target that is a symlink or resolves outside
+            DOWNLOAD_ROOT; a target video that already exists or that
+            another media in this run already claimed; a sidecar
+            destination that already exists -- either one rename_files()
+            would overwrite directly, or a target-side .nfo no move of this
+            media's own would bring, which this command's own NFO write
+            would otherwise silently overwrite right after the video moves
+            (a target-side .jpg is fine: _handle_thumbnail() never
+            overwrites one); a file either move set would take that is
+            another media's video, or a sidecar of one (rename_files()
+            would move it without updating that media's row); a key match
+            that is a directory; an already-in-place row whose video file
+            is actually missing; an already-in-place row, or an adopted
+            half-finished move, with a same-key sidecar left behind outside
+            its target directory (see _stray_sidecars()).
         '''
         if not media.media_file:
-            summary['errors'] += 1
-            message = (
-                f'{media}: marked downloaded but has no media file; '
-                'skipping its NFO and thumbnail'
+            self._media_error(
+                summary, f'{media}: marked downloaded but has no media file; '
+                'skipping its NFO and thumbnail',
             )
-            log.error(f'medianest_backfill_plex_sidecars: {message}')
-            self.stdout.write(self.style.ERROR(f'  FAILED: {message}'))
-            return False
+            return None
         current = Path(media.media_file.path)
         target = Path(media.filepath)
         if current == target:
             if not current.exists():
-                summary['errors'] += 1
-                message = (
-                    f'{media}: already at its target path but the file is '
-                    f'missing: {current}'
+                self._media_error(
+                    summary, f'{media}: already at its target path but the '
+                    f'file is missing: {current}',
                 )
-                log.error(f'medianest_backfill_plex_sidecars: {message}')
-                self.stdout.write(self.style.ERROR(f'  FAILED: {message}'))
-                return False
+                return None
             stray = self._stray_sidecars(
                 media, target, self._stray_snapshot(media.source),
             )
             if stray:
-                summary['errors'] += 1
-                message = (
-                    f'{media}: leftover sidecar(s) outside its target '
+                self._media_error(
+                    summary, f'{media}: leftover sidecar(s) outside its target '
                     'directory, likely from a prior run that renamed the '
                     'video but failed partway through its own sidecar '
                     'moves (nothing moved or deleted; move or remove them '
                     'by hand once checked): ' +
-                    ', '.join(str(path) for path in stray)
+                    ', '.join(str(path) for path in stray),
                 )
-                log.error(f'medianest_backfill_plex_sidecars: {message}')
-                self.stdout.write(self.style.ERROR(f'  FAILED: {message}'))
-                return False
+                return None
             summary['already_in_place'] += 1
-            return True
+            return 'in_place'
         if not current.exists() and target.exists() and target not in media_files:
-            stray = self._stray_sidecars(
-                media, target, self._stray_snapshot(media.source),
-            )
-            if stray:
-                summary['errors'] += 1
-                message = (
-                    f'{media}: leftover sidecar(s) outside its target '
-                    f'directory while adopting {target} (already moved '
-                    f'from {current} by an earlier run that then failed '
-                    'partway through its own sidecar moves; nothing '
-                    'adopted, moved or deleted; move or remove them by '
-                    'hand once checked): ' +
-                    ', '.join(str(path) for path in stray)
+            problem = self._adoption_problem(target)
+            if problem is None:
+                stray = self._stray_sidecars(
+                    media, target, self._stray_snapshot(media.source),
                 )
-                log.error(f'medianest_backfill_plex_sidecars: {message}')
-                self.stdout.write(self.style.ERROR(f'  FAILED: {message}'))
-                return False
+                if stray:
+                    problem = (
+                        'leftover sidecar(s) outside its target directory '
+                        f'while adopting {target} (already moved from '
+                        f'{current} by an earlier run that then failed '
+                        'partway through its own sidecar moves; nothing '
+                        'adopted, moved or deleted; move or remove them by '
+                        'hand once checked): ' +
+                        ', '.join(str(path) for path in stray)
+                    )
+            if problem is not None:
+                self._media_error(summary, f'{media}: {problem}')
+                return None
             if apply_changes:
                 media.media_file.name = str(
                     target.relative_to(media.media_file.storage.location)
@@ -642,58 +744,141 @@ class Command(BaseCommand):
             summary['adopted'] += 1
             media_files.discard(current)
             media_files.add(target)
-            return True
+            return 'adopted'
         problem = None
         moves = self._sidecar_moves(current, target)
+        key_moves = self._key_matched_moves(media, current, target, moves)
         occupied = [
             destination for other, destination in moves
             if destination != other and destination.exists()
         ]
-        # A sidecar this media's own move does NOT bring (no matching
-        # old-name file exists beside `current`) can still already sit at
-        # the target name -- rename_files() itself would not touch it,
-        # but this command's own _handle_episode_nfo()/_handle_thumbnail()
-        # would silently overwrite it right after the video moves. Treat
-        # it the same as any other occupied destination.
+        # A target-side .nfo this media's own move does NOT bring (no
+        # matching old-name file exists beside `current`) is left alone by
+        # rename_files() but would be silently overwritten by this
+        # command's own _handle_episode_nfo() right after the video moves.
         move_destinations = {destination for _, destination in moves}
-        expected_sidecars = []
         if media.source.write_nfo:
-            expected_sidecars.append(self._sidecar_path(media, '.nfo'))
-        if media.source.copy_thumbnails:
-            expected_sidecars.append(self._sidecar_path(media, '.jpg'))
-        occupied += [
-            path for path in expected_sidecars
-            if path not in move_destinations and path.exists()
+            nfo_path = self._sidecar_path(media, '.nfo')
+            if nfo_path not in move_destinations and nfo_path.exists():
+                occupied.append(nfo_path)
+        claimed = [
+            other for other, _ in moves if other in media_files
+        ] + [
+            other for other, _ in key_moves
+            if self._claimed_by_other_media(other, current, target, media_files)
         ]
-        claimed = [other for other, _ in moves if other in media_files]
+        directories = [other for other, _ in key_moves if other.is_dir()]
         if not current.exists():
             problem = f'current file {current} is missing'
-        elif target.exists():
+        elif target.exists() or target in media_files:
             problem = f'target {target} is already occupied'
         elif claimed:
-            problem = 'other media files share its name prefix: ' + ', '.join(
+            problem = 'other media files would be moved with it: ' + ', '.join(
                 str(path) for path in claimed
+            )
+        elif directories:
+            problem = 'directories match its key: ' + ', '.join(
+                str(path) for path in directories
             )
         elif occupied:
             problem = 'sidecar target(s) already occupied: ' + ', '.join(
                 str(path) for path in occupied
             )
+        if problem is None:
+            for other, destination in key_moves:
+                summary['key_matched_moves'] += 1
+                self.stdout.write(
+                    f'  {media}: key match {other} -> {destination}'
+                )
         if problem is None and apply_changes:
             media.rename_files()
             if Path(media.media_file.path) != target:
                 problem = f'rename to {target} did not happen'
         if problem is not None:
-            summary['errors'] += 1
-            message = (
-                f'{media}: not renamed ({problem}); skipping its NFO and thumbnail'
+            self._media_error(
+                summary, f'{media}: not renamed ({problem}); skipping its '
+                'NFO and thumbnail',
             )
-            log.error(f'medianest_backfill_plex_sidecars: {message}')
-            self.stdout.write(self.style.ERROR(f'  FAILED: {message}'))
-            return False
+            return None
         summary['renamed'] += 1
         media_files.discard(current)
         media_files.add(target)
-        return True
+        return 'renamed'
+
+    def _media_error(self, summary, message):
+        summary['errors'] += 1
+        log.error(f'medianest_backfill_plex_sidecars: {message}')
+        self.stdout.write(self.style.ERROR(f'  FAILED: {message}'))
+
+    def _adoption_problem(self, target):
+        '''
+            Why the file at `target` must not be adopted, or None. Mirrors
+            rename_files()'s own resolve(strict=True): a symlink, or a path
+            that resolves outside DOWNLOAD_ROOT, is never pointed at.
+        '''
+        if target.is_symlink():
+            return f'not adopting {target}: it is a symlink'
+        try:
+            resolved = target.resolve(strict=True)
+        except OSError as exc:
+            return f'not adopting {target}: {exc}'
+        download_root = Path(settings.DOWNLOAD_ROOT).resolve()
+        if not resolved.is_relative_to(download_root):
+            return f'not adopting {target}: it resolves outside {download_root}'
+        if not resolved.is_file():
+            return f'not adopting {target}: it is not a regular file'
+        return None
+
+    def _claimed_by_other_media(self, path, current, target, media_files):
+        '''
+            True when `path` is another media's video, or a sidecar named
+            after one (its stem, a ".", then suffixes, in the same
+            directory) -- where that video is now (`media_files`) or was
+            before this run (a dry-run does not move the sidecars of media
+            it has already processed).
+        '''
+        own = {current, target}
+        if path in media_files and path not in own:
+            return True
+        for video in media_files | self._original_media_files:
+            if video in own or video.parent != path.parent:
+                continue
+            (_, stem) = directory_and_stem(video)
+            if path.name.startswith(stem + '.'):
+                return True
+        return False
+
+    def _key_matched_moves(self, media, current, target, sidecar_moves):
+        '''
+            The (path, destination) pairs rename_files()'s second pass
+            would move: with `{key}` in the source's media_format it takes
+            every path under the source directory whose name contains the
+            media's key (Path.rglob, so files and directories alike), and
+            moves it next to the new video under the new stem plus the
+            path's own suffixes -- skipping the video itself, paths the
+            stem pass already moved, paths already at their destination,
+            and destinations that exist (rename_files() checks that as it
+            goes, so the stem pass's destinations count too).
+        '''
+        if '{key}' not in str(media.source.media_format):
+            return []
+        top_dir = Path(media.source.directory_path)
+        if not top_dir.is_dir():
+            return []
+        (new_dir, new_stem) = directory_and_stem(target)
+        stem_moved = {other for other, _ in sidecar_moves}
+        taken = {target} | {destination for _, destination in sidecar_moves}
+        moves = []
+        for path in sorted(top_dir.rglob('*' + glob_quote(str(media.key)) + '*')):
+            if path == current or path in stem_moved:
+                continue
+            (_, path_stem) = directory_and_stem(path, True)
+            destination = new_dir / (new_stem + path.name[len(path_stem):])
+            if destination == path or destination in taken or destination.exists():
+                continue
+            taken.add(destination)
+            moves.append((path, destination))
+        return moves
 
     def _stray_snapshot(self, source):
         '''
@@ -778,13 +963,22 @@ class Command(BaseCommand):
         prefix = os.path.splitext(os.path.basename(media.filename))[0]
         return media.directory_path / f'{prefix}{suffix}'
 
-    def _handle_episode_nfo(self, media, summary, apply_changes):
+    def _handle_episode_nfo(self, media, summary, apply_changes, renamed=False):
+        '''
+            Writes (apply) or predicts the episode NFO. After a rename in
+            apply mode rename_files() has already written it (it rewrites
+            the NFO whenever write_nfo is on), so matching bytes still
+            count as written there -- the same count a dry-run predicts.
+        '''
         if not media.source.write_nfo:
             return
         nfo_path = self._sidecar_path(media, '.nfo')
         content = media.nfoxml
         if nfo_path.exists() and nfo_path.read_bytes() == content.encode('utf-8'):
-            summary['nfo_unchanged'] += 1
+            if renamed and apply_changes:
+                summary['nfo_written'] += 1
+            else:
+                summary['nfo_unchanged'] += 1
             return
         if apply_changes:
             write_text_file(nfo_path, content)

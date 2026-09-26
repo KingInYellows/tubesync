@@ -13,7 +13,8 @@ owner. This file records what the tag would contain and what was verified.
 ## What ships
 
 1. **Stable date-based episode numbering** (`sync/models/media.py`,
-   `sync/models/source.py`, which are upstream-owned).
+   `sync/models/source.py`, `sync/models/metadata.py` and
+   `sync/templates/sync/_mediaformatvars.html`, which are upstream-owned).
    - New `media_format` keys:
      - `{episode_yyyy}` and `{episode_mmddnn}`, both derived from one date
        source, `Media.episode_date`, in precedence order: the related
@@ -37,6 +38,16 @@ owner. This file records what the tag would contain and what was verified.
      items whose date comes from metadata, so two videos never share a
      number.
    - Backfilling an older video never renumbers other days.
+   - For a source filed by `{episode_mmddnn}`, a downloaded file keeps the
+     number its name already carries; other same-day items take the free
+     numbers around it. An earlier video indexed after a later one was
+     downloaded therefore never gets that file's name as its download
+     target (yt-dlp would have reported it as already downloaded).
+   - `format_dict` computes `{episode_yyyy}`/`{episode_mmddnn}` (a query
+     each) only for a `media_format` that uses them, and `rename_files`
+     rewrites the episode NFO whenever `write_nfo` is on, so a renumbered
+     file's `<episode>` follows its new name.
+   - The three keys are listed in the source form's media-format help.
 2. **`tvshow.nfo` per source** (new `sync/tvshow_nfo.py`, with hooks in the
    upstream-owned `sync/tasks.py`).
    - The file is written after indexing, after channel-image download, and
@@ -44,9 +55,13 @@ owner. This file records what the tag would contain and what was verified.
      reaches it without waiting for the next index). It contains the real
      channel or playlist title, the description when known, and two
      `<uniqueid>` elements (`type="youtube"`, the source's current `key`;
-     `type="tubesync"`, its immutable UUID, so the file stays recognised
-     as this writer's own even after an operator edits the source's
-     `key`).
+     `type="tubesync"`, its immutable UUID plus a checksum of the file, so
+     the file stays recognised as this writer's own even after an
+     operator edits the source's `key`).
+   - Only a file carrying that `tubesync` id, and not edited since (its
+     checksum still matches), is replaced. A hand-edited copy, a
+     `create-tvshow-nfo` file, or any file with only a `youtube` id is
+     kept, and episode NFOs then take their `<showtitle>` from it.
    - Writing it is best-effort: a missing source directory is skipped and
      any other error is logged, never failing or retrying the task. A
      path that already holds a video's own NFO (a `media_format`
@@ -56,11 +71,14 @@ owner. This file records what the tag would contain and what was verified.
      a channel name has a raw `&`) is left alone with a logged warning; a
      zero-byte file is still replaceable.
    - The show title is resolved from the cheapest real data available
-     (the cached channel/playlist metadata, then the latest media with
-     metadata, then `source.name`) and cached process-locally for 60
+     (the cached channel/playlist metadata -- its `channel` for a channel,
+     not the tab-suffixed page title -- then the newest few media with a
+     channel/uploader or playlist title, then `source.name`; newer media
+     win after a channel rename) and cached process-locally for 60
      seconds per source, since the same resolver runs once per episode
-     NFO too; a database error while resolving is logged and falls back
-     to `source.name` rather than failing the caller.
+     NFO too; a database error (any `django.db.Error`, run in a
+     savepoint) while resolving is logged and falls back to `source.name`
+     rather than failing the caller.
    - The episode `<showtitle>` uses the same resolved title.
    - Writes are escaped via ElementTree and happen only when the content
      changed -- one `build_tvshow_nfo()` call per write, shared by the
@@ -76,8 +94,12 @@ owner. This file records what the tag would contain and what was verified.
      never configured values.
    - Overlays may not set `source_type`, `key`, `name`, `directory` or
      `target_schedule`. Boolean fields must be JSON `true`/`false`, and a
-     `media_format` with a `..` segment or an invalid `filter_text` regex is
-     rejected.
+     `media_format` whose rendered path has a `..` segment or an invalid
+     `filter_text` regex is rejected -- both checked on the value the
+     source form would store.
+   - `POST /sources/validate` and `POST /sources` check only the requested
+     type's overlay; readiness checks both, and a healthy `sourceDefaults`
+     names any type whose explicit `{}` opts out of a non-empty `"*"`.
 4. **`manage.py medianest_backfill_plex_sidecars`** (new command, no upstream
    edits).
    - It applies the profile to existing `acq-src-*` sources, renames
@@ -102,13 +124,31 @@ owner. This file records what the tag would contain and what was verified.
      counted, and the operator is told to resolve the conflicts or
      disable the cascade before re-running.
    - **Wider occupied-sidecar detection.** An occupied target for the
-     video, an occupied destination for any sidecar `rename_files()`
-     would move, OR an already-occupied target-side `.nfo`/`.jpg` that no
-     move of this media's own would bring (which this command's own
-     NFO/thumbnail write would otherwise silently clobber right after the
-     video moves), is an error and nothing moves. Adopting an earlier
-     half-finished move that left a stray same-key sidecar behind is also
-     an error -- nothing is adopted, moved, or deleted.
+     video (on disk, or already claimed by another media earlier in the
+     same run, dry-run included), an occupied destination for any sidecar
+     `rename_files()` would move, OR an already-occupied target-side
+     `.nfo` that no move of this media's own would bring (which this
+     command's own NFO write would otherwise silently clobber right after
+     the video moves), is an error and nothing moves. A foreign target-side
+     `.jpg` is left alone and does not block the rename. Adopting an
+     earlier half-finished move that left a stray same-key sidecar behind,
+     or whose target is a symlink or resolves outside `DOWNLOAD_ROOT`, is
+     also an error -- nothing is adopted, moved, or deleted.
+   - **Key-matched moves.** With `{key}` in the profile, `rename_files()`
+     also moves every path under the source directory whose name contains
+     the media's key. The dry-run lists each of those moves
+     (`key_matched_moves`), and a match that is another media's video, a
+     sidecar of one, or a directory makes the media an error instead.
+   - **Targeted source save.** Only the overlay fields that change are
+     saved, onto a freshly read row, so concurrent edits and
+     `target_schedule` are kept and other fields are not re-normalized.
+   - **Downloads during the run.** Media that finish downloading while
+     `--apply` runs are processed before it ends; media still busy (their
+     `media:<uuid>` lock is held) after a `media_format` change are
+     counted as `in_flight` and fail the run so it is repeated.
+   - Dry-run turns `TUBESYNC_SHRINK_OLD` off while reading metadata, so it
+     writes nothing to the database. Apply counts the episode NFO
+     `rename_files()` wrote as written, matching the dry-run.
    - `--apply` must run as the user that owns `DOWNLOAD_ROOT` (`docker exec
      -u app ...`), otherwise new `Season YYYY/` directories would be
      root-owned and unwritable by TubeSync. It refuses otherwise.
@@ -128,7 +168,7 @@ owner. This file records what the tag would contain and what was verified.
 
 ## Contract
 
-The contract gains one additive, optional component, `HealthReady.components.sourceDefaults`, which is not in `required` (MediaNest DECISIONS #54). Both `POST /sources` and `POST /sources/validate` now also declare a 503 `ProviderUnavailable` response for a broken `MEDIANEST_BRIDGE_SOURCE_DEFAULTS`. `info.version` stays `1.0.0`. The vendored copy was re-synced from the canonical MediaNest branch commit `f84aa1853cf8b3ba2cd4c68be6dca8b997e64731` (#2404), and `contract_fixtures.json` `source_sha256` was re-locked.
+The contract gains one additive, optional component, `HealthReady.components.sourceDefaults`, which is not in `required` (MediaNest DECISIONS #54). Both `POST /sources` and `POST /sources/validate` now also declare a 503 `ProviderUnavailable` response for a broken `MEDIANEST_BRIDGE_SOURCE_DEFAULTS`. `info.version` stays `1.0.0`. The vendored copy was re-synced from the canonical MediaNest branch commit `118834c5c4e1611ac51694334feeb93d2b4ae1f2` (#2404), and `contract_fixtures.json` `source_sha256` was re-locked.
 
 MediaNest calls `POST /sources/validate` before `POST /sources` and treats any validate failure as fatal for the whole submission (`acquisition-source-write.dispatch.ts`'s `validate_source_failed`), so a broken source-defaults configuration therefore fails at validate-time as a real, actionable 503 the user can re-submit once an operator fixes it -- this is the 503 that matters for retries. `POST /sources`' own identical 503 remains a backstop for a race between the validate call and the create call that follows it (MediaNest's own error translation has no 503 case for a create-time failure specifically, so that path is reconciled as an unknown outcome rather than retried).
 
@@ -136,8 +176,25 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 
 - Merge the canonical contract PR in MediaNest. Then re-sync the vendored header SHA to the merged commit and re-lock `source_sha256`. The body stays byte-identical.
 - Bump `medianest_bridge/config.py::BRIDGE_VERSION` to `1.1.0`.
-- Update the "Fork delta" count in the README and `docs/upstream-sync.md` if an upstream sync lands in between. This release adds upstream touch points in `sync/models/media.py`, `sync/models/source.py` and `sync/tasks.py`.
+- Update the "Fork delta" count in the README and `docs/upstream-sync.md` if an upstream sync lands in between. This release adds upstream touch points in `sync/models/media.py`, `sync/models/source.py`, `sync/models/metadata.py`, `sync/templates/sync/_mediaformatvars.html` and `sync/tasks.py` (nine upstream files, ten touch points in total).
 - Follow MediaNest `docs/deployment/youtube-plex-tv-library-migration.md` for rollout. It covers the ZFS snapshot, backfill dry-run, pilot, new Plex library, and `PLEX_LIBRARY_KEY` switch.
+
+## Known limits
+
+- Locked media (another task holds its lock) are skipped and retried by
+  the next run; a normal rename task may also move them later, without
+  this command's checks.
+- The rename-cascade gate reads `TUBESYNC_RENAME_ALL_SOURCES` and
+  `TUBESYNC_RENAME_SOURCES` in the command's own process. Run it with the
+  same environment as the workers.
+- A leftover old-name sidecar is found only when its name contains the
+  media key; a legacy `media_format` without `{key}` leaves no way to
+  recognise it after the video has moved.
+- `in_flight` is inferred from the media lock, which other media tasks
+  also take briefly, so a busy source can report a false positive; re-run
+  when it is idle.
+- Index-only sources (`download_media` off) only carry approximate
+  listing dates until an item is downloaded, so their numbering can move.
 
 ## Rollback
 
@@ -151,3 +208,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - Manual end-to-end smoke (earlier in this stack): a throwaway SQLite DB and scratch `DOWNLOAD_ROOT`, with fixture metadata and no network. `--all-bridge-sources --apply` produced `video/acq-src-*/tvshow.nfo` and `Season 2017/s2017e091101 - <title> [<key>].mkv|.nfo` for a channel and a playlist source. A non-`acq-src-` source was untouched. Every `.nfo` parsed with ElementTree (`xmllint` is not in the image).
 - New this sweep: the rename-cascade gate (source not saved when the cascade is enabled and a refusal exists; proceeds when the cascade is disabled or nothing is refused; dry-run's informational note), the widened target-side sidecar-collision check, an adoption with a leftover stray sidecar, the per-source directory snapshot replacing a per-media `Path.rglob` walk, `TaskHistory.schedule(remove_duplicates=True)` for the channel-image job, stdout lines for every per-media/per-source failure, and `write_tvshow_nfo()`/`tvshow_nfo_needs_write()` sharing one `build_tvshow_nfo()` call.
 - Not verifiable offline: Plex's actual NFO-agent parsing, which should be confirmed on the pilot source during the migration runbook.
+
+## Verification (2026-09-26, review follow-up sweep)
+
+- `manage.py test sync medianest_bridge` in `ghcr.io/kinginyellows/tubesync:bridge-v1.0.0` (worktree mounted, `local_settings.py` from `local_settings.py.container`, `--entrypoint /usr/bin/python3`): 571 tests OK at the stack tip; 383, 434 and 507 at Plex T1, T2 and T3.
+- `ruff check` with CI's rule set: no new findings.
+- New tests cover the kept episode numbers, the NFO rewrite on rename, the `tvshow.nfo` checksum and preserved titles, the source-defaults checks on stored values, and every backfill change listed above.
