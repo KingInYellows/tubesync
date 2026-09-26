@@ -52,7 +52,10 @@
     same-key sidecars behind, or whose target is a symlink or resolves
     outside DOWNLOAD_ROOT, is also an error (nothing is adopted, moved or
     deleted). A symlink at any destination counts as occupied, even a
-    dangling one. Media that finish downloading during --apply are
+    dangling one, and so does a path an earlier media of the run already
+    claims (projected in a dry-run). A media already at its target gets
+    the rename's path checks before its NFO and thumbnail are written.
+    Media that finish downloading during --apply are
     processed before it ends, and after an overlay that can change the
     rendered path (_PATH_FIELDS) media still busy downloading are counted
     as in flight.
@@ -392,6 +395,9 @@ class Command(BaseCommand):
         # Where every video was before this run moved anything; a dry-run
         # leaves other media's sidecars there (see _claimed_by_other_media).
         self._original_media_files = frozenset(media_files)
+        # Sidecar and key-match destinations of this source's renames so
+        # far; a dry-run only projects them (_reserved_paths()).
+        self._projected_destinations = set()
         # Both modes read media.filepath/media.source.* against the
         # would-be values from here on: `working_source` is the validated
         # copy (or `source` itself when there is no overlay).
@@ -569,26 +575,32 @@ class Command(BaseCommand):
             rename-cascade gate runs before letting --apply save a source
             whose overlay changed a field. Callers must already have set
             each media's `.source` to the would-be source, same as the
-            real dry-run loop does. Works on a COPY of `media_files` and a
-            scratch summary dict, so this preflight cannot itself affect
-            the real run that follows it when nothing is refused.
+            real dry-run loop does. Works on COPIES of `media_files` and
+            the projected destinations and a scratch summary dict, so this
+            preflight cannot itself affect the real run that follows it
+            when nothing is refused.
         '''
         scratch_summary = dict.fromkeys(_SUMMARY_FIELDS, 0)
         scratch_media_files = set(media_files)
+        projected = self._projected_destinations
+        self._projected_destinations = set(projected)
         refused = 0
-        for media in downloaded:
-            try:
-                renamed_ok = self._rename_media(
-                    media, scratch_summary, False, scratch_media_files,
-                )
-            except Exception:
-                renamed_ok = False
-                log.exception(
-                    'medianest_backfill_plex_sidecars: cascade-gate '
-                    f'preflight error for {media}'
-                )
-            if not renamed_ok:
-                refused += 1
+        try:
+            for media in downloaded:
+                try:
+                    renamed_ok = self._rename_media(
+                        media, scratch_summary, False, scratch_media_files,
+                    )
+                except Exception:
+                    renamed_ok = False
+                    log.exception(
+                        'medianest_backfill_plex_sidecars: cascade-gate '
+                        f'preflight error for {media}'
+                    )
+                if not renamed_ok:
+                    refused += 1
+        finally:
+            self._projected_destinations = projected
         return refused
 
     def _cascade_gate_message(self, refused):
@@ -748,8 +760,10 @@ class Command(BaseCommand):
             media_file; a missing current file with nothing to adopt; an
             adoption target that is a symlink or resolves outside
             DOWNLOAD_ROOT; a target video that already exists or that
-            another media in this run already claimed; a sidecar
-            destination that already exists -- either one rename_files()
+            another media in this run already claimed (its video, or a
+            sidecar destination of its rename, projected in a dry-run); a
+            sidecar or key-match destination that is such a claimed path;
+            a sidecar destination that already exists -- either one rename_files()
             would overwrite directly, or a target-side .nfo no move of this
             media's own would bring, which this command's own NFO write
             would otherwise silently overwrite right after the video moves
@@ -758,7 +772,9 @@ class Command(BaseCommand):
             another media's video, or a sidecar of one (rename_files()
             would move it without updating that media's row); a key match
             that is a directory; an already-in-place row whose video file
-            is actually missing; an already-in-place row, or an adopted
+            is actually missing, or fails _path_problem() (a symlink, not a
+            regular file, or resolving outside DOWNLOAD_ROOT); an
+            already-in-place row, or an adopted
             half-finished move, with a same-key sidecar left behind outside
             its target directory (see _stray_sidecars()).
         '''
@@ -775,6 +791,15 @@ class Command(BaseCommand):
                 self._media_error(
                     summary, f'{media}: already at its target path but the '
                     f'file is missing: {current}',
+                )
+                return None
+            # The same checks a rename gets: its NFO and thumbnail are
+            # written beside it next.
+            path_problem = self._path_problem(current, target)
+            if path_problem:
+                self._media_error(
+                    summary, f'{media}: not in place ({path_problem}); '
+                    'skipping its NFO and thumbnail',
                 )
                 return None
             stray = self._stray_sidecars(
@@ -826,13 +851,15 @@ class Command(BaseCommand):
             media_files.add(target)
             return 'adopted'
         problem = None
+        reserved = self._reserved_paths(current, target, media_files)
         moves = self._sidecar_moves(current, target)
         key_moves, key_collisions = self._key_matched_moves(
-            media, current, target, moves,
+            media, current, target, moves, reserved,
         )
         occupied = [
             destination for other, destination in moves
-            if destination != other and _occupied(destination)
+            if destination != other
+            and (_occupied(destination) or destination in reserved)
         ]
         # A target-side .nfo this media's own move does NOT bring (no
         # matching old-name file exists beside `current`) would be
@@ -856,7 +883,10 @@ class Command(BaseCommand):
         ]
         if not current.exists():
             problem = f'current file {current} is missing'
-        elif _occupied(target) or target in media_files:
+        elif (
+            _occupied(target) or target in media_files
+            or target in self._projected_destinations
+        ):
             problem = f'target {target} is already occupied'
         elif (path_problem := self._path_problem(current, target)):
             problem = path_problem
@@ -897,7 +927,20 @@ class Command(BaseCommand):
         summary['renamed'] += 1
         media_files.discard(current)
         media_files.add(target)
+        self._projected_destinations.update(
+            destination for _, destination in moves + key_moves
+        )
         return 'renamed'
+
+    def _reserved_paths(self, current, target, media_files):
+        '''
+            Paths an earlier media of this source already has, or (in a
+            dry-run) is projected to have: other media's videos and the
+            sidecar/key-match destinations of earlier renames. A move onto
+            one is refused, so a dry-run predicts the same refusal apply
+            meets once those files exist.
+        '''
+        return (media_files - {current, target}) | self._projected_destinations
 
     def _media_error(self, summary, message):
         summary['errors'] += 1
@@ -992,7 +1035,9 @@ class Command(BaseCommand):
                 return True
         return False
 
-    def _key_matched_moves(self, media, current, target, sidecar_moves):
+    def _key_matched_moves(
+        self, media, current, target, sidecar_moves, reserved=frozenset(),
+    ):
         '''
             The (path, destination) pairs rename_files()'s second pass
             would move: with `{key}` in the source's media_format it takes
@@ -1004,7 +1049,8 @@ class Command(BaseCommand):
             Returns (moves, collisions): a path whose destination exists or
             an earlier move takes (the stem pass's destinations count too)
             is skipped by rename_files() and so left behind under its old
-            name; those are returned as collisions.
+            name; those are returned as collisions, as is one whose
+            destination is in `reserved` (_reserved_paths()).
         '''
         if '{key}' not in str(media.source.media_format):
             return [], []
@@ -1014,6 +1060,7 @@ class Command(BaseCommand):
         (new_dir, new_stem) = directory_and_stem(target)
         stem_moved = {other for other, _ in sidecar_moves}
         taken = {target} | {destination for _, destination in sidecar_moves}
+        taken |= reserved
         moves = []
         collisions = []
         for path in sorted(top_dir.rglob('*' + glob_quote(str(media.key)) + '*')):

@@ -71,7 +71,8 @@ owner. This file records what the tag would contain and what was verified.
      create, or a non-empty file that does not parse as XML at all (a
      Kodi URL-only NFO, or upstream `create-tvshow-nfo`'s own output when
      a channel name has a raw `&`) is left alone with a logged warning; a
-     zero-byte file is still replaceable.
+     zero-byte file is still replaceable. A symlinked `tvshow.nfo`, dangling
+     or not, is never replaced; a live one's `<title>` still names the show.
    - The show title is resolved from the cheapest real data available
      (the cached channel/playlist metadata -- its `channel` for a channel,
      not the tab-suffixed page title -- then the newest few media with a
@@ -81,7 +82,8 @@ owner. This file records what the tag would contain and what was verified.
      NFO too; a database error (any `django.db.Error`, run in a
      savepoint) while resolving is logged and falls back to `source.name`
      rather than failing the caller.
-   - The episode `<showtitle>` uses the same resolved title.
+   - The episode `<showtitle>` uses the same resolved title, and keeps a
+     title made only of emoji, as `tvshow.nfo`'s `<title>` does.
    - Writes are escaped via ElementTree and happen only when the content
      changed -- one `build_tvshow_nfo()` call per write, shared by the
      need-to-write check and the actual write, not two.
@@ -135,8 +137,9 @@ owner. This file records what the tag would contain and what was verified.
      `--apply`'s.
    - **Wider occupied-sidecar detection.** An occupied target for the
      video (on disk -- a dangling symlink counts -- or already claimed by
-     another media earlier in the same run, dry-run included), an occupied
-     destination for any sidecar
+     another media earlier in the same run, as its video or as a sidecar
+     destination of its rename, dry-run included), an occupied destination
+     for any sidecar (the same claimed paths count)
      `rename_files()` would move, OR an already-occupied target-side
      `.nfo` that no move of this media's own would bring (which this
      command's own NFO write would otherwise silently clobber right after
@@ -157,7 +160,8 @@ owner. This file records what the tag would contain and what was verified.
      makes the media an error instead. So does a current file that is a
      symlink, is not a regular file (a directory would be moved whole) or
      resolves outside `DOWNLOAD_ROOT`, or a target directory that resolves
-     outside it.
+     outside it. A media already at its target gets the same checks before
+     its NFO and thumbnail are written.
    - **Foreign episode NFOs.** An existing `.nfo` at the target that is not
      this media's own (`<episodedetails>` whose `<id>`/`<uniqueid>` is its
      key), or is a symlink, is never overwritten -- for a rename, an
@@ -231,6 +235,12 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
   (and the sources out of `TUBESYNC_RENAME_SOURCES`) to close this window.
 - Index-only sources (`download_media` off) only carry approximate
   listing dates until an item is downloaded, so their numbering can move.
+- A source whose `media_format` does not use `{episode_mmddnn}` numbers
+  same-day items live. Deleting a media keeps its place (TubeSync leaves a
+  skipped placeholder row), but once an earlier same-day row is gone for
+  good a later item's `<episode>` moves down on its next NFO rewrite, as
+  upstream's `calculate_episode_number()` does. Bridge-created sources
+  are unaffected.
 
 ## Rollback
 
@@ -257,3 +267,10 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `ruff check` with CI's rule set: only the two known hits (`sync/views/sources.py`, `sync/youtube.py:314`).
 - New this sweep: `tvshow.nfo` refreshed when a channel image fails (T2); a bad field in one type's source-defaults block no longer blocks the other type (T3); and for the backfill, a directory as the current file, dangling symlinks at the video and sidecar targets, an in-flight download refusing a cascade-enabled save (dry-run and apply summaries equal), the in-flight count for a `source_acodec`-only overlay, the dry-run stopping a gated source like `--apply`, and an old-name sidecar beside a same-directory target.
 - Each new test was checked to fail with its fix reverted.
+
+## Verification (2026-09-26, fifth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 611 tests OK at the stack tip; 389, 447 and 524 at Plex T1, T2 and T3.
+- `ruff check` with CI's rule set: only the two known hits.
+- New this sweep: characterization tests for the legacy-format same-day drift and the placeholder that prevents it (T1); an emoji-only `<showtitle>` and dangling/live `tvshow.nfo` symlinks (T2); and for the backfill, a directory or an outside-root path at an already-in-place target, a sidecar onto an earlier media's projected video and a video onto an earlier media's projected sidecar (dry-run and apply summaries equal), and a dangling `tvshow.nfo` symlink surviving `--apply`.
+- Each new fix's test was checked to fail with the fix reverted.
