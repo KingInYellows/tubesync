@@ -24,31 +24,38 @@ Save this as a script and run it from a checkout root:
 
 ```bash
 #!/usr/bin/env bash
-set -u
+set -euo pipefail
 settings=tubesync/tubesync/local_settings.py   # gitignored; never commit it
 if [ -e "$settings" ]; then
   echo "$settings already exists; move it aside first" >&2
   exit 1
 fi
+# Installed before the copy, so a failure or interrupt from here on still
+# removes it. The check above makes sure it is only ever our own copy.
+trap 'rm -f "$settings"' EXIT
 scratch="${SCRATCH:-$(mktemp -d)}"   # never the real /config or /downloads
 mkdir -p "$scratch/tsconfig" "$scratch/tsdownloads"
 cp tubesync/tubesync/local_settings.py.container "$settings"
-trap 'rm -f "$settings"' EXIT   # removed even when the run is interrupted
 status=0
-docker run --rm --entrypoint /usr/bin/python3 \
+# TUBESYNC_DEBUG=True as in CI; settings.py reads it for DJANGO_HUEY and
+# LOGGING. "|| status=$?" keeps set -e from exiting before the check below.
+docker run --rm --entrypoint /usr/bin/python3 -e TUBESYNC_DEBUG=True \
   -v "$PWD/tubesync:/app" -v "$scratch/tsconfig:/config" \
   -v "$scratch/tsdownloads:/downloads" -w /app \
   ghcr.io/kinginyellows/tubesync:bridge-v1.0.0 \
   manage.py test --verbosity=1 || status=$?
-foreign=$(find . -path ./.git -prune -o ! -user "$(whoami)" -print)
+# find's own errors (an unreadable directory) are reported as foreign too.
+foreign=$(find . -path ./.git -prune -o ! -user "$(whoami)" -print 2>&1 || true)
 if [ -n "$foreign" ]; then
   printf 'files not owned by you:\n%s\n' "$foreign" >&2
-  [ "$status" -eq 0 ] && status=1
+  if [ "$status" -eq 0 ]; then status=1; fi
 fi
 exit "$status"   # the test run's own status when it failed
 ```
 
 - Always pass `--entrypoint /usr/bin/python3`.
+- Pass `-e TUBESYNC_DEBUG=True`, as `.github/workflows/ci.yaml` does, so
+  settings are built the way CI builds them.
 - Use scratch directories for `/config` and `/downloads`, never real ones.
 - `manage.py test` with no labels runs every installed app, `common`
   included, as CI does. `manage.py test sync medianest_bridge` is a narrower
