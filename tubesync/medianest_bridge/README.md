@@ -792,21 +792,26 @@ taken, is an error, as is a current file or target directory reaching
 outside `DOWNLOAD_ROOT` through a symlink; a media already at its target
 gets the same checks before its NFO and thumbnail are written. An
 existing episode `.nfo` that is not this media's own (or is a symlink)
-is never overwritten.
+is never overwritten, nor carried onto the target NFO name by either
+move set (`rename_files()` would overwrite it there). A symlinked
+`poster.jpg`, even a dangling one, counts as present, so no channel-image
+download is queued to write through it.
 Adopting an
 earlier half-finished move (the video already sits at its target but the
 database row does not, from a prior run that moved the file and then
 failed before saving) that left a stray same-key sidecar behind, or whose
 target is a symlink or resolves outside `DOWNLOAD_ROOT`, is also an error
 -- nothing is adopted, moved, or deleted; a stray old-name sidecar in the
-target's own directory counts too. `--apply` saves only the
+target's own directory counts too (only names that are the target's stem
+plus a `.` are its own). `--apply` saves only the
 overlay fields that change, onto a freshly read source row; processes
 media that finish downloading while it runs; and, after an overlay that
 can change the rendered path, counts media still busy downloading as
 `in_flight` and exits non-zero so the run is repeated. Dry-run turns `TUBESYNC_SHRINK_OLD` off
 so its metadata reads write nothing. The known limits (locked media, the
 cascade settings read in the command's own process, legacy names without
-the key, the in-flight race) are listed in
+the key, the in-flight race, downloads still in progress, legacy stored
+publish dates) are listed in
 `docs/release-notes-bridge-v1.1.0.md`. `--apply` refuses to run unless the effective user
 owns `DOWNLOAD_ROOT`, so new files and `Season YYYY/` directories stay
 writable by TubeSync. See the command's own module docstring for the

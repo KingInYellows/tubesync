@@ -768,7 +768,9 @@ class Command(BaseCommand):
             media's own would bring, which this command's own NFO write
             would otherwise silently overwrite right after the video moves
             (a target-side .jpg is fine: _handle_thumbnail() never
-            overwrites one); a file either move set would take that is
+            overwrites one); an .nfo either move set would carry to the
+            target NFO name that is not this media's own (it would be moved
+            and then overwritten the same way); a file either move set would take that is
             another media's video, or a sidecar of one (rename_files()
             would move it without updating that media's row); a key match
             that is a directory; an already-in-place row whose video file
@@ -861,17 +863,24 @@ class Command(BaseCommand):
             if destination != other
             and (_occupied(destination) or destination in reserved)
         ]
-        # A target-side .nfo this media's own move does NOT bring (no
-        # matching old-name file exists beside `current`) would be
-        # overwritten by rename_files()'s own NFO rewrite right after the
-        # video moves, unless it is already this media's own.
-        move_destinations = {destination for _, destination in moves}
+        # rename_files() rewrites the NFO at the target name right after
+        # the video moves. So the file that will be there first must be
+        # this media's own: a target-side .nfo no move brings, or an .nfo
+        # a move carries there (an old-name one beside `current`, or a
+        # key match), which would otherwise be moved and then overwritten.
+        foreign_moved_nfos = []
         if media.source.write_nfo:
             nfo_path = self._sidecar_path(media, '.nfo')
-            if nfo_path not in move_destinations and self._foreign_episode_nfo(
-                media, nfo_path,
-            ):
+            incoming = [
+                other for other, destination in moves + key_moves
+                if destination == nfo_path
+            ]
+            if not incoming and self._foreign_episode_nfo(media, nfo_path):
                 occupied.append(nfo_path)
+            foreign_moved_nfos = [
+                other for other in incoming
+                if self._foreign_episode_nfo(media, other)
+            ]
         claimed = [
             other for other, _ in moves if other in media_files
         ] + [
@@ -907,6 +916,13 @@ class Command(BaseCommand):
         elif occupied:
             problem = 'sidecar target(s) already occupied: ' + ', '.join(
                 str(path) for path in occupied
+            )
+        elif foreign_moved_nfos:
+            problem = (
+                "an NFO that is not this media's episode NFO would be moved "
+                'to its new name and then overwritten: ' + ', '.join(
+                    str(path) for path in foreign_moved_nfos
+                )
             )
         if problem is None:
             for other, destination in key_moves:
@@ -988,7 +1004,9 @@ class Command(BaseCommand):
             return False
         try:
             root = ElementTree.fromstring(raw)
-        except ElementTree.ParseError:
+        except (ElementTree.ParseError, LookupError, ValueError):
+            # LookupError/ValueError: an XML declaration naming an encoding
+            # expat cannot read (encoding="ANSI", encoding="UTF-32").
             return True
         key = str(media.key).strip()
         return root.tag != 'episodedetails' or not any(
@@ -1127,16 +1145,19 @@ class Command(BaseCommand):
             scan rather than a move: it makes the leftover loudly visible
             (counted as an error) instead of silently leaving it orphaned
             under the old name forever. Only the target's own completed
-            sidecars (its directory, a name starting with its stem) are
-            excluded, so an old-stem leftover beside a target that kept
-            its directory is found too.
+            sidecars are excluded: in its directory, named its stem plus
+            a "." (the NFO, thumbnail, subtitles and info.json all are).
+            So an old-stem leftover beside a target that kept its
+            directory is found too, even one whose old stem starts with
+            the new stem.
         '''
         key = str(media.key)
         (target_dir, target_stem) = directory_and_stem(target)
         return sorted(
             path for path in snapshot
             if key in path.name and path != target and not (
-                path.parent == target_dir and path.name.startswith(target_stem)
+                path.parent == target_dir
+                and path.name.startswith(target_stem + '.')
             )
         )
 
@@ -1246,7 +1267,20 @@ class Command(BaseCommand):
                 summary['tvshow_written'] += 1
 
         poster_path = Path(source.directory_path) / 'poster.jpg'
-        poster_exists = poster_path.exists()
+        # A symlink, even a dangling one, counts as present: the image
+        # download writes poster.jpg with a plain open(), which would
+        # follow the link and write wherever it points.
+        poster_exists = _occupied(poster_path)
+        if source.copy_channel_images and poster_path.is_symlink():
+            self.stdout.write(self.style.WARNING(
+                f'  NOTE: {poster_path} is a symlink; this command does not '
+                'queue the channel image download, which would write '
+                'through it' + (
+                    '. Turning copy_channel_images on queues it anyway; '
+                    'replace the link with a regular file first.'
+                    if images_already_queued else '.'
+                )
+            ))
         if images_already_queued and poster_exists:
             # source_pre_save queues it whatever is on disk, and it writes
             # the images unconditionally.

@@ -63,14 +63,16 @@ owner. This file records what the tag would contain and what was verified.
    - Only a file carrying that `tubesync` id, and not edited since (its
      checksum still matches), is replaced. A hand-edited copy, a
      `create-tvshow-nfo` file, or any file with only a `youtube` id is
-     kept, and episode NFOs then take their `<showtitle>` from it.
+     kept, and episode NFOs then take their `<showtitle>` from it as
+     written, emoji included.
    - Writing it is best-effort: a missing source directory is skipped and
      any other error is logged, never failing or retrying the task. A
      path that already holds a video's own NFO (a `media_format`
      rendering to `tvshow`), any other `<tvshow>` this writer did not
      create, or a non-empty file that does not parse as XML at all (a
-     Kodi URL-only NFO, or upstream `create-tvshow-nfo`'s own output when
-     a channel name has a raw `&`) is left alone with a logged warning; a
+     Kodi URL-only NFO, upstream `create-tvshow-nfo`'s own output when
+     a channel name has a raw `&`, or a declared encoding such as
+     `ANSI` or `UTF-32` that the XML parser cannot read) is left alone with a logged warning; a
      zero-byte file is still replaceable. A symlinked `tvshow.nfo`, dangling
      or not, is never replaced; a live one's `<title>` still names the show.
    - The show title is resolved from the cheapest real data available
@@ -149,8 +151,9 @@ owner. This file records what the tag would contain and what was verified.
      or whose target is a symlink or resolves outside `DOWNLOAD_ROOT`, is
      also an error -- nothing is adopted, moved, or deleted. A stray
      old-name sidecar in the target's own directory (a format that only
-     changed the file name) counts too; only the target's own sidecars are
-     excluded.
+     changed the file name) counts too; only the target's own sidecars
+     (its stem followed by a `.`) are excluded, so a leftover whose old
+     stem merely starts with the new one is still found.
    - **Key-matched moves.** With `{key}` in the profile, `rename_files()`
      also moves every path under the source directory whose name contains
      the media's key. The dry-run lists each of those moves
@@ -166,7 +169,11 @@ owner. This file records what the tag would contain and what was verified.
      this media's own (`<episodedetails>` whose `<id>`/`<uniqueid>` is its
      key), or is a symlink, is never overwritten -- for a rename, an
      already-in-place media
-     or an adoption alike; it is reported as an error.
+     or an adoption alike; it is reported as an error. The same check
+     covers an `.nfo` that either move set would carry onto the target NFO
+     name (an old-name one beside the video, or a key match), because
+     `rename_files()` rewrites the NFO right after the move. An `.nfo` in
+     an encoding the XML parser cannot read counts as foreign.
    - **Targeted source save.** Only the overlay fields that change are
      saved, onto a freshly read row, so concurrent edits and
      `target_schedule` are kept and other fields are not re-normalized.
@@ -179,6 +186,9 @@ owner. This file records what the tag would contain and what was verified.
    - Turning `copy_channel_images` on makes TubeSync's own signal queue an
      image download even when `poster.jpg` exists, and that download
      replaces the existing images; both modes count it and print a note.
+   - A symlinked `poster.jpg`, even a dangling one, counts as present, so
+     the command never queues the channel-image download (which writes
+     with a plain `open()` and would follow the link); it prints a note.
    - Dry-run turns `TUBESYNC_SHRINK_OLD` off while reading metadata, so it
      writes nothing to the database. Apply counts the episode NFO
      `rename_files()` wrote as written, matching the dry-run.
@@ -241,6 +251,20 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
   good a later item's `<episode>` moves down on its next NFO rewrite, as
   upstream's `calculate_episode_number()` does. Bridge-created sources
   are unaffected.
+- A `Metadata` row ingested before this release from metadata with only
+  an `upload_date` (no `timestamp` or `release_timestamp`) stored
+  `Media.published` or the retrieval time as its `published`, and
+  `episode_date` prefers that stored value. Such an item can land on the
+  wrong day, season or same-day number. YouTube metadata nearly always carries a timestamp, so this is
+  rare; fixing the stored rows would need a data migration of
+  upstream-owned data, which this release does not do. Check the pilot
+  source's filenames against the upload dates.
+- The backfill knows the paths of downloaded media only. A download still
+  in progress has no `media_file` yet, so a stem glob or a `{key}` match
+  of another media could, in principle, move its `.part` or finished
+  file. That needs two media's names to overlap; the in-flight gate
+  covers the common case, and running the backfill while the source is
+  idle (see above) closes it.
 
 ## Rollback
 
@@ -273,4 +297,12 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 611 tests OK at the stack tip; 389, 447 and 524 at Plex T1, T2 and T3.
 - `ruff check` with CI's rule set: only the two known hits.
 - New this sweep: characterization tests for the legacy-format same-day drift and the placeholder that prevents it (T1); an emoji-only `<showtitle>` and dangling/live `tvshow.nfo` symlinks (T2); and for the backfill, a directory or an outside-root path at an already-in-place target, a sidecar onto an earlier media's projected video and a video onto an earlier media's projected sidecar (dry-run and apply summaries equal), and a dangling `tvshow.nfo` symlink surviving `--apply`.
+- Each new fix's test was checked to fail with the fix reverted.
+
+## Verification (2026-09-26, sixth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 620 tests OK at the stack tip; 389, 450 and 527 at Plex T1, T2 and T3.
+- `ruff check` with CI's rule set: only the two known hits.
+- New this sweep: a foreign `tvshow.nfo` declaring an encoding the parser cannot read (`ANSI`, `UTF-32`) and a foreign `<title>` with emoji, kept as written in `<showtitle>` (T2); and for the backfill, a foreign `.nfo` beside the old video, a foreign key-matched `.nfo` and one in an unreadable encoding (each refused in both modes with equal summaries), the media's own old `.nfo` still moving, a dangling `poster.jpg` symlink queueing no image download, and a leftover whose old stem starts with the new stem.
+- The legacy stored publish dates (T1) and downloads still in progress are documented under "Known limits" instead of fixed.
 - Each new fix's test was checked to fail with the fix reverted.
