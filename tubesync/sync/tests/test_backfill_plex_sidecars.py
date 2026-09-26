@@ -1917,3 +1917,113 @@ class BackfillReviewFollowUp5TestCase(BackfillFollowUpMixin, TestCase):
                 self.assertIn('tvshow_written: 0', output)
             self.assertTrue(tvshow.is_symlink())
             self.assertFalse(tvshow.exists())
+
+
+class BackfillReviewFollowUp6TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Sixth review pass: a foreign NFO a move would carry onto the target
+        NFO name, a symlinked poster.jpg, and a leftover whose old stem
+        starts with the new one.
+    '''
+
+    FOREIGN = '<episodedetails><title>Mine</title></episodedetails>'
+
+    def assert_refused_in_both_modes(self, source, message):
+        dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+        applied, exc = run_backfill_capture(
+            '--source', str(source.uuid), '--apply',
+        )
+        for output, error in ((dry, dry_exc), (applied, exc)):
+            self.assertIsNotNone(error)
+            self.assertIn(message, output)
+            self.assertIn('renamed: 0', output)
+        self.assertEqual(summary_of(dry), summary_of(applied))
+
+    def test_a_foreign_nfo_beside_the_old_video_is_not_moved(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            old_nfo = old_path.with_suffix('.nfo')
+            old_nfo.write_text(self.FOREIGN, encoding='utf-8')
+            self.assert_refused_in_both_modes(
+                source, 'would be moved to its new name and then overwritten',
+            )
+            self.assertEqual(old_nfo.read_text(encoding='utf-8'), self.FOREIGN)
+            self.assertTrue(old_path.exists())
+
+    def test_a_foreign_key_matched_nfo_is_not_moved(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            orphan = source.directory_path / 'leftovers' / 'old name [vid1].nfo'
+            orphan.parent.mkdir()
+            orphan.write_text(self.FOREIGN, encoding='utf-8')
+            self.assert_refused_in_both_modes(
+                source, 'would be moved to its new name and then overwritten',
+            )
+            self.assertEqual(orphan.read_text(encoding='utf-8'), self.FOREIGN)
+
+    def test_an_nfo_in_an_unreadable_encoding_is_not_moved(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            old_nfo = old_path.with_suffix('.nfo')
+            raw = (
+                b'<?xml version="1.0" encoding="ANSI"?>'
+                b'<episodedetails><id>vid1</id></episodedetails>'
+            )
+            old_nfo.write_bytes(raw)
+            self.assert_refused_in_both_modes(
+                source, 'would be moved to its new name and then overwritten',
+            )
+            self.assertEqual(old_nfo.read_bytes(), raw)
+
+    def test_the_medias_own_old_nfo_still_moves(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            old_nfo = old_path.with_suffix('.nfo')
+            old_nfo.write_text(
+                '<episodedetails><uniqueid type="youtube">vid1</uniqueid>'
+                '</episodedetails>',
+                encoding='utf-8',
+            )
+            output = run_backfill('--source', str(source.uuid), '--apply')
+            self.assertIn('renamed: 1', output)
+            self.assertFalse(old_nfo.exists())
+            nfo = self.target_dir(source) / f'{self.TARGET_NAME}.nfo'
+            self.assertEqual(
+                ElementTree.parse(nfo).getroot().findtext('title'),
+                'no fancy stuff title',
+            )
+
+    def test_a_dangling_poster_symlink_queues_no_image_download(self):
+        with temp_download_root(), tempfile.TemporaryDirectory() as outside:
+            source = make_bridge_source(copy_channel_images=True)
+            source.make_directory()
+            self.make_downloaded(source=source)
+            poster = source.directory_path / 'poster.jpg'
+            poster.symlink_to(Path(outside) / 'poster.jpg')
+            with patch(f'{self.COMMAND}.TaskHistory') as mock_th:
+                dry = run_backfill('--source', str(source.uuid))
+                applied = run_backfill('--source', str(source.uuid), '--apply')
+            mock_th.schedule.assert_not_called()
+            for output in (dry, applied):
+                self.assertIn('images_enqueued: 0', output)
+                self.assertIn('poster.jpg is a symlink', output)
+            self.assertTrue(poster.is_symlink())
+            self.assertFalse((Path(outside) / 'poster.jpg').exists())
+
+    def test_a_leftover_starting_with_the_new_stem_is_found(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            run_backfill('--source', str(source.uuid), '--apply')
+            target_dir = self.target_dir(source)
+            own = target_dir / f'{self.TARGET_NAME}.en.srt'
+            own.write_bytes(b'subtitle')
+            leftover = target_dir / f'{self.TARGET_NAME}-old.en.srt'
+            leftover.write_bytes(b'old subtitle')
+            output, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            self.assertIsNotNone(exc)
+            self.assertIn('leftover sidecar(s)', output)
+            self.assertIn(str(leftover), output)
+            self.assertNotIn(str(own), output)
+            self.assertIn('already_in_place: 0', output)
