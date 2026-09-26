@@ -255,21 +255,23 @@ def _preserved_show_title(source):
         The `<title>` of a `tvshow.nfo` this writer leaves alone (see
         `_foreign_nfo_reason`), or `None`. Episode NFOs then name the same
         show as the file Plex/Kodi actually read, such as one the upstream
-        `create-tvshow-nfo` command wrote with `source.name`.
+        `create-tvshow-nfo` command wrote with `source.name`. The title is
+        only stripped, not emoji-cleaned, so it matches that file exactly.
     '''
     root, reason = _read_tvshow_nfo(source.directory_path / 'tvshow.nfo', source)
     if reason is None or root is None or root.tag != 'tvshow':
         return None
-    return _clean_text(root.findtext('title')) or None
+    return (root.findtext('title') or '').strip() or None
 
 
 def resolve_show_title(source):
     '''
         Best available display title for an episode NFO's <showtitle>: the
         `<title>` of a `tvshow.nfo` this writer does not own (so episodes
-        name the show that file names), else `build_tvshow_nfo()`'s own
-        `<title>` (`_resolve_show_title_from_data`, falling back to
-        `source.name`). Emoji removed and stripped, like that `<title>`.
+        name the show that file names, emoji included), else
+        `build_tvshow_nfo()`'s own `<title>` (`_resolve_show_title_from_data`,
+        falling back to `source.name`), with emoji removed as that `<title>`
+        has them removed. Either way it is the text the show file carries.
 
         Cached for `_SHOW_TITLE_CACHE_TTL_SECONDS` (60s), process-locally,
         keyed by `source.pk`. `Media.nfoxml` calls this once per episode,
@@ -456,7 +458,10 @@ def _read_tvshow_nfo(nfo_path, source):
         return None, None
     try:
         root = ElementTree.fromstring(raw)
-    except ElementTree.ParseError:
+    except (ElementTree.ParseError, LookupError, ValueError):
+        # LookupError: an XML declaration naming an unknown encoding
+        # (encoding="ANSI"); ValueError: a multi-byte one expat refuses
+        # (encoding="UTF-32"). Both are files this writer cannot read.
         return None, 'it exists but could not be parsed as XML'
     if root.tag != 'tvshow':
         return root, (

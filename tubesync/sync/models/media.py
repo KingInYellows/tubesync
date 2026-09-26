@@ -1189,14 +1189,12 @@ class Media(models.Model):
         # showtitle = resolved show title (Plex T2, sync/tvshow_nfo.py):
         # the <title> of a tvshow.nfo TubeSync leaves alone, else the same
         # resolution its own tvshow.nfo <title> uses (channel cache, recent
-        # media's channel/uploader/playlist_title, then source.name). A
-        # title made only of emoji is kept, as tvshow.nfo's <title> keeps
-        # it, rather than emptied.
+        # media's channel/uploader/playlist_title, then source.name). Used
+        # as is: it is already the exact text of that tvshow.nfo's <title>
+        # (emoji kept in a foreign file, removed in TubeSync's own).
         from ..tvshow_nfo import resolve_show_title
         show_title = str(resolve_show_title(self.source)).strip()
-        nfo.append(_nfo_element(nfo,
-            'showtitle', clean_emoji(show_title).strip() or show_title,
-        ))
+        nfo.append(_nfo_element(nfo, 'showtitle', show_title))
         # season = episode_date year, episode = MMDD + same-day index. A
         # playlist keeps the legacy season '1' and published-order
         # calculate_episode_number() unless its media_format files videos

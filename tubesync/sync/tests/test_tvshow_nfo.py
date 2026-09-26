@@ -978,3 +978,70 @@ class TvshowNfoFollowUp5TestCase(TestCase):
             self.assertIn('symlink', mock_log.warning.call_args.args[0])
             # Its <title> still names the show.
             self.assertEqual(resolve_show_title(self.source), 'testname')
+
+
+class TvshowNfoFollowUp6TestCase(TestCase):
+    '''Foreign tvshow.nfo files with odd encodings or emoji titles.'''
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+        _clear_show_title_cache()
+        self.source = make_source()
+
+    def tearDown(self):
+        _clear_show_title_cache()
+
+    def _nfo_path(self):
+        return self.source.directory_path / 'tvshow.nfo'
+
+    def test_an_unreadable_xml_encoding_is_left_alone(self):
+        # "ANSI" makes ElementTree raise LookupError and "UTF-32" a
+        # ValueError, not ParseError. Both must count as foreign files.
+        for encoding in ('ANSI', 'UTF-32'):
+            with self.subTest(encoding=encoding), temp_download_root():
+                _clear_show_title_cache()
+                self.source.make_directory()
+                raw = (
+                    f'<?xml version="1.0" encoding="{encoding}"?>'
+                    '<tvshow><title>Hand</title></tvshow>'
+                ).encode('ascii')
+                self._nfo_path().write_bytes(raw)
+                media = Media.objects.create(
+                    key=f'm-{encoding}', source=self.source, metadata=metadata,
+                )
+                with patch('sync.tvshow_nfo.log') as mock_log:
+                    write_tvshow_nfo(self.source)
+                self.assertIn(
+                    'could not be parsed', mock_log.warning.call_args.args[0],
+                )
+                self.assertEqual(self._nfo_path().read_bytes(), raw)
+                # Falls back to TubeSync's own title (the media's uploader).
+                self.assertEqual(resolve_show_title(self.source), 'test uploader')
+                tree = ElementTree.fromstring(media.nfoxml)
+                self.assertEqual(tree.find('showtitle').text, 'test uploader')
+
+    def test_a_foreign_title_keeps_its_emoji(self):
+        for title in ('🎮 Gaming', '🎉'):
+            with self.subTest(title=title), temp_download_root():
+                _clear_show_title_cache()
+                self.source.make_directory()
+                self._nfo_path().write_text(
+                    f'<tvshow><title> {title} </title></tvshow>',
+                    encoding='utf-8',
+                )
+                media = Media.objects.create(
+                    key=f'm-{len(title)}', source=self.source, metadata=metadata,
+                )
+                self.assertEqual(resolve_show_title(self.source), title)
+                tree = ElementTree.fromstring(media.nfoxml)
+                self.assertEqual(tree.find('showtitle').text, title)
+
+    def test_own_titles_still_drop_emoji(self):
+        self.source.name = '🎮 Gaming'
+        self.source.save()
+        media = Media.objects.create(key='m1', source=self.source, metadata=metadata)
+        with patch('sync.tvshow_nfo._resolve_show_title_from_data', return_value=None):
+            _clear_show_title_cache()
+            self.assertEqual(resolve_show_title(self.source), 'Gaming')
+            tree = ElementTree.fromstring(media.nfoxml)
+        self.assertEqual(tree.find('showtitle').text, 'Gaming')
