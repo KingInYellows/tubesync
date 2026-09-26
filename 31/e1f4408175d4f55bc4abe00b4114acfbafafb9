@@ -1,0 +1,23 @@
+tubesync/medianest_bridge/README.md
+  s_6790353d565094::t_9386b697fbe11a 122-123
+tubesync/sync/tests/test_tvshow_nfo.py
+  s_6790353d565094::t_abac0a3427f6ed 13,699-702,708,710-725,727-752,838,845,848-858
+tubesync/sync/tvshow_nfo.py
+  s_6790353d565094::t_d570f793daf0b6 217,238-246,249,260-261,412-413,417-421,436-443,445,448,452,454,465-467,471,484-485,531-534
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "31e1f4408175d4f55bc4abe00b4114acfbafafb9",
+  "prompts": {},
+  "sessions": {
+    "s_6790353d565094": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d88f8383-3f7d-42ae-80fd-a2f5940fe795",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
