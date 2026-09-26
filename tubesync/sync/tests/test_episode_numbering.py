@@ -796,6 +796,69 @@ class FrozenEpisodeNumberTestCase(TestCase):
         self.make_media('plain-earlier', aware(2026, 3, 5, 9, 0, 0))
         self.assertEqual(later.episode_mmddnn, '030502')
 
+    def delete_for_good(self, media):
+        '''
+            Deletes `media`, then the skipped placeholder row upstream's
+            media_post_delete re-creates with the same key (a second
+            delete, as a later cleanup_removed_media pass does, leaves
+            none).
+        '''
+        media.delete()
+        placeholder = Media.objects.get(source=self.source, key=media.key)
+        placeholder.delete()
+        self.assertFalse(
+            Media.objects.filter(source=self.source, key=media.key).exists()
+        )
+
+    def test_a_deleted_siblings_placeholder_keeps_a_legacy_format_number(self):
+        self.source.media_format = settings.MEDIA_FORMATSTR_DEFAULT
+        self.source.save()
+        first = self.mark_downloaded(
+            self.make_media('hold-1', aware(2026, 3, 5, 8, 0, 0)),
+        )
+        self.mark_downloaded(self.make_media('hold-2', aware(2026, 3, 5, 9, 0, 0)))
+        third = self.mark_downloaded(
+            self.make_media('hold-3', aware(2026, 3, 5, 10, 0, 0)),
+        )
+        first.delete()
+        third = Media.objects.get(pk=third.pk)
+        self.assertEqual(third.nfo_episode_number, 30503)
+
+    def test_removing_an_earlier_sibling_for_good_shifts_a_legacy_format_number(self):
+        '''
+            Documents accepted behaviour (see `_episode_day_index`): with a
+            `media_format` without `{episode_mmddnn}` nothing freezes the
+            index, so once an earlier same-day row is gone for good a
+            later item's NFO `<episode>` moves down by one. Upstream's
+            `calculate_episode_number()` drifts the same way.
+        '''
+        self.source.media_format = settings.MEDIA_FORMATSTR_DEFAULT
+        self.source.save()
+        first = self.mark_downloaded(
+            self.make_media('drift-1', aware(2026, 3, 5, 8, 0, 0)),
+        )
+        self.mark_downloaded(self.make_media('drift-2', aware(2026, 3, 5, 9, 0, 0)))
+        third = self.mark_downloaded(
+            self.make_media('drift-3', aware(2026, 3, 5, 10, 0, 0)),
+        )
+        self.assertEqual(third.nfo_episode_number, 30503)
+        self.delete_for_good(first)
+        third = Media.objects.get(pk=third.pk)
+        self.assertEqual(third.nfo_episode_number, 30502)
+
+    def test_removing_an_earlier_sibling_for_good_keeps_a_frozen_number(self):
+        first = self.mark_downloaded(
+            self.make_media('keep-1', aware(2026, 3, 5, 8, 0, 0)),
+        )
+        self.mark_downloaded(self.make_media('keep-2', aware(2026, 3, 5, 9, 0, 0)))
+        third = self.mark_downloaded(
+            self.make_media('keep-3', aware(2026, 3, 5, 10, 0, 0)),
+        )
+        self.assertEqual(third.nfo_episode_number, 30503)
+        self.delete_for_good(first)
+        third = Media.objects.get(pk=third.pk)
+        self.assertEqual(third.nfo_episode_number, 30503)
+
 
 class EpisodeTokenParsingTestCase(TestCase):
 

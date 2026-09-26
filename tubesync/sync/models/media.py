@@ -1471,6 +1471,17 @@ class Media(models.Model):
             is numbered like an item not yet downloaded, and a rename then
             moves it. Two files that already share an index (from before
             this rule) both keep it.
+
+            Accepted limitation: without `{episode_mmddnn}` nothing
+            freezes the index. Deleting a media keeps its place (upstream's
+            media_post_delete re-creates a skipped placeholder with the
+            same key and date), but once an earlier same-day row is gone
+            for good (that placeholder deleted too, e.g. by a later
+            cleanup_removed_media pass) a later item's `<episode>` moves
+            down on its next NFO rewrite. Upstream's
+            `calculate_episode_number()` counts across the whole year and
+            drifts the same way. Bridge-created sources use
+            `{episode_mmddnn}` and are unaffected.
         '''
         media_format = str(self.source.media_format)
         if 'episode_mmddnn' not in _format_field_names(media_format):

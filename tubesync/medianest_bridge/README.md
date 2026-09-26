@@ -87,7 +87,10 @@ Eight upstream files are touched at nine points (`settings.py` twice), six of th
    `{episode_mmddnn}`, a downloaded file keeps the number its name
    carries and other same-day items take the free numbers around it
    (`_episode_day_index`), so a later-indexed earlier video never gets
-   an existing file's name as its download target.
+   an existing file's name as its download target. Other formats number
+   live, so once an earlier same-day row is gone for good (its skipped
+   placeholder deleted too) a later one's `<episode>` shifts on its next
+   NFO rewrite, as upstream's `calculate_episode_number()` does.
 7. `sync/models/source.py` (Plex T1) -- adds the same three keys
    (`episode_yyyy`, `episode_mmddnn`, `title_full_bounded`) to the dict
    `example_media_format_dict` returns, required for
