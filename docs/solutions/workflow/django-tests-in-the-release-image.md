@@ -76,10 +76,15 @@ Lint with CI's exact rule set (from `.github/workflows/ci.yaml`), from the
 `patches/yt_dlp/` and reports F821 errors that CI never sees.
 
 ```bash
-cd tubesync && ruff check --isolated --target-version py312 \
+cd tubesync && ruff check --target-version py312 \
   --select 'C4,E4,E7,E9,F' \
   --ignore 'C408,C409,C410,E701,E722,E731,I001,UP017,UP018'
 ```
+
+Do not add ruff's own `--isolated`. In CI, `--isolated` is a `uvx` option
+(`uvx ... --isolated ruff check`) that isolates the tool's environment, and
+ruff still reads `tubesync/ruff.toml`, including its Python 3.10 target for
+`shasum.py`. After `ruff check`, `--isolated` makes ruff ignore that file.
 
 `F` includes **F402**. Modules that import `gettext_lazy as _` must never use
 `_` as a loop variable (`for _, field, spec, _ in ...`). Inside a
