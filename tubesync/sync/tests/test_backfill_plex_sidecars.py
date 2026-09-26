@@ -2361,3 +2361,82 @@ class BackfillReviewFollowUp11TestCase(BackfillFollowUpMixin, TestCase):
         self.assert_refused(
             lambda path: path.symlink_to(path.parent / 'missing'),
         )
+
+
+class BackfillReviewFollowUp12TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Twelfth review pass: a target directory reached through a symlink
+        inside DOWNLOAD_ROOT is refused before anything moves, and image
+        destinations that are not regular files block the image download.
+    '''
+
+    def test_a_symlinked_target_directory_inside_the_root_is_refused(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            real = source.directory_path / 'real-season'
+            real.mkdir()
+            self.target_dir(source).symlink_to(real, target_is_directory=True)
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('goes through a symlink', output)
+                self.assertIn('renamed: 0', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertTrue(old_path.exists())
+            self.assertEqual(list(real.iterdir()), [])
+            media.refresh_from_db()
+            self.assertEqual(Path(media.media_file.path), old_path)
+
+    def test_a_non_file_image_destination_queues_no_image_download(self):
+        with temp_download_root():
+            source = make_bridge_source(copy_channel_images=True)
+            source.make_directory()
+            self.make_downloaded(source=source)
+            banner = source.directory_path / 'banner.jpg'
+            thumbnail = source.directory_path / 'thumbnail.jpg'
+            for name, make, undo in (
+                ('banner.jpg', banner.mkdir, banner.rmdir),
+                ('thumbnail.jpg', lambda: os.mkfifo(thumbnail), thumbnail.unlink),
+            ):
+                with self.subTest(name=name):
+                    make()
+                    with patch(f'{self.COMMAND}.TaskHistory') as mock_th:
+                        dry = run_backfill('--source', str(source.uuid))
+                        applied = run_backfill(
+                            '--source', str(source.uuid), '--apply',
+                        )
+                    mock_th.schedule.assert_not_called()
+                    for output in (dry, applied):
+                        self.assertIn('images_enqueued: 0', output)
+                        self.assertIn(
+                            f'{name} exists but is not a regular file', output,
+                        )
+                    undo()
+
+    def test_a_non_file_image_destination_refuses_the_overlay(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            (source.directory_path / 'banner.jpg').mkdir()
+            with (
+                patch(f'{self.COMMAND}.TaskHistory') as mock_th,
+                patch('sync.signals.download_source_images') as mock_signal,
+            ):
+                dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+                applied, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            mock_th.schedule.assert_not_called()
+            mock_signal.assert_not_called()
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('exists but is not a regular file', output)
+                self.assertIn('errors: 1', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            source.refresh_from_db()
+            self.assertFalse(source.copy_channel_images)

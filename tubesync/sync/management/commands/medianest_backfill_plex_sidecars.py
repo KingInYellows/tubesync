@@ -823,7 +823,10 @@ class Command(BaseCommand):
             adoption target that is a symlink or resolves outside
             DOWNLOAD_ROOT, or that belongs to another media (its video, a
             sidecar of one, or a destination an earlier rename in this run
-            moves a file to, projected in a dry-run); a target video that already exists or that
+            moves a file to, projected in a dry-run); a target directory
+            that goes through a symlink below the storage location
+            (rename_files() would record the resolved path, not the
+            target); a target video that already exists or that
             another media in this run already claimed (its video, or a
             sidecar destination of its rename, projected in a dry-run); a
             sidecar or key-match destination that is such a claimed path;
@@ -984,6 +987,17 @@ class Command(BaseCommand):
             problem = f'target {target} is already occupied'
         elif (path_problem := self._path_problem(current, target)):
             problem = path_problem
+        elif (linked := self._symlinked_ancestor(
+            target.parent, Path(media.media_file.storage.location),
+        )):
+            # rename_files() resolves the new path before recording it, so
+            # media_file would name the link's target instead of `target`:
+            # the check below would report a failed rename after the move,
+            # and later runs would find `target` occupied.
+            problem = (
+                f'target directory {target.parent} goes through a symlink '
+                f'({linked}); rename_files() would record the resolved path'
+            )
         elif key_collisions:
             problem = (
                 'key-matched path(s) whose destination is already taken, '
@@ -1070,6 +1084,19 @@ class Command(BaseCommand):
             return f'current file {current} is not a regular file'
         if not target.parent.resolve().is_relative_to(download_root):
             return f'target directory {target.parent} resolves outside {download_root}'
+        return None
+
+    def _symlinked_ancestor(self, directory, storage_root):
+        '''
+            The first symlink among `directory` and its parents below
+            `storage_root` (the media storage location, which
+            rename_files() records paths relative to), or None.
+        '''
+        for path in (directory, *directory.parents):
+            if path == storage_root or not path.is_relative_to(storage_root):
+                return None
+            if path.is_symlink():
+                return path
         return None
 
     def _foreign_episode_nfo(self, media, nfo_path):
@@ -1444,7 +1471,9 @@ class Command(BaseCommand):
             list (empty when it may): its directory does not exist (the
             task opens its files without creating it, so it would fail and
             retry), or one of the files it writes is a symlink, which it
-            would write through. The caller has already refused a
+            would write through, or something other than a regular file (a
+            directory makes open() fail and the task retry; a FIFO can
+            block it). The caller has already refused a
             directory resolving outside DOWNLOAD_ROOT.
         '''
         directory = Path(source.directory_path)
@@ -1453,11 +1482,14 @@ class Command(BaseCommand):
                 f'{directory} does not exist and nothing in this run '
                 'creates it'
             ]
-        return [
-            f'{directory / name} is a symlink, which it would write through'
-            for name in _SOURCE_IMAGE_NAMES
-            if (directory / name).is_symlink()
-        ]
+        problems = []
+        for name in _SOURCE_IMAGE_NAMES:
+            path = directory / name
+            if path.is_symlink():
+                problems.append(f'{path} is a symlink, which it would write through')
+            elif path.exists() and not path.is_file():
+                problems.append(f'{path} exists but is not a regular file')
+        return problems
 
     def _resolves_outside_download_root(self, directory):
         '''

@@ -165,7 +165,11 @@ owner. This file records what the tag would contain and what was verified.
      symlink, is not a regular file (a directory would be moved whole) or
      resolves outside `DOWNLOAD_ROOT`, or a target directory that resolves
      outside it. A media already at its target gets the same checks before
-     its NFO and thumbnail are written.
+     its NFO and thumbnail are written. A rename whose target directory
+     goes through a symlink inside `DOWNLOAD_ROOT` is refused too:
+     `rename_files()` records the resolved path, not the target, so the
+     rename would look failed after the move and later runs would find the
+     target occupied.
    - **Foreign episode NFOs.** An existing `.nfo` at the target that is not
      this media's own (`<episodedetails>` whose `<id>`/`<uniqueid>` is its
      key), or is a symlink, is never overwritten -- for a rename, an
@@ -191,7 +195,9 @@ owner. This file records what the tag would contain and what was verified.
    - The channel-image download writes `thumbnail.jpg`, `banner.jpg`,
      `background.jpg`, `poster.jpg` and `season-poster.jpg` with a plain
      `open()`, which follows a symlink. The command never queues it while
-     any of those is a symlink, even a dangling one, or while the source
+     any of those is a symlink, even a dangling one, or something other
+     than a regular file (a directory would make it fail and retry, a FIFO
+     could block it), or while the source
      directory is missing and no save in this run recreates it (the task
      never creates it, so it would fail and retry); it prints a note
      instead. A symlinked `poster.jpg` also counts as present. When an
@@ -231,13 +237,13 @@ owner. This file records what the tag would contain and what was verified.
 
 ## Contract
 
-The contract gains one additive, optional component, `HealthReady.components.sourceDefaults`, which is not in `required` (MediaNest DECISIONS #54). Both `POST /sources` and `POST /sources/validate` now also declare a 503 `ProviderUnavailable` response for a broken `MEDIANEST_BRIDGE_SOURCE_DEFAULTS`. `info.version` stays `1.0.0`. The vendored copy was re-synced from the canonical MediaNest branch commit `479b97ea4fa990def968f99db7052b04cafd5e0d` (#2404; description-only on top of the 503 declarations: the source-defaults 503 is per requested source type, and a bridge reporting `sourceDefaults` says `healthy` with nothing configured), and `contract_fixtures.json` `source_sha256` was re-locked.
+The contract gains one additive, optional component, `HealthReady.components.sourceDefaults`, which is not in `required` (MediaNest DECISIONS #54). Both `POST /sources` and `POST /sources/validate` now also declare a 503 `ProviderUnavailable` response for a broken `MEDIANEST_BRIDGE_SOURCE_DEFAULTS`. `info.version` stays `1.0.0`. The vendored copy was re-synced from the canonical MediaNest commit `0e7d2375b42ac99505b11c4c1b88294f234d8d03`, the squash merge of #2404 to `main` (its contract file is byte-identical to the pre-merge branch commit `479b97ea4fa990def968f99db7052b04cafd5e0d` first vendored here; description-only on top of the 503 declarations: the source-defaults 503 is per requested source type, and a bridge reporting `sourceDefaults` says `healthy` with nothing configured), and `contract_fixtures.json` `source_sha256` was re-locked.
 
 MediaNest calls `POST /sources/validate` before `POST /sources` and treats any validate failure as fatal for the whole submission (`acquisition-source-write.dispatch.ts`'s `validate_source_failed`), so a broken source-defaults configuration therefore fails at validate-time as a real, actionable 503 the user can re-submit once an operator fixes it -- this is the 503 that matters for retries. `POST /sources`' own identical 503 remains a backstop for a race between the validate call and the create call that follows it (MediaNest's own error translation has no 503 case for a create-time failure specifically, so that path is reconciled as an unknown outcome rather than retried).
 
 ## Before tagging
 
-- Merge the canonical contract PR in MediaNest. Then re-sync the vendored header SHA to the merged commit and re-lock `source_sha256`. The body stays byte-identical.
+- ~~Merge the canonical contract PR in MediaNest, then re-sync the vendored header SHA to the merged commit and re-lock `source_sha256`.~~ Done 2026-09-26: #2404 merged as `0e7d2375b`; the header names it, the body is byte-identical, and `source_sha256` is re-locked.
 - Bump `medianest_bridge/config.py::BRIDGE_VERSION` to `1.1.0`.
 - Update the "Fork delta" count in the README and `docs/upstream-sync.md` if an upstream sync lands in between. This release adds upstream touch points in `sync/models/media.py`, `sync/models/source.py`, `sync/models/metadata.py`, `sync/templates/sync/_mediaformatvars.html` and `sync/tasks.py` (nine upstream files, ten touch points in total).
 - Follow MediaNest `docs/deployment/youtube-plex-tv-library-migration.md` for rollout. It covers the ZFS snapshot, backfill dry-run, pilot, new Plex library, and `PLEX_LIBRARY_KEY` switch.
@@ -362,3 +368,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 633 tests OK at the stack tip (T1-T3 unchanged). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 641 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep, for the backfill: a regular file or a dangling symlink at a source's directory path makes the source an error in both modes with equal summaries, before anything is saved. Each test was checked to fail with the check removed.
+
+## Verification (2026-09-26, twelfth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 636 tests OK at the stack tip; 389, 450 and 527 at Plex T1, T2 and T3 (T3 re-run after its contract header re-sync to MediaNest's merged `0e7d2375b`: the sha256 lock and the PyYAML derivation cross-check both pass). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 644 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep, for the backfill: a rename whose target directory goes through a symlink inside `DOWNLOAD_ROOT` is refused before anything moves; a directory or FIFO at a channel-image destination queues no image download and refuses an overlay that would turn `copy_channel_images` on (dry-run and apply summaries equal). Each test was checked to fail with its fix reverted.
