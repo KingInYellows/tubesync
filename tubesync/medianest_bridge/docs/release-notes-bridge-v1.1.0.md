@@ -669,3 +669,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 699 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 707 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: only a bare `{key}` counts as a fixed 11-character ID in the stem check; a key with a format spec is treated as data. The test was checked to fail with any key field treated as 11 characters.
+
+## Verification (2026-09-27, forty-fourth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 700 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 708 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: the stem check parses the format with Python's own `string.Formatter`, so nested fields such as `{title_full:.{video_order}}` count as data. The test was checked to fail with the earlier regex tokenizer.

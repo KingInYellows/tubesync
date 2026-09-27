@@ -126,6 +126,7 @@ import copy
 import os
 import re
 import stat
+import string
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from uuid import UUID
@@ -1477,17 +1478,23 @@ class Command(BaseCommand):
         template_stem = re.sub(
             r'\.(\{ext(?:[:!][^{}]*)?\}|[A-Za-z0-9]+)$', '', template_last,
         )
-        def piece_pattern(piece):
-            if not piece.startswith('{'):
-                return re.escape(piece)
-            # A bare {key} is always a whole 11-character YouTube ID; with a
-            # format spec or conversion ({key:.6}) it can be cut to any
-            # prefix, so like every other field it is treated as data.
-            return '[A-Za-z0-9_-]{11}' if piece == '{key}' else '.*'
-        stem_pattern = ''.join(
-            piece_pattern(piece)
-            for piece in re.split(r'(\{[^{}]*\})', template_stem) if piece
-        )
+        # Parsed the way str.format() parses it (nested fields such as
+        # "{title_full:.{video_order}}" and "{{" escapes included). A bare
+        # {key} is always a whole 11-character YouTube ID; any other field,
+        # or a key with a format spec or conversion ({key:.6}), is data.
+        try:
+            pieces = list(string.Formatter().parse(template_stem))
+        except ValueError:
+            pieces = [('', 'unparsable', '', None)]
+        stem_pattern = ''
+        for literal, field, spec, conversion in pieces:
+            stem_pattern += re.escape(literal)
+            if field is None:
+                continue
+            if field == 'key' and not spec and not conversion:
+                stem_pattern += '[A-Za-z0-9_-]{11}'
+            else:
+                stem_pattern += '.*'
         can_render = (
             lambda name: in_source_dir and re.fullmatch(stem_pattern, name)
         )

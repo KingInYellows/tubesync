@@ -4168,6 +4168,13 @@ class BackfillReviewFollowUp42TestCase(BackfillFollowUpMixin, TestCase):
             'can name a video "tvshow"',
         )
 
+    def test_a_nested_format_spec_stem_is_refused(self):
+        self.assert_profile_refused(
+            '{"*": {"media_format": "{title_full:.{video_order}}.mkv", '
+            '"write_nfo": true}}',
+            'can name a video "tvshow"',
+        )
+
     def test_a_key_stem_is_not_refused(self):
         overlay = (
             '{"*": {"media_format": "{key}.{ext}", "write_nfo": true, '
