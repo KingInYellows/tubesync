@@ -2960,7 +2960,7 @@ class BackfillReviewFollowUp20TestCase(BackfillFollowUpMixin, TestCase):
             patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
         ):
             source, media, old_path = self.make_downloaded()
-            self.assert_refused(source, 'renders episode NFOs at the show')
+            self.assert_refused(source, "its episode NFO would be the show's")
             self.assertTrue(old_path.exists())
             self.assertFalse((source.directory_path / 'tvshow.nfo').exists())
             source.refresh_from_db()
@@ -3001,7 +3001,7 @@ class BackfillReviewFollowUp21TestCase(BackfillFollowUpMixin, TestCase):
             )
             for output, error in ((dry, dry_exc), (applied, exc)):
                 self.assertIsNotNone(error)
-                self.assertIn('or at the video file itself', output)
+                self.assertIn('its episode NFO would be the video file itself', output)
                 self.assertIn('renamed: 0', output)
             self.assertEqual(summary_of(dry), summary_of(applied))
             self.assertEqual(old_path.read_bytes(), b'fake-mkv-bytes')
@@ -3072,9 +3072,92 @@ class BackfillReviewFollowUp22TestCase(BackfillFollowUpMixin, TestCase):
             mock_signal.assert_not_called()
             for output, error in ((dry, dry_exc), (applied, exc)):
                 self.assertIsNotNone(error)
-                self.assertIn('would overwrite media', output)
+                self.assertIn('the channel image download would overwrite', output)
                 self.assertIn('renamed: 0', output)
             self.assertEqual(summary_of(dry), summary_of(applied))
             self.assertEqual(old_path.read_bytes(), b'fake-mkv-bytes')
             source.refresh_from_db()
             self.assertFalse(source.copy_channel_images)  # never saved
+
+
+class BackfillReviewFollowUp23TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Twenty-third review pass: generated sidecars are reserved across
+        media, an episode thumbnail at a channel-image name counts, and a
+        download finishing during the run meets the same checks.
+    '''
+
+    def assert_refused(self, source, names, message):
+        with patch.object(
+            Media, 'filename', property(lambda media: names[media.key]),
+        ):
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+        for output, error in ((dry, dry_exc), (applied, exc)):
+            self.assertIsNotNone(error)
+            self.assertIn(message, output)
+            self.assertIn('renamed: 0', output)
+        self.assertEqual(summary_of(dry), summary_of(applied))
+
+    def test_two_media_sharing_generated_sidecars_refuse_the_source(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, first, first_path = self.make_downloaded(key='aaa')
+            _, second, second_path = self.make_downloaded(key='bbb', source=source)
+            self.assert_refused(
+                source, {'aaa': 'shared.mp4', 'bbb': 'shared.webm'},
+                'is also used by',
+            )
+            self.assertTrue(first_path.exists())
+            self.assertTrue(second_path.exists())
+            self.assertFalse((source.directory_path / 'shared.nfo').exists())
+
+    def test_an_episode_thumbnail_at_a_channel_image_name_is_refused(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            with (
+                patch(f'{self.COMMAND}.TaskHistory') as mock_th,
+                patch('sync.signals.download_source_images') as mock_signal,
+            ):
+                self.assert_refused(
+                    source, {'vid1': 'poster.mkv'},
+                    'the channel image download would overwrite',
+                )
+            mock_th.schedule.assert_not_called()
+            mock_signal.assert_not_called()
+            self.assertTrue(old_path.exists())
+
+    def test_a_late_download_meets_the_reserved_path_checks(self):
+        overlay = '{"*": {"media_format": "{key}.nfo", "write_nfo": true}}'
+        with (
+            temp_download_root(),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source = make_bridge_source()
+            source.make_directory()
+            late = Media.objects.create(key='late1', source=source, metadata=metadata)
+            real_preflight = BackfillCommand._count_refused_media
+            late_path = []
+
+            def finish_a_download(command, downloaded, media_files):
+                late_path.append(download_dummy_file(late))
+                return real_preflight(command, downloaded, media_files)
+
+            with patch.object(
+                BackfillCommand, '_count_refused_media', finish_a_download,
+            ):
+                output, error = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            self.assertIsNotNone(error)
+            self.assertIn('finished downloading during this run', output)
+            self.assertIn('its episode NFO would be the video file itself', output)
+            self.assertIn('renamed: 0', output)
+            self.assertEqual(late_path[0].read_bytes(), b'fake-mkv-bytes')

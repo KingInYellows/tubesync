@@ -573,30 +573,33 @@ class Command(BaseCommand):
         for media in downloaded:
             media.source = working_source
 
-        # An episode NFO rendered at a path something else needs: the
-        # source's tvshow.nfo (a video named `tvshow` in the source
-        # directory), after which the show-level NFO can never be written
-        # and a dry-run would predict both; or the video's own target (a
-        # media_format whose extension is .nfo), which rename_files()
-        # would replace with the NFO's XML right after moving the video
-        # there. Refuse such a source, in both modes, before anything is
-        # saved or moved.
-        tvshow_path = Path(working_source.directory_path) / 'tvshow.nfo'
-        clashing = sorted(
-            str(media) for media in downloaded
-            if working_source.write_nfo
-            and self._sidecar_path(media, '.nfo') in (
-                tvshow_path, Path(media.filepath),
+        # Paths each media has or will have (its video, current and
+        # target, and the episode NFO and thumbnail this command or
+        # rename_files() generates) must not collide with the show's
+        # tvshow.nfo, with a channel-image file name while channel images
+        # are on (download_source_images overwrites those with a plain
+        # open()), with the video's own target, or with a sidecar another
+        # media generates. Refuse such a source, in both modes, before
+        # anything is saved or moved; media that finish downloading during
+        # the run are checked against the same claims (see
+        # _process_late_downloads()).
+        self._claimed_paths = {}
+        self._claimed_generated = set()
+        problems = []
+        for media in downloaded:
+            problems.extend(
+                f'{media}: {problem}' for problem in
+                self._reserved_path_problems(
+                    media, working_source, self._claimed_paths,
+                )
             )
-        )
-        if clashing:
+        if problems:
             summary['errors'] += 1
+            shown = '; '.join(problems[:10])
+            more = f' and {len(problems) - 10} more' if len(problems) > 10 else ''
             message = (
-                'the media_format renders episode NFOs at the show\'s '
-                f'{tvshow_path} or at the video file itself (' +
-                ', '.join(clashing) + '); choose a format whose file names '
-                'cannot be "tvshow" and whose extension is not .nfo, and '
-                're-run'
+                f'reserved paths collide ({shown}{more}); change the '
+                'media_format or the affected options and re-run'
             )
             if apply_changes:
                 log.error(f'medianest_backfill_plex_sidecars: {source}: {message}')
@@ -607,37 +610,6 @@ class Command(BaseCommand):
                     f'it: {message}'
                 ))
             return
-        # With channel images on, download_source_images writes every
-        # _SOURCE_IMAGE_NAMES file in the source directory with a plain
-        # open(), so a video recorded at one of those paths, or renamed to
-        # one, would be overwritten with an image. Refuse such a source, in
-        # both modes, before the save that could queue that job.
-        if working_source.copy_channel_images:
-            image_paths = {
-                Path(working_source.directory_path) / name
-                for name in _SOURCE_IMAGE_NAMES
-            }
-            at_images = sorted(
-                str(media) for media in downloaded
-                if self._media_paths(media) & image_paths
-            )
-            if at_images:
-                summary['errors'] += 1
-                message = (
-                    'the channel image download would overwrite media '
-                    'recorded or renamed at an image file name ('
-                    + ', '.join(at_images) + '); change the media_format '
-                    'or turn copy_channel_images off and re-run'
-                )
-                if apply_changes:
-                    log.error(f'medianest_backfill_plex_sidecars: {source}: {message}')
-                    self.stdout.write(self.style.ERROR(f'  SKIPPED: {message}'))
-                else:
-                    self.stdout.write(self.style.WARNING(
-                        '  NOTE: --apply would skip this source without '
-                        f'saving it: {message}'
-                    ))
-                return
 
         # Rename-cascade gate: saving a source whose overlay actually
         # changes a field fires source_post_save's
@@ -739,6 +711,15 @@ class Command(BaseCommand):
             for media in late:
                 summary['media_seen'] += 1
                 self.stdout.write(f'  finished downloading during this run: {media}')
+                problems = self._reserved_path_problems(
+                    media, working_source, self._claimed_paths,
+                )
+                if problems:
+                    self._media_error(
+                        summary, f'{media}: not processed (reserved paths '
+                        'collide: ' + '; '.join(problems) + ')',
+                    )
+                    continue
                 self._process_media(media, True, summary, media_files)
 
     def _in_flight_media(self, source):
@@ -1266,12 +1247,53 @@ class Command(BaseCommand):
             return f'target directory {target.parent} resolves outside {download_root}'
         return None
 
-    def _media_paths(self, media):
-        '''`media`'s would-be target and, when recorded, its current file.'''
-        paths = {Path(media.filepath)}
+    def _reserved_path_problems(self, media, working_source, claimed):
+        '''
+            Why `media`'s paths collide with a path something else needs,
+            as a list (empty when they do not), then records its paths in
+            `claimed` (path -> owning media, shared across the source's
+            media, late downloads included). Its video paths are the
+            would-be target and, when recorded, the current file; its
+            generated paths are the episode NFO (with write_nfo) and the
+            thumbnail (with copy_thumbnails). Two media's videos meeting is
+            left to the per-media rename checks.
+        '''
+        directory = Path(working_source.directory_path)
+        target = Path(media.filepath)
+        videos = {target}
         if media.media_file:
-            paths.add(Path(media.media_file.path))
-        return paths
+            videos.add(Path(media.media_file.path))
+        generated = {}
+        if working_source.write_nfo:
+            generated['episode NFO'] = self._sidecar_path(media, '.nfo')
+        if working_source.copy_thumbnails:
+            generated['thumbnail'] = self._sidecar_path(media, '.jpg')
+        problems = []
+        nfo = generated.get('episode NFO')
+        if nfo is not None and nfo == directory / 'tvshow.nfo':
+            problems.append(f"its episode NFO would be the show's {nfo}")
+        if nfo is not None and nfo == target:
+            problems.append(f'its episode NFO would be the video file itself ({nfo})')
+        if working_source.copy_channel_images:
+            images = {directory / name for name in _SOURCE_IMAGE_NAMES}
+            for path in sorted((videos | set(generated.values())) & images):
+                problems.append(
+                    f'the channel image download would overwrite {path}'
+                )
+        for kind, path in generated.items():
+            owner = claimed.get(path)
+            if owner is not None and owner != str(media):
+                problems.append(f'its {kind} {path} is also used by {owner}')
+        for path in videos:
+            owner = claimed.get(path)
+            if owner is not None and owner != str(media) and (
+                path in self._claimed_generated
+            ):
+                problems.append(f'its video {path} is a sidecar of {owner}')
+        for path in videos | set(generated.values()):
+            claimed.setdefault(path, str(media))
+        self._claimed_generated.update(generated.values())
+        return problems
 
     def _special_tree_entries(self, directory):
         '''

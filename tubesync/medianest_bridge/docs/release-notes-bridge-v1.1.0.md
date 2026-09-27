@@ -194,10 +194,15 @@ owner. This file records what the tag would contain and what was verified.
      refused in both modes before anything is saved or moved.
    - A cached thumbnail that exists but is not a regular file (a
      directory or FIFO) is never copied; both modes print a note.
-   - With `copy_channel_images` on, a source with a video recorded or
-     renamed at a channel-image file name (`poster.jpg` and the rest) is
-     refused before the save that could queue the image download, which
-     would overwrite that video.
+   - **Reserved paths.** Each media's paths, its video (current and
+     target) and the episode NFO and thumbnail it will generate, must not
+     meet the show's `tvshow.nfo`, a channel-image file name while channel
+     images are on (the image download would overwrite it), the video's own
+     target, or a sidecar another media generates (two videos with the
+     same stem would share one `.nfo` and `.jpg`). A collision refuses the
+     source in both modes before anything is saved or moved; a download
+     that finishes during `--apply` is checked against the same claims and
+     skipped as an error on a collision.
    - **Plain source trees only.** Before anything else, each source's
      directory is walked once (without following links), and the source
      is refused in both modes when it holds any symlink (live or dangling)
@@ -485,3 +490,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 658 tests OK at the stack tip (T1-T3 unchanged: 389, 451 and 528). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 666 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: with channel images on, a video recorded or renamed at a channel-image file name refuses the source in both modes before the save (neither this command nor TubeSync's signal queues the image job). The test was checked to fail with the check removed.
+
+## Verification (2026-09-27, twenty-third review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 661 tests OK at the stack tip (T1-T3 unchanged: 389, 451 and 528). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 669 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: one reserved-path check replaces the separate `tvshow.nfo`, NFO-on-video and channel-image checks and adds generated sidecars (episode NFO, thumbnail) across media and the episode thumbnail against channel-image names; downloads finishing during the run meet the same checks. Each test was checked to fail with its part of the check removed.
