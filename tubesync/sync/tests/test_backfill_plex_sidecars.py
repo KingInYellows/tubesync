@@ -3456,7 +3456,8 @@ class BackfillReviewFollowUp27TestCase(BackfillFollowUpMixin, TestCase):
             mock_signal.assert_not_called()
             for output, error in ((dry, dry_exc), (applied, exc)):
                 self.assertIsNotNone(error)
-                self.assertIn('once it is downloaded', output)
+                self.assertIn('(not downloaded yet)', output)
+                self.assertIn('the channel image download would overwrite', output)
             self.assertEqual(summary_of(dry), summary_of(applied))
             source.refresh_from_db()
             self.assertFalse(source.copy_channel_images)  # never saved
@@ -3526,3 +3527,34 @@ class BackfillReviewFollowUp28TestCase(BackfillFollowUpMixin, TestCase):
             self.assert_refused(source)
             self.assertTrue(moved.exists())
             self.assertTrue(sidecar.is_symlink())
+
+
+class BackfillReviewFollowUp29TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Twenty-ninth review pass: media still to be downloaded meet every
+        reserved-path check before the profile is saved, not only the
+        channel-image one.
+    '''
+
+    def test_a_pending_media_whose_nfo_would_be_its_video_is_refused(self):
+        overlay = '{"*": {"media_format": "{key}.nfo", "write_nfo": true}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source = make_bridge_source()
+            source.make_directory()
+            pending = Media.objects.create(key='pend1', source=source, metadata=metadata)
+            Media.objects.filter(pk=pending.pk).update(skip=False, manual_skip=False)
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('(not downloaded yet)', output)
+                self.assertIn('its episode NFO would be the video file itself', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            source.refresh_from_db()
+            self.assertFalse(source.write_nfo)  # the unsafe profile is not saved

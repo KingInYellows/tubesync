@@ -214,9 +214,10 @@ owner. This file records what the tag would contain and what was verified.
      collision as well (a stored `media_format` with a `..` segment). A
      collision refuses the source in both modes before anything is saved or moved; a download
      that finishes during `--apply` is checked against the same claims and
-     skipped as an error on a collision. With channel images on, media not
-     downloaded yet (in-flight ones included) are checked too: the image
-     job would overwrite one rendered at an image name once it lands.
+     skipped as an error on a collision. Media not downloaded yet
+     (in-flight ones included) meet every one of these checks too before
+     the profile is saved, since they get the profile's paths when they
+     land.
    - **Videos inside their own source.** Every downloaded row's recorded
      video must resolve inside its own source's directory; a legacy or
      custom layout recording one elsewhere refuses the source (the tree
@@ -545,3 +546,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 672 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 680 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: a row whose recorded video lies outside its own source's directory refuses the source, which closes the shared-third-directory and outside-tree-sidecar cases. The tests were checked to fail with the check removed.
+
+## Verification (2026-09-27, twenty-ninth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 673 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 681 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: media still to be downloaded meet every reserved-path check before the profile is saved (an NFO on the video itself included), not only the channel-image one. The test was checked to fail with the check removed.

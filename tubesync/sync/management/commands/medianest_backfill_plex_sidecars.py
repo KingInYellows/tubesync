@@ -620,28 +620,26 @@ class Command(BaseCommand):
                     media, working_source, self._claimed_paths,
                 )
             )
-        if working_source.copy_channel_images:
-            # Media still to be downloaded: the image job this run may
-            # queue would overwrite one whose target is an image name once
-            # its download lands (in-flight downloads included).
-            images = {
-                Path(working_source.directory_path) / name
-                for name in _SOURCE_IMAGE_NAMES
-            }
-            pending = Media.objects.filter(
-                source=source, downloaded=False, skip=False, manual_skip=False,
-            ).order_by('key')
-            for media in pending.iterator():
-                media.source = working_source
-                try:
-                    target = Path(media.filepath)
-                except Exception:
-                    continue  # not renderable yet (no metadata); no path
-                if target in images:
-                    problems.append(
-                        f'{media}: the channel image download would overwrite '
-                        f'{target} once it is downloaded'
-                    )
+        # Media still to be downloaded get the profile's paths when they
+        # land (download_media_file() writes the video, then its NFO, at
+        # the rendered path), so they meet every reserved-path check too:
+        # an NFO on the video itself, tvshow.nfo, channel-image names (the
+        # image job this run may queue), and other media's sidecars.
+        pending = Media.objects.filter(
+            source=source, downloaded=False, skip=False, manual_skip=False,
+        ).order_by('key')
+        for media in pending.iterator():
+            media.source = working_source
+            try:
+                Path(media.filepath)
+            except Exception:
+                continue  # not renderable yet (no metadata); no path
+            problems.extend(
+                f'{media} (not downloaded yet): {problem}' for problem in
+                self._reserved_path_problems(
+                    media, working_source, self._claimed_paths,
+                )
+            )
         if problems:
             summary['errors'] += 1
             shown = '; '.join(problems[:10])
