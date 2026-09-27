@@ -207,9 +207,10 @@ owner. This file records what the tag would contain and what was verified.
      meet the show's `tvshow.nfo`, a channel-image file name while channel
      images are on (the image download would overwrite it), the video's own
      target, or a sidecar another media generates (two videos with the
-     same stem would share one `.nfo` and `.jpg`). With channel images on,
-     the destinations of the sidecar and `{key}` moves a rename would make
-     count too (an existing `.jpg` moved onto `poster.jpg`), and a video
+     same stem would share one `.nfo` and `.jpg`). The destinations of the
+     sidecar and `{key}` moves a rename would make are claimed the same way,
+     whatever the options, and with channel images on they count against
+     the image names too (an existing `.jpg` moved onto `poster.jpg`), and a video
      recorded, or targeted, inside another source's directory is a
      collision as well (a stored `media_format` with a `..` segment), as
      are a target that does not resolve to itself (`sub/../x`), two media
@@ -600,3 +601,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 683 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 691 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: the dry-run and cascade-preflight old-stem glob includes files earlier renames project into the directory (and excludes those they vacate), so a later media meets the same refusal apply gives. The test was checked to fail with the projection removed.
+
+## Verification (2026-09-27, thirty-sixth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 684 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 692 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: the destinations of existing sidecar moves are claimed across media whatever the options, so another media's generated NFO or thumbnail cannot land on one. Three earlier tests of per-media refusals in this class now expect the source-level refusal and still assert that nothing was overwritten. The new test was checked to fail with the claims removed.

@@ -1509,18 +1509,25 @@ class Command(BaseCommand):
                         f'its video is recorded inside another source\'s '
                         f'directory ({other_name})'
                     )
+        # Existing sidecars the rename would move, and where to: claimed
+        # like generated sidecars, whatever the options, so another media's
+        # NFO or thumbnail (or moved sidecar) cannot land on one.
+        moved = set()
+        current = Path(media.media_file.path) if media.media_file else None
+        if current is not None and current != target and current.is_file():
+            moves = self._sidecar_moves(current, target)
+            key_moves, _collisions = self._key_matched_moves(
+                media, current, target, moves,
+            )
+            moved = {path for _other, path in moves + key_moves}
+        for path in sorted(moved):
+            owner = claimed.get(path)
+            if owner is not None and owner != str(media):
+                problems.append(f'a sidecar it moves to {path} is also used by {owner}')
         if working_source.copy_channel_images:
             images = {directory / name for name in _SOURCE_IMAGE_NAMES}
-            destinations = videos | set(generated.values())
-            current = Path(media.media_file.path) if media.media_file else None
-            if current is not None and current != target and current.is_file():
-                # Existing sidecars the rename would move there too.
-                moves = self._sidecar_moves(current, target)
-                key_moves, _collisions = self._key_matched_moves(
-                    media, current, target, moves,
-                )
-                destinations |= {path for _other, path in moves + key_moves}
-            elif current is not None and current == target:
+            destinations = videos | set(generated.values()) | moved
+            if current is not None and current == target:
                 # Already in place: its existing same-stem sidecars stay
                 # where they are, beside the video.
                 (target_dir, target_stem) = directory_and_stem(target)
@@ -1541,9 +1548,10 @@ class Command(BaseCommand):
                 path in self._claimed_generated
             ):
                 problems.append(f'its video {path} is a sidecar of {owner}')
-        for path in videos | set(generated.values()):
+        for path in videos | set(generated.values()) | moved:
             claimed.setdefault(path, str(media))
         self._claimed_generated.update(generated.values())
+        self._claimed_generated.update(moved)
         return problems
 
     def _special_tree_entries(self, directory):

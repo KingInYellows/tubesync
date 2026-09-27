@@ -1884,15 +1884,14 @@ class BackfillReviewFollowUp5TestCase(BackfillFollowUpMixin, TestCase):
                 )
             for output, error in ((dry, dry_exc), (applied, exc)):
                 self.assertIsNotNone(error)
-                self.assertIn('sidecar target(s) already occupied', output)
-                self.assertIn('renamed: 1', output)
+                # Review pass 36: move destinations are claimed across media,
+                # so the whole source is refused before either media moves.
+                self.assertIn('is also used by aaa', output)
+                self.assertIn('renamed: 0', output)
                 self.assertIn('errors: 1', output)
             self.assertEqual(summary_of(dry), summary_of(applied))
             self.assertEqual(sidecar.read_bytes(), b'subtitle track')
-            self.assertEqual(
-                (source.directory_path / 'foo.en.mkv').read_bytes(),
-                b'fake-mkv-bytes',
-            )
+            self.assertFalse((source.directory_path / 'foo.en.mkv').exists())
 
     def test_a_video_onto_an_earlier_medias_projected_sidecar_is_refused(self):
         names = {'aaa': 'foo.mkv', 'bbb': 'foo.en.mkv'}
@@ -1914,14 +1913,14 @@ class BackfillReviewFollowUp5TestCase(BackfillFollowUpMixin, TestCase):
                 )
             for output, error in ((dry, dry_exc), (applied, exc)):
                 self.assertIsNotNone(error)
-                self.assertIn('is already occupied', output)
-                self.assertIn('renamed: 1', output)
+                # Review pass 36: move destinations are claimed across media,
+                # so the whole source is refused before either media moves.
+                self.assertIn('is a sidecar of aaa', output)
+                self.assertIn('renamed: 0', output)
                 self.assertIn('errors: 1', output)
             self.assertEqual(summary_of(dry), summary_of(applied))
-            self.assertEqual(
-                (source.directory_path / 'foo.en.mkv').read_bytes(),
-                b'subtitle track',
-            )
+            self.assertEqual(sidecar.read_bytes(), b'subtitle track')
+            self.assertFalse((source.directory_path / 'foo.en.mkv').exists())
 
     def test_a_dangling_tvshow_nfo_symlink_survives_apply(self):
         with temp_download_root():
@@ -2080,15 +2079,15 @@ class BackfillReviewFollowUp7TestCase(BackfillFollowUpMixin, TestCase):
             second_path.unlink()
             dry, applied = self.run_both(source, names)
             for output in (dry, applied):
-                self.assertIn('belongs to another media', output)
+                # Review pass 36: move destinations are claimed across media,
+                # so the whole source is refused before either media moves.
+                self.assertIn('is a sidecar of aaa', output)
                 self.assertIn('adopted: 0', output)
-                self.assertIn('renamed: 1', output)
+                self.assertIn('renamed: 0', output)
             second.refresh_from_db()
             self.assertEqual(Path(second.media_file.path), second_path)
-            self.assertEqual(
-                (source.directory_path / 'foo.en.mkv').read_bytes(),
-                b'subtitle track',
-            )
+            self.assertEqual(sidecar.read_bytes(), b'subtitle track')
+            self.assertFalse((source.directory_path / 'foo.en.mkv').exists())
 
     def test_another_medias_existing_sidecar_is_not_adopted(self):
         names = {'aaa': 'foo.mkv', 'bbb': 'foo.en.mkv'}
@@ -3859,3 +3858,39 @@ class BackfillReviewFollowUp35TestCase(BackfillFollowUpMixin, TestCase):
                 Path(first.media_file.path), source.directory_path / 'foo.webm',
             )
             self.assertTrue((source.directory_path / 'foo.webm').exists())
+
+
+class BackfillReviewFollowUp36TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Thirty-sixth review pass: the destinations of existing sidecar moves
+        are claimed across media whatever the options, so another media's
+        generated NFO cannot land on one.
+    '''
+
+    def test_a_moved_sidecar_and_another_medias_nfo_collide(self):
+        overlay = '{"*": {"write_nfo": true, "copy_channel_images": false}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, first, first_path = self.make_downloaded(key='aaa')
+            self.make_downloaded(key='bbb', source=source)
+            # aaa's old.bar.nfo moves to foo.bar.nfo, the NFO bbb's
+            # foo.bar.webm target would generate.
+            moved_nfo = first_path.with_name(first_path.stem + '.bar.nfo')
+            moved_nfo.write_text('<episodedetails><id>aaa</id></episodedetails>')
+            names = {'aaa': 'foo.mkv', 'bbb': 'foo.bar.webm'}
+            with patch.object(
+                Media, 'filename', property(lambda media: names[media.key]),
+            ):
+                dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+                applied, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('is also used by aaa', output)
+                self.assertIn('renamed: 0', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertTrue(moved_nfo.exists())
