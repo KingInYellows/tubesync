@@ -4119,3 +4119,84 @@ class BackfillReviewFollowUp41TestCase(BackfillFollowUpMixin, TestCase):
             self.assertEqual(summary_of(dry), summary_of(applied))
             source.refresh_from_db()
             self.assertFalse(source.copy_thumbnails)  # never saved
+
+
+class BackfillReviewFollowUp42TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Forty-second review pass: a stem taken from media data that could
+        name a video after a channel image (or tvshow) is refused, and an
+        image-queueing save waits for running downloads with the cascade
+        off.
+    '''
+
+    make_busy_source = BackfillReviewFollowUp4TestCase.make_busy_source
+    locked = BackfillReviewFollowUp4TestCase.locked
+
+    def assert_profile_refused(self, overlay, message):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source = make_bridge_source()
+            source.make_directory()
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn(message, output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+
+    def test_a_data_stem_that_can_be_a_channel_image_is_refused(self):
+        self.assert_profile_refused(
+            '{"*": {"media_format": "{title_full}.jpg", '
+            '"copy_channel_images": true}}',
+            'can name a video after a channel image',
+        )
+
+    def test_a_data_stem_that_can_be_tvshow_is_refused(self):
+        self.assert_profile_refused(
+            '{"*": {"media_format": "{title_full}.{ext}", "write_nfo": true}}',
+            'can name a video "tvshow"',
+        )
+
+    def test_a_key_stem_is_not_refused(self):
+        overlay = (
+            '{"*": {"media_format": "{key}.{ext}", "write_nfo": true, '
+            '"copy_channel_images": true, "copy_thumbnails": true}}'
+        )
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+            patch(f'{self.COMMAND}.TaskHistory'),
+        ):
+            source = make_bridge_source()
+            source.make_directory()
+            output = run_backfill('--source', str(source.uuid))
+            self.assertNotIn('can name a video', output)
+
+    def test_an_image_queueing_save_waits_for_running_downloads(self):
+        overlay = '{"*": {"copy_channel_images": true}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+            patch('sync.signals.download_source_images') as mock_signal,
+        ):
+            source, busy = self.make_busy_source()
+            with self.locked(busy):
+                dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+                applied, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            mock_signal.assert_not_called()
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn(f'IN FLIGHT: {busy}', output)
+                self.assertIn('in_flight: 1', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            source.refresh_from_db()
+            self.assertFalse(source.copy_channel_images)  # never saved

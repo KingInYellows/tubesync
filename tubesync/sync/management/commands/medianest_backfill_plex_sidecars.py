@@ -732,12 +732,21 @@ class Command(BaseCommand):
         path_changing = bool(
             (_PATH_FIELDS | {'write_nfo', 'copy_thumbnails'}).intersection(changes)
         )
-        if overlay_changed and self._cascade_enabled_for(source):
+        cascade = overlay_changed and self._cascade_enabled_for(source)
+        if cascade or images_already_queued:
             gate = None
-            refused = self._count_refused_media(downloaded, media_files)
+            refused = (
+                self._count_refused_media(downloaded, media_files)
+                if cascade else 0
+            )
             if refused:
                 gate = ('errors', 1, self._cascade_gate_message(refused))
-            elif path_changing and (busy := self._in_flight_media(source)):
+            elif (path_changing or images_already_queued) and (
+                busy := self._in_flight_media(source)
+            ):
+                # Also without the cascade when the save queues the channel
+                # image job: a download still running under the old source
+                # could finish at a path that job then overwrites.
                 for media in busy:
                     self._report_in_flight(media)
                 gate = ('in_flight', len(busy), self._in_flight_gate_message(busy))
@@ -1462,6 +1471,42 @@ class Command(BaseCommand):
         image_stems = {
             os.path.splitext(name)[0] for name in _SOURCE_IMAGE_NAMES
         }
+        # The stem template as a pattern (placeholders can render anything,
+        # literals only themselves): a stem taken from media data, such as
+        # "{title_full}", can become "tvshow" or "poster" for some media.
+        template_stem = re.sub(
+            r'\.(\{ext(?:[:!][^{}]*)?\}|[A-Za-z0-9]+)$', '', template_last,
+        )
+        def piece_pattern(piece):
+            if not piece.startswith('{'):
+                return re.escape(piece)
+            name = re.split(r'[:!]', piece[1:-1])[0]
+            # A YouTube key is always 11 of these; anything else is data.
+            return '[A-Za-z0-9_-]{11}' if name == 'key' else '.*'
+        stem_pattern = ''.join(
+            piece_pattern(piece)
+            for piece in re.split(r'(\{[^{}]*\})', template_stem) if piece
+        )
+        can_render = (
+            lambda name: in_source_dir and re.fullmatch(stem_pattern, name)
+        )
+        if working_source.write_nfo and stem != 'tvshow' and can_render('tvshow'):
+            problems.append(
+                f'media_format {media_format!r} can name a video "tvshow" '
+                "from its own data, whose episode NFO would be the show's "
+                'tvshow.nfo'
+            )
+        if (
+            working_source.copy_channel_images
+            and (ext == '.jpg' or working_source.copy_thumbnails)
+            and stem not in image_stems
+            and any(can_render(name) for name in image_stems)
+        ):
+            problems.append(
+                f'media_format {media_format!r} can name a video after a '
+                'channel image from its own data, so the video or its '
+                'thumbnail could be overwritten by the channel image download'
+            )
         if (
             working_source.copy_channel_images and in_source_dir
             and stem in image_stems
