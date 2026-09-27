@@ -1429,6 +1429,21 @@ class Command(BaseCommand):
         in_source_dir = len(segments) == 1
         stem, ext = os.path.splitext(last)
         problems = []
+        template_last = re.split(r'[\\/]', media_format)[-1]
+        if (
+            working_source.write_nfo or working_source.copy_thumbnails
+            or working_source.copy_channel_images
+        ) and not re.search(
+            r'\.(\{ext(?:[:!][^{}]*)?\}|[A-Za-z0-9]+)$', template_last,
+        ):
+            # One example cannot prove every media safe: a suffix taken
+            # from media data (a title ending in ".jpg") could turn a video
+            # into its own thumbnail or NFO, or a channel image.
+            problems.append(
+                f'media_format {media_format!r} does not end in a fixed '
+                'extension (.{ext} or a literal one), so a media\'s own data '
+                'could give its video a sidecar or channel-image name'
+            )
         if working_source.write_nfo and ext == '.nfo':
             problems.append(
                 f'media_format {media_format!r} gives every video a .nfo '

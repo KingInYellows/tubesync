@@ -4091,3 +4091,31 @@ class BackfillReviewFollowUp40TestCase(BackfillFollowUpMixin, TestCase):
             '{"*": {"media_format": "{key}.{ext:.0}jpg", "copy_thumbnails": true}}',
             'gives every video a .jpg extension',
         )
+
+
+class BackfillReviewFollowUp41TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Forty-first review pass: with sidecars or channel images on, a
+        format without a fixed extension is refused, since a media's own
+        data (a title ending in ".jpg") could supply the suffix.
+    '''
+
+    def test_a_format_without_a_fixed_extension_is_refused(self):
+        overlay = '{"*": {"media_format": "{title_full}", "copy_thumbnails": true}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source = make_bridge_source()
+            source.make_directory()
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('does not end in a fixed extension', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            source.refresh_from_db()
+            self.assertFalse(source.copy_thumbnails)  # never saved

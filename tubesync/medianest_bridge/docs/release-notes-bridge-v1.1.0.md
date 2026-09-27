@@ -228,10 +228,12 @@ owner. This file records what the tag would contain and what was verified.
      one of these checks too before the profile is saved, since they get
      the profile's paths when they land. Collisions the profile makes for
      every media, read from a rendered example of the format so format
-     specs cannot hide them (a `.nfo` extension with `write_nfo`, a literal `.jpg`
+     specs cannot hide them (a `.nfo` extension with `write_nfo`, a `.jpg`
      extension with `copy_thumbnails` (the thumbnail copy would replace the
-     video), a literal
-     `tvshow` or channel-image name in the source directory) are refused
+     video), a `tvshow` or channel-image name in the source directory, or,
+     with any of those options on, a format whose last segment does not end
+     in a fixed extension, since a media's own data could then supply one)
+     are refused
      even for a source with no media yet, and an in-place video's existing
      same-stem sidecars count against the channel-image names. A media not
      downloaded yet whose episode NFO path already holds a file that is
@@ -644,3 +646,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 693 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 701 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: the profile-level check reads TubeSync's rendered example of the format, so `{key}.{ext:.0}nfo` or `{key}.{ext:.0}jpg` is refused like a literal suffix. The tests were checked to fail against the raw template.
+
+## Verification (2026-09-27, forty-first review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 694 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 702 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: with NFO writing, thumbnail copying or channel images on, a format whose last segment does not end in a fixed extension (`.{ext}` or a literal one) is refused, since media data could supply a sidecar or channel-image suffix. The bridge and TubeSync default formats pass. The test was checked to fail with the rule removed.
