@@ -585,6 +585,10 @@ class Command(BaseCommand):
         # _process_late_downloads()).
         self._claimed_paths = {}
         self._claimed_generated = set()
+        self._other_source_dirs = [
+            (str(other.directory_path), Path(other.directory_path).resolve())
+            for other in Source.objects.exclude(pk=source.pk)
+        ]
         problems = []
         for media in downloaded:
             problems.extend(
@@ -1255,7 +1259,10 @@ class Command(BaseCommand):
             media, late downloads included). Its video paths are the
             would-be target and, when recorded, the current file; its
             generated paths are the episode NFO (with write_nfo) and the
-            thumbnail (with copy_thumbnails). Two media's videos meeting is
+            thumbnail (with copy_thumbnails). With channel images on, the
+            destinations of the sidecar and {key} moves its rename would
+            make count too. A current file inside another source's
+            directory is a problem as well. Two media's videos meeting is
             left to the per-media rename checks.
         '''
         directory = Path(working_source.directory_path)
@@ -1274,9 +1281,29 @@ class Command(BaseCommand):
             problems.append(f"its episode NFO would be the show's {nfo}")
         if nfo is not None and nfo == target:
             problems.append(f'its episode NFO would be the video file itself ({nfo})')
+        if media.media_file:
+            # A row recorded inside another source's directory (a legacy or
+            # custom layout): the old-stem glob there would take that
+            # source's files, which these ownership checks cannot see.
+            current_dir = Path(media.media_file.path).parent.resolve()
+            for other_name, other_dir in self._other_source_dirs:
+                if current_dir.is_relative_to(other_dir):
+                    problems.append(
+                        f'its video is recorded inside another source\'s '
+                        f'directory ({other_name})'
+                    )
         if working_source.copy_channel_images:
             images = {directory / name for name in _SOURCE_IMAGE_NAMES}
-            for path in sorted((videos | set(generated.values())) & images):
+            destinations = videos | set(generated.values())
+            current = Path(media.media_file.path) if media.media_file else None
+            if current is not None and current != target and current.is_file():
+                # Existing sidecars the rename would move there too.
+                moves = self._sidecar_moves(current, target)
+                key_moves, _collisions = self._key_matched_moves(
+                    media, current, target, moves,
+                )
+                destinations |= {path for _other, path in moves + key_moves}
+            for path in sorted(destinations & images):
                 problems.append(
                     f'the channel image download would overwrite {path}'
                 )

@@ -3161,3 +3161,72 @@ class BackfillReviewFollowUp23TestCase(BackfillFollowUpMixin, TestCase):
             self.assertIn('its episode NFO would be the video file itself', output)
             self.assertIn('renamed: 0', output)
             self.assertEqual(late_path[0].read_bytes(), b'fake-mkv-bytes')
+
+
+class BackfillReviewFollowUp24TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Twenty-fourth review pass: a row recorded inside a sibling source's
+        directory is refused, and an existing .jpg a rename would move onto
+        a channel-image name counts with thumbnail copying off.
+    '''
+
+    def assert_refused(self, source, message):
+        dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+        applied, exc = run_backfill_capture(
+            '--source', str(source.uuid), '--apply',
+        )
+        for output, error in ((dry, dry_exc), (applied, exc)):
+            self.assertIsNotNone(error)
+            self.assertIn(message, output)
+            self.assertIn('renamed: 0', output)
+        self.assertEqual(summary_of(dry), summary_of(applied))
+
+    def test_a_row_recorded_in_a_sibling_source_directory_is_refused(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            sibling = make_bridge_source(
+                key='UCsiblingabcdefghijklmno',
+                name='acq-src-sibling',
+                directory='acq-src-sibling',
+            )
+            sibling.make_directory()
+            moved = sibling.directory_path / old_path.name
+            old_path.rename(moved)
+            media.media_file.name = str(
+                moved.relative_to(media_file_storage.location)
+            )
+            media.save()
+            sibling_file = moved.with_name(moved.stem + '.extra.mkv')
+            sibling_file.write_bytes(b'sibling video')
+            self.assert_refused(source, "recorded inside another source's directory")
+            self.assertTrue(moved.exists())
+            self.assertEqual(sibling_file.read_bytes(), b'sibling video')
+
+    def test_a_moved_jpg_onto_a_channel_image_name_is_refused(self):
+        overlay = (
+            '{"*": {"media_format": "poster.{ext}", '
+            '"copy_channel_images": true, "copy_thumbnails": false}}'
+        )
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, media, old_path = self.make_downloaded()
+            old_jpg = old_path.with_suffix('.jpg')
+            old_jpg.write_bytes(b'episode thumbnail')
+            with (
+                patch(f'{self.COMMAND}.TaskHistory') as mock_th,
+                patch('sync.signals.download_source_images') as mock_signal,
+            ):
+                self.assert_refused(
+                    source, 'the channel image download would overwrite',
+                )
+            mock_th.schedule.assert_not_called()
+            mock_signal.assert_not_called()
+            self.assertEqual(old_jpg.read_bytes(), b'episode thumbnail')
+            source.refresh_from_db()
+            self.assertFalse(source.copy_channel_images)  # never saved

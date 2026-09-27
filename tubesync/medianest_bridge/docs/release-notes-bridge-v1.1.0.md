@@ -199,8 +199,11 @@ owner. This file records what the tag would contain and what was verified.
      meet the show's `tvshow.nfo`, a channel-image file name while channel
      images are on (the image download would overwrite it), the video's own
      target, or a sidecar another media generates (two videos with the
-     same stem would share one `.nfo` and `.jpg`). A collision refuses the
-     source in both modes before anything is saved or moved; a download
+     same stem would share one `.nfo` and `.jpg`). With channel images on,
+     the destinations of the sidecar and `{key}` moves a rename would make
+     count too (an existing `.jpg` moved onto `poster.jpg`), and a video
+     recorded inside another source's directory is a collision as well. A
+     collision refuses the source in both modes before anything is saved or moved; a download
      that finishes during `--apply` is checked against the same claims and
      skipped as an error on a collision.
    - **Plain source trees only.** Before anything else, each source's
@@ -496,3 +499,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 661 tests OK at the stack tip (T1-T3 unchanged: 389, 451 and 528). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 669 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: one reserved-path check replaces the separate `tvshow.nfo`, NFO-on-video and channel-image checks and adds generated sidecars (episode NFO, thumbnail) across media and the episode thumbnail against channel-image names; downloads finishing during the run meet the same checks. Each test was checked to fail with its part of the check removed.
+
+## Verification (2026-09-27, twenty-fourth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 663 tests OK at the stack tip (T1-T3 unchanged: 389, 451 and 528). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 671 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: a row recorded inside a sibling source's directory refuses the source, and an existing `.jpg` a rename would move onto a channel-image name counts even with thumbnail copying off. Each test was checked to fail with its fix reverted.
