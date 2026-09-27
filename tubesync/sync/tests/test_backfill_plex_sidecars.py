@@ -3142,19 +3142,24 @@ class BackfillReviewFollowUp23TestCase(BackfillFollowUpMixin, TestCase):
             self.assertTrue(old_path.exists())
 
     def test_a_late_download_meets_the_reserved_path_checks(self):
-        overlay = '{"*": {"media_format": "{key}.nfo", "write_nfo": true}}'
+        # A collision specific to the late row (review pass 34 refuses
+        # profile-wide ones such as {key}.nfo up front): it shares its
+        # generated NFO and thumbnail with an earlier row's video stem.
+        names = {'aaa': 'shared.mp4', 'late1': 'shared.webm'}
         with (
             temp_download_root(),
-            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+            override_settings(RENAME_ALL_SOURCES=True, RENAME_SOURCES=[]),
+            patch.object(
+                Media, 'filename', property(lambda media: names[media.key]),
+            ),
         ):
-            source = make_bridge_source()
-            source.make_directory()
+            source, first, first_path = self.make_downloaded(key='aaa')
             real_preflight = BackfillCommand._count_refused_media
             late_path = []
 
             def finish_a_download(command, downloaded, media_files):
                 # Indexed and downloaded after the preflight read the
-                # source's media (a row pending at preflight time is now
+                # source's media (a row pending at preflight time is
                 # checked there already, see review pass 31).
                 late = Media.objects.create(key='late1', source=source, metadata=metadata)
                 late_path.append(download_dummy_file(late))
@@ -3168,8 +3173,8 @@ class BackfillReviewFollowUp23TestCase(BackfillFollowUpMixin, TestCase):
                 )
             self.assertIsNotNone(error)
             self.assertIn('finished downloading during this run', output)
-            self.assertIn('its episode NFO would be the video file itself', output)
-            self.assertIn('renamed: 0', output)
+            self.assertIn('late1: not processed (reserved paths collide', output)
+            self.assertIn('is also used by aaa', output)
             self.assertEqual(late_path[0].read_bytes(), b'fake-mkv-bytes')
 
 
@@ -3753,3 +3758,65 @@ class BackfillReviewFollowUp33TestCase(BackfillFollowUpMixin, TestCase):
             self.assertEqual(summary_of(dry), summary_of(applied))
             second.refresh_from_db()
             self.assertEqual(Path(second.media_file.path), first_path)
+
+
+class BackfillReviewFollowUp34TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Thirty-fourth review pass: a destructive profile is refused even for
+        a source with no media, and an in-place video's existing sidecars
+        count against channel-image names.
+    '''
+
+    def test_a_destructive_profile_is_refused_without_any_media(self):
+        overlay = '{"*": {"media_format": "{key}.nfo", "write_nfo": true}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source = make_bridge_source()
+            source.make_directory()
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('the profile: media_format', output)
+                self.assertIn('each episode NFO would replace its video', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            source.refresh_from_db()
+            self.assertFalse(source.write_nfo)  # never saved
+
+    def test_an_in_place_videos_sidecar_at_an_image_name_is_refused(self):
+        overlay = (
+            '{"*": {"media_format": "poster.{ext}", '
+            '"copy_channel_images": true, "copy_thumbnails": false}}'
+        )
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, media, old_path = self.make_downloaded()
+            placed = source.directory_path / 'poster.mkv'
+            old_path.rename(placed)
+            media.media_file.name = str(placed.relative_to(media_file_storage.location))
+            media.save()
+            thumb = source.directory_path / 'poster.jpg'
+            thumb.write_bytes(b'episode thumbnail')
+            with (
+                patch(f'{self.COMMAND}.TaskHistory') as mock_th,
+                patch('sync.signals.download_source_images') as mock_signal,
+            ):
+                dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+                applied, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            mock_th.schedule.assert_not_called()
+            mock_signal.assert_not_called()
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn(f'the channel image download would overwrite {thumb}', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertEqual(thumb.read_bytes(), b'episode thumbnail')

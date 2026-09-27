@@ -124,6 +124,7 @@
 '''
 import copy
 import os
+import re
 import stat
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
@@ -614,11 +615,17 @@ class Command(BaseCommand):
         self._claimed_generated = set()
         self._claimed_targets = {}
         self._claimed_currents = {}
+        # Collisions the profile makes for every media, whether or not any
+        # exists yet (or can be rendered): media indexed later download
+        # straight into those paths.
+        problems = [
+            f'the profile: {problem}'
+            for problem in self._profile_problems(working_source)
+        ]
         self._other_source_dirs = [
             (str(other.directory_path), Path(other.directory_path).resolve())
             for other in Source.objects.exclude(pk=source.pk)
         ]
-        problems = []
         for media in downloaded:
             problems.extend(
                 f'{media}: {problem}' for problem in
@@ -1350,6 +1357,49 @@ class Command(BaseCommand):
             return f'target directory {target.parent} resolves outside {download_root}'
         return None
 
+    def _profile_problems(self, working_source):
+        '''
+            Collisions `working_source`'s media_format makes for every
+            media, read from the format's last path segment (only literal
+            text there is certain): a literal `.nfo` extension puts each
+            episode NFO on its video (with write_nfo), and a literal
+            `tvshow` or channel-image stem directly in the source
+            directory puts the episode NFO on tvshow.nfo (with write_nfo)
+            or the video or its thumbnail on a channel-image file (with
+            copy_channel_images).
+        '''
+        media_format = str(working_source.media_format)
+        segments = re.split(r'[\\/]', media_format)
+        last = segments[-1]
+        in_source_dir = len(segments) == 1
+        match = re.fullmatch(r'([^{}]*)\.([^.{}]+|\{ext\})', last)
+        stem, ext = (match.group(1), match.group(2)) if match else (None, None)
+        problems = []
+        if working_source.write_nfo and last.endswith('.nfo'):
+            problems.append(
+                f'media_format {media_format!r} gives every video a .nfo '
+                'extension, so each episode NFO would replace its video'
+            )
+        if working_source.write_nfo and in_source_dir and stem == 'tvshow':
+            problems.append(
+                f'media_format {media_format!r} names every video "tvshow", '
+                "so episode NFOs would be the show's tvshow.nfo"
+            )
+        image_stems = {
+            os.path.splitext(name)[0] for name in _SOURCE_IMAGE_NAMES
+        }
+        if (
+            working_source.copy_channel_images and in_source_dir
+            and stem in image_stems
+            and (ext == 'jpg' or working_source.copy_thumbnails)
+        ):
+            problems.append(
+                f'media_format {media_format!r} puts videos or their '
+                f'thumbnails at the channel image {stem}.jpg, which the '
+                'channel image download would overwrite'
+            )
+        return problems
+
     def _reserved_path_problems(self, media, working_source, claimed):
         '''
             Why `media`'s paths collide with a path something else needs,
@@ -1464,6 +1514,13 @@ class Command(BaseCommand):
                     media, current, target, moves,
                 )
                 destinations |= {path for _other, path in moves + key_moves}
+            elif current is not None and current == target:
+                # Already in place: its existing same-stem sidecars stay
+                # where they are, beside the video.
+                (target_dir, target_stem) = directory_and_stem(target)
+                destinations |= set(
+                    target_dir.glob(glob_quote(target_stem) + '*')
+                )
             for path in sorted(destinations & images):
                 problems.append(
                     f'the channel image download would overwrite {path}'
