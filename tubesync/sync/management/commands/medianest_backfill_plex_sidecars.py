@@ -537,17 +537,18 @@ class Command(BaseCommand):
             return
         # The ownership checks only know this source's rows, while
         # rename_files() globs the video's directory for old-stem sidecars
-        # and, with {key}, sweeps the whole tree. Another source sharing
-        # this directory (through an alias), or nested inside it under a
-        # {key} profile, could have a file moved and its row left pointing
-        # at nothing. Refuse such a source, in both modes, before anything
-        # is saved or moved.
+        # (a recorded path can already sit in a nested directory) and, with
+        # {key}, sweeps the whole tree. Another source sharing this
+        # directory (through an alias), or nested inside it, could have a
+        # file moved and its row left pointing at nothing, regardless of
+        # media_format. Refuse such a source, in both modes, before
+        # anything is saved or moved.
         nested = self._nested_source_directories(source, working_source)
         if nested:
             summary['errors'] += 1
             message = (
-                "other sources' directories are this directory, or inside "
-                'it with {key} in the profile (' + ', '.join(nested) + '); '
+                "other sources' directories are this directory or inside "
+                'it (' + ', '.join(nested) + '); '
                 'rename_files() could move their files. Separate them and '
                 're-run'
             )
@@ -1222,17 +1223,17 @@ class Command(BaseCommand):
     def _nested_source_directories(self, source, working_source):
         '''
             The directories of other sources that resolve to
-            `working_source`'s own directory (always: rename_files()'s
-            old-stem glob there would take their files for sidecars), or
-            lie inside it when its media_format uses {key} (only that
-            sweep, the recursive key match, reaches into subdirectories).
+            `working_source`'s own directory, or lie inside it: either
+            can be reached by rename_files()'s old-stem glob beside each
+            recorded video (a recorded path can already sit in a nested
+            directory) as well as by the {key} sweep of the whole tree,
+            so any overlap is refused regardless of media_format.
         '''
-        key_sweep = '{key}' in str(working_source.media_format)
         top = Path(working_source.directory_path).resolve()
         overlapping = []
         for other in Source.objects.exclude(pk=source.pk):
             other_dir = Path(other.directory_path).resolve()
-            if other_dir == top or (key_sweep and other_dir.is_relative_to(top)):
+            if other_dir.is_relative_to(top):
                 overlapping.append(str(other.directory_path))
         return sorted(overlapping)
 

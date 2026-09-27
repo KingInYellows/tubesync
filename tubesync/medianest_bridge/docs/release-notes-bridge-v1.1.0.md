@@ -178,11 +178,13 @@ owner. This file records what the tag would contain and what was verified.
      anything happens, and a source any of whose downloaded rows is
      recorded through a symlinked directory is refused before it is saved
      (another row's video, seen through the alias, would otherwise look
-     like an unclaimed sidecar and be moved). When the profile uses
-     `{key}`, a source whose directory contains another source's directory
-     is refused too: the recursive key sweep would reach the nested
-     source's files, which this source's ownership checks cannot see.
-     Bridge-created `acq-src-*` directories are siblings, never nested.
+     like an unclaimed sidecar and be moved). A source whose directory
+     contains another source's directory is refused too, for every
+     `media_format`: the old-stem glob beside each recorded video can
+     already reach a nested directory, and the recursive `{key}` sweep
+     would reach it as well, either of which this source's ownership
+     checks cannot see. Bridge-created `acq-src-*` directories are
+     siblings, never nested.
    - **Plain source trees only.** Before anything else, each source's
      directory is walked once (without following links), and the source
      is refused in both modes when it holds any symlink (live or dangling)
@@ -198,8 +200,9 @@ owner. This file records what the tag would contain and what was verified.
      parent), or the save could create the directory wherever the link
      points; and a source that another source reaches through an alias
      overlaps it for every `media_format` (the old-stem glob alone could
-     take the other source's files), while a nested source overlaps only
-     under `{key}`.
+     take the other source's files), and a nested source overlaps it for
+     every `media_format` too (the old-stem glob beside a video in a
+     nested directory can reach it).
    - **Foreign episode NFOs.** An existing `.nfo` at the target that is not
      this media's own (`<episodedetails>` whose `<id>`/`<uniqueid>` is its
      key), or is a symlink, is never overwritten -- for a rename, an
@@ -445,3 +448,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 652 tests OK at the stack tip (T1-T3 unchanged: 389, 451 and 528). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 660 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: another source resolving to the same directory overlaps it even without `{key}` in the format (the old-stem glob alone could move its files). The test was checked to fail with the equality check tied to `{key}` again.
+
+## Verification (2026-09-27, nineteenth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 653 tests OK at the stack tip (T1-T3 unchanged: 389, 451 and 528). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 661 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: a source whose directory contains another source's directory is refused for every `media_format`, not only a `{key}` one (the old-stem glob beside a video already in a nested directory can reach it). The test was checked to fail with the `{key}` condition restored.

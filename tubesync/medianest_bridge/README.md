@@ -791,8 +791,8 @@ outside `DOWNLOAD_ROOT` through a symlink, or a current or target
 directory reached through a symlink inside it (`rename_files()` resolves
 both). The whole run is refused when `DOWNLOAD_ROOT` itself goes through a
 symlink, and a whole source when any of its downloaded rows is recorded
-through a symlinked directory, or (with `{key}` in the profile) when its
-directory contains another source's. Before any of that, a source whose
+through a symlinked directory, or when its directory contains another
+source's. Before any of that, a source whose
 directory holds any symlink or special file (FIFO, socket, device) is
 refused outright; TubeSync never creates those itself. A media already at
 its target

@@ -2863,3 +2863,50 @@ class BackfillReviewFollowUp18TestCase(BackfillFollowUpMixin, TestCase):
                 self.assertIn('renamed: 0', output)
             self.assertEqual(summary_of(dry), summary_of(applied))
             self.assertTrue(old_path.exists())
+
+
+class BackfillReviewFollowUp19TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Nineteenth review pass: a nested source directory overlaps this
+        one for every media_format, not only a {key} one (the old-stem
+        glob beside a video already in the nested directory could take
+        its files for sidecars).
+    '''
+
+    def test_a_nested_source_refuses_the_source_without_key_in_the_format(self):
+        overlay = '{"*": {"media_format": "{yyyy_mm_dd}_{title}.{ext}"}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, media, old_path = self.make_downloaded()
+            nested_source = make_bridge_source(
+                key='UCnestedabcdefghijklmnop',
+                name='acq-src-nested',
+                directory=f'{source.directory}/nested',
+            )
+            nested_source.make_directory()
+            # The nested source's own downloaded row, recorded in its
+            # nested directory.
+            nested_row = Media.objects.create(
+                key='vid1', source=nested_source, metadata=metadata,
+            )
+            nested_file = nested_source.directory_path / 'copy [vid1].mkv'
+            nested_file.write_bytes(b'nested copy')
+            nested_row.media_file.name = str(
+                nested_file.relative_to(media_file_storage.location)
+            )
+            nested_row.downloaded = True
+            nested_row.save()
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn("other sources' directories", output)
+                self.assertIn('renamed: 0', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertTrue(old_path.exists())
+            self.assertEqual(nested_file.read_bytes(), b'nested copy')
