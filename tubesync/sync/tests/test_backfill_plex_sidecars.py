@@ -526,12 +526,17 @@ class BackfillFailureHandlingTestCase(TestCase):
             second_old_path = download_dummy_file(second)
             second_old_path.unlink()
 
-            with self.assertRaises(CommandError):
-                run_backfill('--source', str(source.uuid), '--apply')
+            output, error = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            self.assertIsNotNone(error)
+            # Review pass 30: two rows rendering to one target now refuse
+            # the whole source up front, before either row moves.
+            self.assertIn('is also the target of', output)
 
             first.refresh_from_db()
             second.refresh_from_db()
-            self.assertEqual(
+            self.assertNotEqual(
                 Path(first.media_file.path), source.directory_path / 'shared.mkv',
             )
             # The second row must not have been silently re-pointed at the
@@ -1298,9 +1303,11 @@ class BackfillReviewFollowUpTestCase(BackfillFollowUpMixin, TestCase):
             self.make_downloaded(key='vid2', source=source)
             dry, exc = run_backfill_capture('--source', str(source.uuid))
             self.assertIsNotNone(exc)
-            self.assertIn('renamed: 1', dry)
+            # Review pass 30: the shared target now refuses the whole source
+            # up front, in the dry-run as in apply.
+            self.assertIn('renamed: 0', dry)
             self.assertIn('errors: 1', dry)
-            self.assertIn('is already occupied', dry)
+            self.assertIn('is also the target of', dry)
 
     def test_a_symlinked_target_is_not_adopted(self):
         with temp_download_root():
@@ -3558,3 +3565,60 @@ class BackfillReviewFollowUp29TestCase(BackfillFollowUpMixin, TestCase):
             self.assertEqual(summary_of(dry), summary_of(applied))
             source.refresh_from_db()
             self.assertFalse(source.write_nfo)  # the unsafe profile is not saved
+
+
+class BackfillReviewFollowUp30TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Thirtieth review pass: a non-canonical target is refused before the
+        rename, and two media (pending ones included) rendering to one
+        video target refuse the source.
+    '''
+
+    def test_a_non_canonical_target_is_refused(self):
+        overlay = '{"*": {"write_nfo": true}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, media, old_path = self.make_downloaded()
+            (source.directory_path / 'sub').mkdir()
+            Source.objects.filter(pk=source.pk).update(
+                media_format='sub/../{key}.{ext}',
+            )
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('is not canonical', output)
+                self.assertIn('renamed: 0', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertTrue(old_path.exists())
+
+    def test_two_pending_media_with_one_target_are_refused(self):
+        overlay = (
+            '{"*": {"media_format": "shared.{ext}", "write_nfo": false, '
+            '"copy_thumbnails": false}}'
+        )
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source = make_bridge_source()
+            source.make_directory()
+            for key in ('pend1', 'pend2'):
+                pending = Media.objects.create(key=key, source=source, metadata=metadata)
+                Media.objects.filter(pk=pending.pk).update(skip=False, manual_skip=False)
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('is also the target of', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            source.refresh_from_db()
+            self.assertNotEqual(source.media_format, 'shared.{ext}')  # not saved

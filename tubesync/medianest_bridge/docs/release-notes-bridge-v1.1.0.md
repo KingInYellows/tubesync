@@ -211,7 +211,9 @@ owner. This file records what the tag would contain and what was verified.
      the destinations of the sidecar and `{key}` moves a rename would make
      count too (an existing `.jpg` moved onto `poster.jpg`), and a video
      recorded, or targeted, inside another source's directory is a
-     collision as well (a stored `media_format` with a `..` segment). A
+     collision as well (a stored `media_format` with a `..` segment), as
+     are a target that does not resolve to itself (`sub/../x`) and two
+     media rendering to one video target. A
      collision refuses the source in both modes before anything is saved or moved; a download
      that finishes during `--apply` is checked against the same claims and
      skipped as an error on a collision. Media not downloaded yet
@@ -552,3 +554,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 673 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 681 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: media still to be downloaded meet every reserved-path check before the profile is saved (an NFO on the video itself included), not only the channel-image one. The test was checked to fail with the check removed.
+
+## Verification (2026-09-27, thirtieth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 675 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 683 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: a non-canonical target is refused before the rename, and two media (pending ones included) rendering to one video target refuse the source up front; two earlier tests that expected the per-media refusal of the second row now expect this source-level refusal. Each new test was checked to fail with its check removed.

@@ -608,6 +608,7 @@ class Command(BaseCommand):
         # _process_late_downloads()).
         self._claimed_paths = {}
         self._claimed_generated = set()
+        self._claimed_targets = {}
         self._other_source_dirs = [
             (str(other.directory_path), Path(other.directory_path).resolve())
             for other in Source.objects.exclude(pk=source.pk)
@@ -1325,8 +1326,8 @@ class Command(BaseCommand):
             thumbnail (with copy_thumbnails). With channel images on, the
             destinations of the sidecar and {key} moves its rename would
             make count too. A current file inside another source's
-            directory is a problem as well. Two media's videos meeting is
-            left to the per-media rename checks.
+            directory, a target that does not resolve to itself, and a
+            target another media also renders to are problems as well.
         '''
         directory = Path(working_source.directory_path)
         target = Path(media.filepath)
@@ -1344,6 +1345,22 @@ class Command(BaseCommand):
             problems.append(f"its episode NFO would be the show's {nfo}")
         if nfo is not None and nfo == target:
             problems.append(f'its episode NFO would be the video file itself ({nfo})')
+        if target.resolve() != target.absolute():
+            # A stored media_format with a "." or ".." segment (bridge
+            # overlays reject ".."): rename_files() records the resolved
+            # path, so the rename would look failed after the move and
+            # every later run would find the target occupied.
+            problems.append(
+                f'its target {target} is not canonical (it resolves to '
+                f'{target.resolve()})'
+            )
+        owner = self._claimed_targets.get(target)
+        if owner is not None and owner != str(media):
+            # Two media rendered to one video path: one would overwrite, or
+            # be recorded against, the other (media not downloaded yet
+            # never reach the per-media rename checks).
+            problems.append(f'its target {target} is also the target of {owner}')
+        self._claimed_targets.setdefault(target, str(media))
         target_dir = target.parent.resolve()
         for other_name, other_dir in self._other_source_dirs:
             if target_dir.is_relative_to(other_dir):
