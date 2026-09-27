@@ -182,7 +182,8 @@ owner. This file records what the tag would contain and what was verified.
      contains another source's directory, or lies inside one, is refused
      too, for every `media_format` (a parent's files beside the child's
      videos would look like the child's sidecars), and so is a source
-     with another source's downloaded media recorded inside its tree: the old-stem glob beside each recorded video can
+     with another source's downloaded media whose recorded file resolves
+     inside its tree (an alias elsewhere included): the old-stem glob beside each recorded video can
      already reach a nested directory, and the recursive `{key}` sweep
      would reach it as well, either of which this source's ownership
      checks cannot see. Bridge-created `acq-src-*` directories are
@@ -213,7 +214,9 @@ owner. This file records what the tag would contain and what was verified.
      collision as well (a stored `media_format` with a `..` segment). A
      collision refuses the source in both modes before anything is saved or moved; a download
      that finishes during `--apply` is checked against the same claims and
-     skipped as an error on a collision.
+     skipped as an error on a collision. With channel images on, media not
+     downloaded yet (in-flight ones included) are checked too: the image
+     job would overwrite one rendered at an image name once it lands.
    - **Plain source trees only.** Before anything else, each source's
      directory is walked once (without following links), and the source
      is refused in both modes when it holds any symlink (live or dangling)
@@ -525,3 +528,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 668 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 676 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: another source's downloaded media recorded inside this source's tree refuses it, and a concurrent change to the source's `name` (which `{source}` renders from) stops the save. Each test was checked to fail with its fix reverted.
+
+## Verification (2026-09-27, twenty-seventh review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 670 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 678 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: other sources' recorded media are matched by resolved path (an alias outside this tree resolving into it is caught), and media still to be downloaded are reserved against channel-image names. Each test was checked to fail with its fix reverted.

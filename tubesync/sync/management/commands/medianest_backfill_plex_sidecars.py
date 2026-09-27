@@ -620,6 +620,28 @@ class Command(BaseCommand):
                     media, working_source, self._claimed_paths,
                 )
             )
+        if working_source.copy_channel_images:
+            # Media still to be downloaded: the image job this run may
+            # queue would overwrite one whose target is an image name once
+            # its download lands (in-flight downloads included).
+            images = {
+                Path(working_source.directory_path) / name
+                for name in _SOURCE_IMAGE_NAMES
+            }
+            pending = Media.objects.filter(
+                source=source, downloaded=False, skip=False, manual_skip=False,
+            ).order_by('key')
+            for media in pending.iterator():
+                media.source = working_source
+                try:
+                    target = Path(media.filepath)
+                except Exception:
+                    continue  # not renderable yet (no metadata); no path
+                if target in images:
+                    problems.append(
+                        f'{media}: the channel image download would overwrite '
+                        f'{target} once it is downloaded'
+                    )
         if problems:
             summary['errors'] += 1
             shown = '; '.join(problems[:10])
@@ -1397,25 +1419,26 @@ class Command(BaseCommand):
 
     def _foreign_rows_in_tree(self, source):
         '''
-            Descriptions of other sources' downloaded media recorded
-            inside `source`'s directory tree, sorted (at most 10).
-            `media_file` names are relative to the storage location and
-            paths are canonical by the earlier checks, so a name prefix
-            match is exact.
+            Descriptions of other sources' downloaded media whose recorded
+            file resolves inside `source`'s directory tree, sorted (at most
+            10). Resolved, not matched by name: a row recorded through an
+            alias elsewhere can still point into this tree. Read as plain
+            values, so no Media instance (or its thumbnail) is loaded.
         '''
         storage_root = Path(media_file_storage.location)
-        directory = Path(source.directory_path)
-        if not directory.is_relative_to(storage_root):
-            return []
-        prefix = f'{directory.relative_to(storage_root).as_posix()}/'
+        top = Path(source.directory_path).resolve()
         rows = (
-            Media.objects.filter(downloaded=True, media_file__startswith=prefix)
-            .exclude(source=source).select_related('source').order_by('key')
+            Media.objects.filter(downloaded=True).exclude(source=source)
+            .exclude(media_file='').order_by('key')
+            .values_list('key', 'source__name', 'media_file')
         )
-        return sorted(
-            f'{media} of {media.source} at {media.media_file.name}'
-            for media in rows[:10]
-        )
+        found = []
+        for key, source_name, name in rows.iterator():
+            if (storage_root / name).resolve().is_relative_to(top):
+                found.append(f'{key} of {source_name} at {name}')
+                if len(found) == 10:
+                    break
+        return sorted(found)
 
     def _nested_source_directories(self, source, working_source):
         '''

@@ -3386,3 +3386,77 @@ class BackfillReviewFollowUp26TestCase(BackfillFollowUpMixin, TestCase):
             self.assertIn('name changed since this run read the source', output)
             self.assertIn('renamed: 0', output)
             self.assertTrue(old_path.exists())
+
+
+class BackfillReviewFollowUp27TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Twenty-seventh review pass: another source's row recorded through
+        an alias that resolves into this tree refuses the source, and media
+        still to be downloaded are reserved against channel-image names.
+    '''
+
+    def test_another_sources_row_through_an_alias_refuses_the_source(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            sibling = make_bridge_source(
+                key='UCsiblingabcdefghijklmno',
+                name='acq-src-sibling',
+                directory='acq-src-sibling',
+            )
+            sibling.make_directory()
+            # An alias outside this source's tree, resolving into it.
+            alias = source.directory_path.parent / 'alias-to-source'
+            alias.symlink_to(source.directory_path, target_is_directory=True)
+            physical = old_path.with_name(old_path.stem + '.extra.mkv')
+            physical.write_bytes(b'sibling video')
+            foreign = Media.objects.create(key='other', source=sibling, metadata=metadata)
+            foreign.media_file.name = str(
+                (alias / physical.name).relative_to(media_file_storage.location)
+            )
+            foreign.downloaded = True
+            foreign.save()
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('recorded media overlap', output)
+                self.assertIn('other of acq-src-sibling', output)
+                self.assertIn('renamed: 0', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertEqual(physical.read_bytes(), b'sibling video')
+
+    def test_a_pending_media_at_an_image_name_refuses_the_source(self):
+        overlay = (
+            '{"*": {"media_format": "poster.jpg", '
+            '"copy_channel_images": true}}'
+        )
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source = make_bridge_source()
+            source.make_directory()
+            pending = Media.objects.create(key='pend1', source=source, metadata=metadata)
+            Media.objects.filter(pk=pending.pk).update(skip=False, manual_skip=False)
+            with (
+                patch(f'{self.COMMAND}.TaskHistory') as mock_th,
+                patch('sync.signals.download_source_images') as mock_signal,
+            ):
+                dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+                applied, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            mock_th.schedule.assert_not_called()
+            mock_signal.assert_not_called()
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('once it is downloaded', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            source.refresh_from_db()
+            self.assertFalse(source.copy_channel_images)  # never saved
