@@ -3894,3 +3894,57 @@ class BackfillReviewFollowUp36TestCase(BackfillFollowUpMixin, TestCase):
                 self.assertIn('renamed: 0', output)
             self.assertEqual(summary_of(dry), summary_of(applied))
             self.assertTrue(moved_nfo.exists())
+
+
+class BackfillReviewFollowUp37TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Thirty-seventh review pass: a pending media's NFO path holding a
+        foreign file refuses the source, and turning write_nfo on counts a
+        running download as in flight.
+    '''
+
+    make_busy_source = BackfillReviewFollowUp4TestCase.make_busy_source
+    locked = BackfillReviewFollowUp4TestCase.locked
+
+    def test_a_foreign_file_at_a_pending_medias_nfo_path_is_refused(self):
+        names = {'pend1': 'pending.mkv'}
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.object(
+                Media, 'filename', property(lambda media: names[media.key]),
+            ),
+        ):
+            source = make_bridge_source()
+            source.make_directory()
+            pending = Media.objects.create(key='pend1', source=source, metadata=metadata)
+            Media.objects.filter(pk=pending.pk).update(skip=False, manual_skip=False)
+            foreign = source.directory_path / 'pending.nfo'
+            foreign.write_text('<episodedetails><title>Mine</title></episodedetails>')
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('holds a file that is not its own NFO', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertIn('Mine', foreign.read_text())
+            source.refresh_from_db()
+            self.assertFalse(source.write_nfo)  # never saved
+
+    def test_turning_write_nfo_on_counts_a_running_download(self):
+        overlay = '{"*": {"write_nfo": true}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, busy = self.make_busy_source()
+            with self.locked(busy):
+                output, error = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            self.assertIsNotNone(error)
+            self.assertIn(f'IN FLIGHT: {busy}', output)
+            self.assertIn('in_flight: 1', output)

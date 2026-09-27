@@ -230,7 +230,10 @@ owner. This file records what the tag would contain and what was verified.
      every media (a literal `.nfo` extension with `write_nfo`, a literal
      `tvshow` or channel-image name in the source directory) are refused
      even for a source with no media yet, and an in-place video's existing
-     same-stem sidecars count against the channel-image names.
+     same-stem sidecars count against the channel-image names. A media not
+     downloaded yet whose episode NFO path already holds a file that is
+     not its own NFO refuses the source too (its download writes the NFO
+     unconditionally).
    - **Videos inside their own source.** Every downloaded row's recorded
      video must resolve inside its own source's directory; a legacy or
      custom layout recording one elsewhere refuses the source (the tree
@@ -273,7 +276,9 @@ owner. This file records what the tag would contain and what was verified.
      `media:<uuid>` lock is held, even if marked skipped meanwhile) after
      an overlay that can change the
      rendered path (`media_format`, `source_resolution`, `source_vcodec`,
-     `source_acodec`, `prefer_60fps`, `prefer_hdr` or `fallback`) are
+     `source_acodec`, `prefer_60fps`, `prefer_hdr` or `fallback`), or
+     the sidecars a finishing download writes (`write_nfo`,
+     `copy_thumbnails`), are
      counted as `in_flight` and fail the run so it is repeated.
    - Turning `copy_channel_images` on makes TubeSync's own signal queue an
      image download even when `poster.jpg` exists, and that download
@@ -607,3 +612,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 684 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 692 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: the destinations of existing sidecar moves are claimed across media whatever the options, so another media's generated NFO or thumbnail cannot land on one. Three earlier tests of per-media refusals in this class now expect the source-level refusal and still assert that nothing was overwritten. The new test was checked to fail with the claims removed.
+
+## Verification (2026-09-27, thirty-seventh review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 686 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 694 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: a pending media's NFO path holding a foreign file refuses the source, and turning `write_nfo` or `copy_thumbnails` on counts a running download as in flight. Each test was checked to fail with its fix reverted.

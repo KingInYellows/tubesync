@@ -657,6 +657,15 @@ class Command(BaseCommand):
                     media, working_source, self._claimed_paths,
                 )
             )
+            if working_source.write_nfo:
+                # Its download writes the NFO unconditionally
+                # (Media.write_nfo_file()), replacing whatever is there.
+                nfo = self._sidecar_path(media, '.nfo')
+                if _occupied(nfo) and self._foreign_episode_nfo(media, nfo):
+                    problems.append(
+                        f'{media} (not downloaded yet): its episode NFO path '
+                        f'{nfo} holds a file that is not its own NFO'
+                    )
         if problems:
             summary['errors'] += 1
             shown = '; '.join(problems[:10])
@@ -686,7 +695,12 @@ class Command(BaseCommand):
         # under the old name, and the queued cascade would then rename it
         # unchecked, so in-flight media refuse the save too. Both modes
         # stop the source here, so a dry-run's summary matches --apply's.
-        path_changing = bool(_PATH_FIELDS.intersection(changes))
+        # A download already running keeps the source it read: a change to
+        # its rendered path, or to the sidecars it writes on finishing
+        # (write_nfo, copy_thumbnails), does not reach it.
+        path_changing = bool(
+            (_PATH_FIELDS | {'write_nfo', 'copy_thumbnails'}).intersection(changes)
+        )
         if overlay_changed and self._cascade_enabled_for(source):
             gate = None
             refused = self._count_refused_media(downloaded, media_files)
