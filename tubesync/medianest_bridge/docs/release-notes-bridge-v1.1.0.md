@@ -192,8 +192,14 @@ owner. This file records what the tag would contain and what was verified.
      extension is `.nfo` would put the episode NFO on the video itself
      (`rename_files()` would replace the video with XML); such a source is
      refused in both modes before anything is saved or moved.
-   - A cached thumbnail that exists but is not a regular file (a
+   - A cached thumbnail that is a symlink or not a regular file (a
      directory or FIFO) is never copied; both modes print a note.
+   - `--apply` saves the profile only if no field the checks relied on
+     (the path fields, `directory`, `key`, `source_type`, `write_nfo`,
+     `copy_thumbnails`, `copy_channel_images`) changed since the run read
+     the source; otherwise nothing is saved or moved and the source is an
+     error, so a concurrent edit can never make the save act on unchecked
+     paths.
    - **Reserved paths.** Each media's paths, its video (current and
      target) and the episode NFO and thumbnail it will generate, must not
      meet the show's `tvshow.nfo`, a channel-image file name while channel
@@ -202,7 +208,8 @@ owner. This file records what the tag would contain and what was verified.
      same stem would share one `.nfo` and `.jpg`). With channel images on,
      the destinations of the sidecar and `{key}` moves a rename would make
      count too (an existing `.jpg` moved onto `poster.jpg`), and a video
-     recorded inside another source's directory is a collision as well. A
+     recorded, or targeted, inside another source's directory is a
+     collision as well (a stored `media_format` with a `..` segment). A
      collision refuses the source in both modes before anything is saved or moved; a download
      that finishes during `--apply` is checked against the same claims and
      skipped as an error on a collision.
@@ -505,3 +512,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 663 tests OK at the stack tip (T1-T3 unchanged: 389, 451 and 528). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 671 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: a row recorded inside a sibling source's directory refuses the source, and an existing `.jpg` a rename would move onto a channel-image name counts even with thumbnail copying off. Each test was checked to fail with its fix reverted.
+
+## Verification (2026-09-27, twenty-fifth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 666 tests OK at the stack tip (on fork `main` after #16-#18 merged). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 674 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: a concurrent edit to a field the preflight relied on stops the save; a would-be target inside another source's directory is refused; a symlinked cached thumbnail is never copied. Each test was checked to fail with its fix reverted.

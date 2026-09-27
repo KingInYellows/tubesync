@@ -3037,7 +3037,7 @@ class BackfillReviewFollowUp21TestCase(BackfillFollowUpMixin, TestCase):
                         mock_copy.assert_not_called()
                         for output in (dry, applied):
                             self.assertIn('thumbs_copied: 0', output)
-                            self.assertIn('is not a regular file', output)
+                            self.assertIn('not a regular file', output)
                     finally:
                         undo(cached)
 
@@ -3230,3 +3230,95 @@ class BackfillReviewFollowUp24TestCase(BackfillFollowUpMixin, TestCase):
             self.assertEqual(old_jpg.read_bytes(), b'episode thumbnail')
             source.refresh_from_db()
             self.assertFalse(source.copy_channel_images)  # never saved
+
+
+class BackfillReviewFollowUp25TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Twenty-fifth review pass: a concurrent edit to a field the
+        preflight relied on stops the save, a would-be target inside
+        another source's directory is refused, and a symlinked cached
+        thumbnail is never copied.
+    '''
+
+    def test_a_concurrent_path_field_edit_stops_the_save(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=True, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            real_preflight = BackfillCommand._count_refused_media
+
+            def edit_during_the_run(command, downloaded, media_files):
+                Source.objects.filter(pk=source.pk).update(
+                    source_resolution=Val(SourceResolution.VIDEO_720P),
+                )
+                return real_preflight(command, downloaded, media_files)
+
+            with patch.object(
+                BackfillCommand, '_count_refused_media', edit_during_the_run,
+            ):
+                output, error = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            self.assertIsNotNone(error)
+            self.assertIn('source_resolution changed since this run read', output)
+            self.assertIn('renamed: 0', output)
+            self.assertTrue(old_path.exists())
+            source.refresh_from_db()
+            self.assertEqual(source.media_format, settings.MEDIA_FORMATSTR_DEFAULT)
+
+    def test_a_target_inside_another_source_directory_is_refused(self):
+        overlay = '{"*": {"write_nfo": true}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, media, old_path = self.make_downloaded()
+            sibling = make_bridge_source(
+                key='UCsiblingabcdefghijklmno',
+                name='acq-src-sibling',
+                directory='acq-src-sibling',
+            )
+            sibling.make_directory()
+            # A stored format (not a validated overlay) reaching a sibling.
+            Source.objects.filter(pk=source.pk).update(
+                media_format='../acq-src-sibling/{key}.{ext}',
+            )
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn("its target would be inside another source's", output)
+                self.assertIn('renamed: 0', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertTrue(old_path.exists())
+            self.assertEqual(list(sibling.directory_path.iterdir()), [])
+
+    def test_a_symlinked_cached_thumbnail_is_not_copied(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            suffix = os.urandom(4).hex()
+            real_name = f'thumbs/backfill-real-{suffix}.jpg'
+            link_name = f'thumbs/backfill-link-{suffix}.jpg'
+            real = Path(media.thumb.storage.path(real_name))
+            link = Path(media.thumb.storage.path(link_name))
+            real.parent.mkdir(parents=True, exist_ok=True)
+            real.write_bytes(b'some other file')
+            link.symlink_to(real)
+            try:
+                Media.objects.filter(pk=media.pk).update(
+                    thumb=link_name, thumb_width=10, thumb_height=10,
+                )
+                with patch.object(Media, 'copy_thumbnail') as mock_copy:
+                    dry = run_backfill('--source', str(source.uuid))
+                    applied = run_backfill('--source', str(source.uuid), '--apply')
+                mock_copy.assert_not_called()
+                for output in (dry, applied):
+                    self.assertIn('thumbs_copied: 0', output)
+                    self.assertIn('is a symlink or not a regular file', output)
+            finally:
+                link.unlink()
+                real.unlink()

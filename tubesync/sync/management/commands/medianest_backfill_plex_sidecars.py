@@ -198,6 +198,23 @@ _SOURCE_IMAGE_NAMES = (
 )
 
 
+# Source fields the preflight's path, sidecar and image checks rely on. A
+# concurrent edit to one of them between the preflight and the save would
+# leave the save (and its rename cascade) acting on unchecked targets.
+_PREFLIGHT_FIELDS = _PATH_FIELDS | frozenset((
+    'directory', 'key', 'source_type', 'write_nfo', 'copy_thumbnails',
+    'copy_channel_images',
+))
+
+
+class _SourceChangedDuringRun(Exception):
+    '''The source row changed a preflight field since this run read it.'''
+
+    def __init__(self, fields):
+        super().__init__(', '.join(fields))
+        self.fields = fields
+
+
 def _occupied(path):
     '''
         True when anything is at `path`, including a dangling symlink,
@@ -654,7 +671,18 @@ class Command(BaseCommand):
             # Saving when no overlay field changes would still fire
             # source_post_save and its save_all_media_for_source cascade
             # on every re-run.
-            working_source = self._save_overlay(source, changes)
+            try:
+                working_source = self._save_overlay(source, changes)
+            except _SourceChangedDuringRun as exc:
+                summary['errors'] += 1
+                message = (
+                    f'{", ".join(exc.fields)} changed since this run read '
+                    'the source; nothing was saved or moved. Re-run to '
+                    'check the new values'
+                )
+                log.error(f'medianest_backfill_plex_sidecars: {source}: {message}')
+                self.stdout.write(self.style.ERROR(f'  SKIPPED: {message}'))
+                return
             for media in downloaded:
                 media.source = working_source
 
@@ -684,6 +712,15 @@ class Command(BaseCommand):
             gate above accounts for. Returns the saved row.
         '''
         fresh = Source.objects.get(pk=source.pk)
+        # Everything checked so far used `source` as this run read it; a
+        # concurrent edit to a field those checks relied on (other than
+        # the overlay's own) would make the save act on unchecked paths.
+        drifted = sorted(
+            field for field in _PREFLIGHT_FIELDS - set(changes)
+            if getattr(fresh, field) != getattr(source, field)
+        )
+        if drifted:
+            raise _SourceChangedDuringRun(drifted)
         for field, value in changes.items():
             Source._meta.get_field(field).save_form_data(fresh, value)
         fresh.save(update_fields=sorted(changes))
@@ -1281,6 +1318,16 @@ class Command(BaseCommand):
             problems.append(f"its episode NFO would be the show's {nfo}")
         if nfo is not None and nfo == target:
             problems.append(f'its episode NFO would be the video file itself ({nfo})')
+        target_dir = target.parent.resolve()
+        for other_name, other_dir in self._other_source_dirs:
+            if target_dir.is_relative_to(other_dir):
+                # A format reaching into a sibling (a stored media_format
+                # with a ".." segment): the video would land among that
+                # source's files, where its own jobs could overwrite it.
+                problems.append(
+                    f'its target would be inside another source\'s '
+                    f'directory ({other_name})'
+                )
         if media.media_file:
             # A row recorded inside another source's directory (a legacy or
             # custom layout): the old-stem glob there would take that
@@ -1618,15 +1665,20 @@ class Command(BaseCommand):
             return
         # thumb_file_exists only checks existence: copying from a
         # directory would raise after the video moved, and from a FIFO
-        # would block. Skip it (both modes) unless it is a regular file.
+        # would block. Skip it (both modes) unless it is a regular file
+        # that is not a symlink.
         try:
             cached = Path(media.thumb.path)
         except ValueError:
             cached = None  # no file recorded; copy_thumbnail() decides
-        if cached is not None and cached.exists() and not cached.is_file():
+        # A symlink too: copyfile() follows it and would copy whatever it
+        # points at into the episode sidecar.
+        if cached is not None and (
+            cached.is_symlink() or (cached.exists() and not cached.is_file())
+        ):
             self.stdout.write(self.style.WARNING(
-                f'  NOTE: {media}: cached thumbnail {cached} is not a '
-                'regular file; not copying it'
+                f'  NOTE: {media}: cached thumbnail {cached} is a symlink or '
+                'not a regular file; not copying it'
             ))
             return
         thumb_path = self._sidecar_path(media, '.jpg')
