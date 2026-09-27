@@ -215,7 +215,9 @@ owner. This file records what the tag would contain and what was verified.
      are a target that does not resolve to itself (`sub/../x`), two media
      rendering to one video target, two rows recording one video file,
      and a target directory that cannot be created (an ancestor is a
-     regular file). A
+     regular file). A sidecar move that would land on the renamed video
+     itself refuses that media. A dry-run treats a path an earlier rename
+     moves away from as free, as apply finds it. A
      collision refuses the source in both modes before anything is saved or moved; a download
      that finishes during `--apply` is checked against the same claims and
      skipped as an error on a collision. Media not downloaded yet
@@ -575,3 +577,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 678 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 686 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: two rows recording one file, and a target whose directory cannot be created, each refuse the source before anything is saved or moved. Each test was checked to fail with its check removed.
+
+## Verification (2026-09-27, thirty-third review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 680 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 688 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: a sidecar move landing on the renamed video is refused, and a dry-run models paths vacated by earlier renames, so it predicts the same renames apply makes. Each test was checked to fail with its fix reverted.

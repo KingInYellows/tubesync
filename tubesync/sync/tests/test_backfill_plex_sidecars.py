@@ -3701,3 +3701,55 @@ class BackfillReviewFollowUp32TestCase(BackfillFollowUpMixin, TestCase):
             self.assertTrue(old_path.exists())
             source.refresh_from_db()
             self.assertNotEqual(source.media_format, 'occupied/{key}.{ext}')
+
+
+class BackfillReviewFollowUp33TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Thirty-third review pass: a sidecar move landing on the renamed
+        video is refused, and a dry-run treats a path an earlier rename
+        vacates as free, as apply finds it.
+    '''
+
+    def test_a_sidecar_move_onto_the_renamed_video_is_refused(self):
+        overlay = '{"*": {"media_format": "{key}.nfo", "write_nfo": false}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, media, old_path = self.make_downloaded()
+            old_nfo = old_path.with_suffix('.nfo')
+            old_nfo.write_text('<episodedetails><id>vid1</id></episodedetails>')
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('lands on the renamed video itself', output)
+                self.assertIn('renamed: 0', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertEqual(old_path.read_bytes(), b'fake-mkv-bytes')
+
+    def test_a_dry_run_frees_a_path_an_earlier_rename_vacates(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, first, first_path = self.make_downloaded(key='aaa')
+            _, second, second_path = self.make_downloaded(key='bbb', source=source)
+            names = {'aaa': 'moved-away.mkv', 'bbb': first_path.name}
+            with patch.object(
+                Media, 'filename', property(lambda media: names[media.key]),
+            ):
+                dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+                applied, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            self.assertIsNone(dry_exc, dry)
+            self.assertIsNone(exc, applied)
+            for output in (dry, applied):
+                self.assertIn('renamed: 2', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            second.refresh_from_db()
+            self.assertEqual(Path(second.media_file.path), first_path)

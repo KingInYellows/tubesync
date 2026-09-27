@@ -590,6 +590,10 @@ class Command(BaseCommand):
         # Sidecar and key-match destinations of this source's renames so
         # far; a dry-run only projects them (_reserved_paths()).
         self._projected_destinations = set()
+        # Paths earlier renames of this source move away from (their
+        # videos and moved sidecars): gone in apply, still on disk in a
+        # dry-run, so a later media may target them (_present()).
+        self._projected_vacated = set()
         # Both modes read media.filepath/media.source.* against the
         # would-be values from here on: `working_source` is the validated
         # copy (or `source` itself when there is no overlay).
@@ -872,7 +876,9 @@ class Command(BaseCommand):
         scratch_summary = dict.fromkeys(_SUMMARY_FIELDS, 0)
         scratch_media_files = set(media_files)
         projected = self._projected_destinations
+        vacated = self._projected_vacated
         self._projected_destinations = set(projected)
+        self._projected_vacated = set(vacated)
         refused = 0
         try:
             for media in downloaded:
@@ -890,6 +896,7 @@ class Command(BaseCommand):
                     refused += 1
         finally:
             self._projected_destinations = projected
+            self._projected_vacated = vacated
         return refused
 
     def _cascade_gate_message(self, refused):
@@ -1134,7 +1141,11 @@ class Command(BaseCommand):
                 'adopting it',
             )
             return None
-        if not current.exists() and target.exists() and target not in media_files:
+        if (
+            not current.exists() and target.exists()
+            and target not in media_files
+            and target not in self._projected_vacated
+        ):
             problem = self._adoption_problem(target)
             if problem is None:
                 stray = self._stray_sidecars(
@@ -1177,7 +1188,7 @@ class Command(BaseCommand):
         occupied = [
             destination for other, destination in moves
             if destination != other
-            and (_occupied(destination) or destination in reserved)
+            and (self._present(destination) or destination in reserved)
         ]
         # rename_files() rewrites the NFO at the target name right after
         # the video moves. So the file that will be there first must be
@@ -1204,16 +1215,26 @@ class Command(BaseCommand):
             other for other, _ in moves + key_moves
             if self._claimed_by_other_media(other, current, target, media_files)
         ]
+        onto_video = [
+            other for other, destination in moves if destination == target
+        ]
         directories = [
             other for other, _ in moves + key_moves if other.is_dir()
         ]
         if not current.exists():
             problem = f'current file {current} is missing'
         elif (
-            _occupied(target) or target in media_files
+            self._present(target) or target in media_files
             or target in self._projected_destinations
         ):
             problem = f'target {target} is already occupied'
+        elif onto_video:
+            # rename_files() moves the video first, then replaces the
+            # target with this sidecar: media_file would name the sidecar.
+            problem = (
+                'a sidecar the rename would move lands on the renamed video '
+                'itself: ' + ', '.join(str(path) for path in onto_video)
+            )
         elif (path_problem := self._path_problem(current, target)):
             problem = path_problem
         elif (linked := (
@@ -1274,10 +1295,21 @@ class Command(BaseCommand):
         summary['renamed'] += 1
         media_files.discard(current)
         media_files.add(target)
-        self._projected_destinations.update(
-            destination for _, destination in moves + key_moves
-        )
+        destinations = {destination for _, destination in moves + key_moves}
+        self._projected_destinations.update(destinations)
+        self._projected_vacated.update({current} | {
+            other for other, _ in moves + key_moves
+        })
+        self._projected_vacated -= destinations | {target}
         return 'renamed'
+
+    def _present(self, path):
+        '''
+            _occupied(path), except that a path an earlier rename of this
+            source moves away counts as free: gone in apply, and still on
+            disk only in a dry-run, which must predict the same result.
+        '''
+        return _occupied(path) and path not in self._projected_vacated
 
     def _reserved_paths(self, current, target, media_files):
         '''
@@ -1632,7 +1664,7 @@ class Command(BaseCommand):
             destination = new_dir / (new_stem + path.name[len(path_stem):])
             if destination == path:
                 continue
-            if destination in taken or _occupied(destination):
+            if destination in taken or self._present(destination):
                 collisions.append(path)
                 continue
             taken.add(destination)
