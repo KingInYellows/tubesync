@@ -535,18 +535,21 @@ class Command(BaseCommand):
                     f'it: {message}'
                 ))
             return
-        # rename_files()'s {key} sweep walks this source's whole directory
-        # tree, but the ownership checks only know this source's rows: a
-        # nested source's file carrying the same video key would be moved
-        # and its row left pointing at nothing. Refuse such a source, in
-        # both modes, before anything is saved or moved.
+        # The ownership checks only know this source's rows, while
+        # rename_files() globs the video's directory for old-stem sidecars
+        # and, with {key}, sweeps the whole tree. Another source sharing
+        # this directory (through an alias), or nested inside it under a
+        # {key} profile, could have a file moved and its row left pointing
+        # at nothing. Refuse such a source, in both modes, before anything
+        # is saved or moved.
         nested = self._nested_source_directories(source, working_source)
         if nested:
             summary['errors'] += 1
             message = (
-                "the profile's media_format uses {key}, whose sweep would "
-                "reach other sources' directories inside this one ("
-                + ', '.join(nested) + '); move them out and re-run'
+                "other sources' directories are this directory, or inside "
+                'it with {key} in the profile (' + ', '.join(nested) + '); '
+                'rename_files() could move their files. Separate them and '
+                're-run'
             )
             if apply_changes:
                 log.error(f'medianest_backfill_plex_sidecars: {source}: {message}')
@@ -1218,22 +1221,20 @@ class Command(BaseCommand):
 
     def _nested_source_directories(self, source, working_source):
         '''
-            The directories of other sources that lie inside, or resolve
-            to, `working_source`'s own directory, when its media_format uses
-            {key} (only that sweep, rename_files()'s recursive key match,
-            reaches into subdirectories); otherwise an empty list.
+            The directories of other sources that resolve to
+            `working_source`'s own directory (always: rename_files()'s
+            old-stem glob there would take their files for sidecars), or
+            lie inside it when its media_format uses {key} (only that
+            sweep, the recursive key match, reaches into subdirectories).
         '''
-        if '{key}' not in str(working_source.media_format):
-            return []
+        key_sweep = '{key}' in str(working_source.media_format)
         top = Path(working_source.directory_path).resolve()
-        nested = []
+        overlapping = []
         for other in Source.objects.exclude(pk=source.pk):
             other_dir = Path(other.directory_path).resolve()
-            # is_relative_to() includes equality: another source reaching
-            # this very directory through an alias overlaps it too.
-            if other_dir.is_relative_to(top):
-                nested.append(str(other.directory_path))
-        return sorted(nested)
+            if other_dir == top or (key_sweep and other_dir.is_relative_to(top)):
+                overlapping.append(str(other.directory_path))
+        return sorted(overlapping)
 
     def _symlinked_ancestor(self, directory, storage_root):
         '''

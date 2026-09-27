@@ -2828,3 +2828,38 @@ class BackfillReviewFollowUp17TestCase(BackfillFollowUpMixin, TestCase):
             self.assertEqual(summary_of(dry), summary_of(applied))
             target_jpg = self.target_dir(source) / f'{self.TARGET_NAME}.jpg'
             self.assertEqual(target_jpg.read_bytes(), b'old thumbnail')
+
+
+class BackfillReviewFollowUp18TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Eighteenth review pass: another source resolving to this directory
+        overlaps it for every media_format, not only a {key} one (the
+        old-stem glob alone could take its files for sidecars).
+    '''
+
+    def test_an_aliased_source_overlaps_without_key_in_the_format(self):
+        overlay = '{"*": {"media_format": "{yyyy_mm_dd}_{title}.{ext}"}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, media, old_path = self.make_downloaded()
+            alias_source = make_bridge_source(
+                key='UCaliasabcdefghijklmnopq',
+                name='acq-src-alias',
+                directory='acq-src-alias',
+            )
+            alias_source.directory_path.symlink_to(
+                source.directory_path, target_is_directory=True,
+            )
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn("other sources' directories", output)
+                self.assertIn('renamed: 0', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertTrue(old_path.exists())
