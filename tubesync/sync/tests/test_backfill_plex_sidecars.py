@@ -3322,3 +3322,67 @@ class BackfillReviewFollowUp25TestCase(BackfillFollowUpMixin, TestCase):
             finally:
                 link.unlink()
                 real.unlink()
+
+
+class BackfillReviewFollowUp26TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Twenty-sixth review pass: another source's row recorded inside this
+        source's tree refuses it, and a concurrent rename of the source
+        (which {source} renders from) stops the save.
+    '''
+
+    def test_another_sources_row_in_this_tree_refuses_the_source(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            sibling = make_bridge_source(
+                key='UCsiblingabcdefghijklmno',
+                name='acq-src-sibling',
+                directory='acq-src-sibling',
+            )
+            sibling.make_directory()
+            foreign = Media.objects.create(key='other', source=sibling, metadata=metadata)
+            foreign_file = old_path.with_name(old_path.stem + '.extra.mkv')
+            foreign_file.write_bytes(b'sibling video')
+            foreign.media_file.name = str(
+                foreign_file.relative_to(media_file_storage.location)
+            )
+            foreign.downloaded = True
+            foreign.save()
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('recorded media overlap', output)
+                self.assertIn(f'of {sibling}', output)
+                self.assertIn('renamed: 0', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertTrue(old_path.exists())
+            self.assertEqual(foreign_file.read_bytes(), b'sibling video')
+
+    def test_a_concurrent_rename_of_the_source_stops_the_save(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=True, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            real_preflight = BackfillCommand._count_refused_media
+
+            def rename_during_the_run(command, downloaded, media_files):
+                Source.objects.filter(pk=source.pk).update(name='tvshow')
+                return real_preflight(command, downloaded, media_files)
+
+            with patch.object(
+                BackfillCommand, '_count_refused_media', rename_during_the_run,
+            ):
+                output, error = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            self.assertIsNotNone(error)
+            self.assertIn('name changed since this run read the source', output)
+            self.assertIn('renamed: 0', output)
+            self.assertTrue(old_path.exists())

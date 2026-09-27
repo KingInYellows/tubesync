@@ -181,7 +181,8 @@ owner. This file records what the tag would contain and what was verified.
      like an unclaimed sidecar and be moved). A source whose directory
      contains another source's directory, or lies inside one, is refused
      too, for every `media_format` (a parent's files beside the child's
-     videos would look like the child's sidecars): the old-stem glob beside each recorded video can
+     videos would look like the child's sidecars), and so is a source
+     with another source's downloaded media recorded inside its tree: the old-stem glob beside each recorded video can
      already reach a nested directory, and the recursive `{key}` sweep
      would reach it as well, either of which this source's ownership
      checks cannot see. Bridge-created `acq-src-*` directories are
@@ -195,8 +196,8 @@ owner. This file records what the tag would contain and what was verified.
    - A cached thumbnail that is a symlink or not a regular file (a
      directory or FIFO) is never copied; both modes print a note.
    - `--apply` saves the profile only if no field the checks relied on
-     (the path fields, `directory`, `key`, `source_type`, `write_nfo`,
-     `copy_thumbnails`, `copy_channel_images`) changed since the run read
+     (the path fields, `directory`, `key`, `name`, `source_type`,
+     `write_nfo`, `copy_thumbnails`, `copy_channel_images`) changed since the run read
      the source; otherwise nothing is saved or moved and the source is an
      error, so a concurrent edit can never make the save act on unchecked
      paths.
@@ -518,3 +519,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 666 tests OK at the stack tip (on fork `main` after #16-#18 merged). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 674 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: a concurrent edit to a field the preflight relied on stops the save; a would-be target inside another source's directory is refused; a symlinked cached thumbnail is never copied. Each test was checked to fail with its fix reverted.
+
+## Verification (2026-09-27, twenty-sixth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 668 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 676 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: another source's downloaded media recorded inside this source's tree refuses it, and a concurrent change to the source's `name` (which `{source}` renders from) stops the save. Each test was checked to fail with its fix reverted.

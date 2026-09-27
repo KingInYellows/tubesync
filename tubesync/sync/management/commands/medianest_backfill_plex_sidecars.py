@@ -198,12 +198,14 @@ _SOURCE_IMAGE_NAMES = (
 )
 
 
-# Source fields the preflight's path, sidecar and image checks rely on. A
-# concurrent edit to one of them between the preflight and the save would
-# leave the save (and its rename cascade) acting on unchecked targets.
+# Source fields the preflight's path, sidecar and image checks rely on
+# (every Source attribute Media.format_dict and the source's paths read:
+# `name` feeds {source}/{source_full} through slugname). A concurrent edit
+# to one of them between the preflight and the save would leave the save
+# (and its rename cascade) acting on unchecked targets.
 _PREFLIGHT_FIELDS = _PATH_FIELDS | frozenset((
-    'directory', 'key', 'source_type', 'write_nfo', 'copy_thumbnails',
-    'copy_channel_images',
+    'directory', 'key', 'name', 'source_type', 'write_nfo',
+    'copy_thumbnails', 'copy_channel_images',
 ))
 
 
@@ -561,11 +563,15 @@ class Command(BaseCommand):
         # media_format. Refuse such a source, in both modes, before
         # anything is saved or moved.
         nested = self._nested_source_directories(source, working_source)
+        # Other sources' rows recorded inside this source's tree: this
+        # source's old-stem glob or {key} sweep would take their videos for
+        # sidecars, and its ownership checks only know its own rows.
+        nested += self._foreign_rows_in_tree(source)
         if nested:
             summary['errors'] += 1
             message = (
-                "other sources' directories are this directory, inside it "
-                'or contain it (' + ', '.join(nested) + '); '
+                "other sources' directories or recorded media overlap this "
+                "source's directory (" + ', '.join(nested) + '); '
                 'rename_files() could move their files. Separate them and '
                 're-run'
             )
@@ -1388,6 +1394,28 @@ class Command(BaseCommand):
                 if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
                     special.append(path)
         return sorted(special)
+
+    def _foreign_rows_in_tree(self, source):
+        '''
+            Descriptions of other sources' downloaded media recorded
+            inside `source`'s directory tree, sorted (at most 10).
+            `media_file` names are relative to the storage location and
+            paths are canonical by the earlier checks, so a name prefix
+            match is exact.
+        '''
+        storage_root = Path(media_file_storage.location)
+        directory = Path(source.directory_path)
+        if not directory.is_relative_to(storage_root):
+            return []
+        prefix = f'{directory.relative_to(storage_root).as_posix()}/'
+        rows = (
+            Media.objects.filter(downloaded=True, media_file__startswith=prefix)
+            .exclude(source=source).select_related('source').order_by('key')
+        )
+        return sorted(
+            f'{media} of {media.source} at {media.media_file.name}'
+            for media in rows[:10]
+        )
 
     def _nested_source_directories(self, source, working_source):
         '''
