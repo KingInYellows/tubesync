@@ -217,6 +217,11 @@ owner. This file records what the tag would contain and what was verified.
      skipped as an error on a collision. With channel images on, media not
      downloaded yet (in-flight ones included) are checked too: the image
      job would overwrite one rendered at an image name once it lands.
+   - **Videos inside their own source.** Every downloaded row's recorded
+     video must resolve inside its own source's directory; a legacy or
+     custom layout recording one elsewhere refuses the source (the tree
+     checks only cover the source's directory, while `rename_files()`
+     globs sidecars beside wherever the video actually is).
    - **Plain source trees only.** Before anything else, each source's
      directory is walked once (without following links), and the source
      is refused in both modes when it holds any symlink (live or dangling)
@@ -534,3 +539,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 670 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 678 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: other sources' recorded media are matched by resolved path (an alias outside this tree resolving into it is caught), and media still to be downloaded are reserved against channel-image names. Each test was checked to fail with its fix reverted.
+
+## Verification (2026-09-27, twenty-eighth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 672 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 680 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: a row whose recorded video lies outside its own source's directory refuses the source, which closes the shared-third-directory and outside-tree-sidecar cases. The tests were checked to fail with the check removed.

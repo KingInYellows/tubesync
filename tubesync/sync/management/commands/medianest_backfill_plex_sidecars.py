@@ -1357,6 +1357,17 @@ class Command(BaseCommand):
                     f'directory ({other_name})'
                 )
         if media.media_file:
+            # Every recorded video must lie inside its own source's
+            # directory: the plain-tree scan and the overlap checks only
+            # cover that tree, while rename_files() globs old-stem sidecars
+            # beside wherever the video actually is (a legacy or custom
+            # layout could share a third directory with another source).
+            recorded = Path(media.media_file.path).resolve()
+            if not recorded.is_relative_to(directory.resolve()):
+                problems.append(
+                    f'its video is recorded outside the source\'s directory '
+                    f'({media.media_file.path})'
+                )
             # A row recorded inside another source's directory (a legacy or
             # custom layout): the old-stem glob there would take that
             # source's files, which these ownership checks cannot see.

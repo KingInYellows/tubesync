@@ -3460,3 +3460,69 @@ class BackfillReviewFollowUp27TestCase(BackfillFollowUpMixin, TestCase):
             self.assertEqual(summary_of(dry), summary_of(applied))
             source.refresh_from_db()
             self.assertFalse(source.copy_channel_images)  # never saved
+
+
+class BackfillReviewFollowUp28TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Twenty-eighth review pass: every recorded video must lie inside its
+        own source's directory, so neither a third directory shared with
+        another source nor special entries beside a video outside the tree
+        can be reached by the rename.
+    '''
+
+    def move_outside(self, media, old_path, directory_name):
+        outside = old_path.parents[1] / directory_name
+        outside.mkdir(exist_ok=True)
+        moved = outside / old_path.name
+        old_path.rename(moved)
+        media.media_file.name = str(moved.relative_to(media_file_storage.location))
+        media.save()
+        return moved
+
+    def assert_refused(self, source):
+        dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+        applied, exc = run_backfill_capture(
+            '--source', str(source.uuid), '--apply',
+        )
+        for output, error in ((dry, dry_exc), (applied, exc)):
+            self.assertIsNotNone(error)
+            self.assertIn("recorded outside the source's directory", output)
+            self.assertIn('renamed: 0', output)
+        self.assertEqual(summary_of(dry), summary_of(applied))
+
+    def test_a_third_directory_shared_with_another_source_is_refused(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            moved = self.move_outside(media, old_path, 'shared')
+            sibling = make_bridge_source(
+                key='UCsiblingabcdefghijklmno',
+                name='acq-src-sibling',
+                directory='acq-src-sibling',
+            )
+            foreign = Media.objects.create(key='other', source=sibling, metadata=metadata)
+            foreign_file = moved.with_name(moved.stem + '.extra.mkv')
+            foreign_file.write_bytes(b'sibling video')
+            foreign.media_file.name = str(
+                foreign_file.relative_to(media_file_storage.location)
+            )
+            foreign.downloaded = True
+            foreign.save()
+            self.assert_refused(source)
+            self.assertTrue(moved.exists())
+            self.assertEqual(foreign_file.read_bytes(), b'sibling video')
+
+    def test_a_dangling_sidecar_beside_a_video_outside_the_tree_is_refused(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            moved = self.move_outside(media, old_path, 'legacy')
+            sidecar = moved.with_suffix('.en.srt')
+            sidecar.symlink_to(moved.parent / 'missing.srt')
+            self.assert_refused(source)
+            self.assertTrue(moved.exists())
+            self.assertTrue(sidecar.is_symlink())
