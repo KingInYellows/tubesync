@@ -4054,3 +4054,40 @@ class BackfillReviewFollowUp39TestCase(BackfillFollowUpMixin, TestCase):
             self.assertFalse(elsewhere.exists())
             source.refresh_from_db()
             self.assertFalse(source.copy_channel_images)  # never saved
+
+
+class BackfillReviewFollowUp40TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Fortieth review pass: the profile-level check reads a rendered
+        example, so a format spec that changes the suffix cannot hide a
+        .nfo or .jpg video extension.
+    '''
+
+    def assert_profile_refused(self, overlay, message):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source = make_bridge_source()
+            source.make_directory()
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn(message, output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+
+    def test_a_format_spec_rendering_nfo_is_refused(self):
+        self.assert_profile_refused(
+            '{"*": {"media_format": "{key}.{ext:.0}nfo", "write_nfo": true}}',
+            'gives every video a .nfo extension',
+        )
+
+    def test_a_format_spec_rendering_jpg_is_refused(self):
+        self.assert_profile_refused(
+            '{"*": {"media_format": "{key}.{ext:.0}jpg", "copy_thumbnails": true}}',
+            'gives every video a .jpg extension',
+        )

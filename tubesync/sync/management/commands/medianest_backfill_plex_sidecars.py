@@ -1411,27 +1411,30 @@ class Command(BaseCommand):
     def _profile_problems(self, working_source):
         '''
             Collisions `working_source`'s media_format makes for every
-            media, read from the format's last path segment (only literal
-            text there is certain): a literal `.nfo` extension puts each
-            episode NFO on its video (with write_nfo), and a literal
-            `tvshow` or channel-image stem directly in the source
-            directory puts the episode NFO on tvshow.nfo (with write_nfo)
-            or the video or its thumbnail on a channel-image file (with
-            copy_channel_images).
+            media, read from a rendered example
+            (Source.get_example_media_format(), TubeSync's own example
+            values, falling back to the raw template if it cannot render):
+            format specs can change the rendered suffix, as
+            "{key}.{ext:.0}nfo" renders "<key>.nfo". A `.nfo` extension puts
+            each episode NFO on its video (with write_nfo), a `.jpg` one
+            each thumbnail (with copy_thumbnails), and a `tvshow` or
+            channel-image stem directly in the source directory puts the
+            episode NFO on tvshow.nfo (with write_nfo) or the video or its
+            thumbnail on a channel-image file (with copy_channel_images).
         '''
         media_format = str(working_source.media_format)
-        segments = re.split(r'[\\/]', media_format)
+        rendered = working_source.get_example_media_format() or media_format
+        segments = re.split(r'[\\/]', rendered.lstrip('/'))
         last = segments[-1]
         in_source_dir = len(segments) == 1
-        match = re.fullmatch(r'([^{}]*)\.([^.{}]+|\{ext\})', last)
-        stem, ext = (match.group(1), match.group(2)) if match else (None, None)
+        stem, ext = os.path.splitext(last)
         problems = []
-        if working_source.write_nfo and last.endswith('.nfo'):
+        if working_source.write_nfo and ext == '.nfo':
             problems.append(
                 f'media_format {media_format!r} gives every video a .nfo '
                 'extension, so each episode NFO would replace its video'
             )
-        if working_source.copy_thumbnails and last.endswith('.jpg'):
+        if working_source.copy_thumbnails and ext == '.jpg':
             problems.append(
                 f'media_format {media_format!r} gives every video a .jpg '
                 'extension, so each thumbnail copy would replace its video'
@@ -1447,7 +1450,7 @@ class Command(BaseCommand):
         if (
             working_source.copy_channel_images and in_source_dir
             and stem in image_stems
-            and (ext == 'jpg' or working_source.copy_thumbnails)
+            and (ext == '.jpg' or working_source.copy_thumbnails)
         ):
             problems.append(
                 f'media_format {media_format!r} puts videos or their '

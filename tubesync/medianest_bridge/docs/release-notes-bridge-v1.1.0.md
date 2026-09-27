@@ -227,7 +227,8 @@ owner. This file records what the tag would contain and what was verified.
      manual re-enable can make a skipped row eligible later) meet every
      one of these checks too before the profile is saved, since they get
      the profile's paths when they land. Collisions the profile makes for
-     every media (a literal `.nfo` extension with `write_nfo`, a literal `.jpg`
+     every media, read from a rendered example of the format so format
+     specs cannot hide them (a `.nfo` extension with `write_nfo`, a literal `.jpg`
      extension with `copy_thumbnails` (the thumbnail copy would replace the
      video), a literal
      `tvshow` or channel-image name in the source directory) are refused
@@ -637,3 +638,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 691 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 699 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: a thumbnail rendered on the video itself is refused (per media, and for a `.jpg` profile even without media), and a source directory outside the download root is refused before any save. Each test was checked to fail with its check removed.
+
+## Verification (2026-09-27, fortieth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 693 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 701 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: the profile-level check reads TubeSync's rendered example of the format, so `{key}.{ext:.0}nfo` or `{key}.{ext:.0}jpg` is refused like a literal suffix. The tests were checked to fail against the raw template.
