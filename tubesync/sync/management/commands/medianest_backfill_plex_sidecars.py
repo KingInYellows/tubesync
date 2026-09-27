@@ -607,6 +607,37 @@ class Command(BaseCommand):
                     f'it: {message}'
                 ))
             return
+        # With channel images on, download_source_images writes every
+        # _SOURCE_IMAGE_NAMES file in the source directory with a plain
+        # open(), so a video recorded at one of those paths, or renamed to
+        # one, would be overwritten with an image. Refuse such a source, in
+        # both modes, before the save that could queue that job.
+        if working_source.copy_channel_images:
+            image_paths = {
+                Path(working_source.directory_path) / name
+                for name in _SOURCE_IMAGE_NAMES
+            }
+            at_images = sorted(
+                str(media) for media in downloaded
+                if self._media_paths(media) & image_paths
+            )
+            if at_images:
+                summary['errors'] += 1
+                message = (
+                    'the channel image download would overwrite media '
+                    'recorded or renamed at an image file name ('
+                    + ', '.join(at_images) + '); change the media_format '
+                    'or turn copy_channel_images off and re-run'
+                )
+                if apply_changes:
+                    log.error(f'medianest_backfill_plex_sidecars: {source}: {message}')
+                    self.stdout.write(self.style.ERROR(f'  SKIPPED: {message}'))
+                else:
+                    self.stdout.write(self.style.WARNING(
+                        '  NOTE: --apply would skip this source without '
+                        f'saving it: {message}'
+                    ))
+                return
 
         # Rename-cascade gate: saving a source whose overlay actually
         # changes a field fires source_post_save's
@@ -1234,6 +1265,13 @@ class Command(BaseCommand):
         if not target.parent.resolve().is_relative_to(download_root):
             return f'target directory {target.parent} resolves outside {download_root}'
         return None
+
+    def _media_paths(self, media):
+        '''`media`'s would-be target and, when recorded, its current file.'''
+        paths = {Path(media.filepath)}
+        if media.media_file:
+            paths.add(Path(media.media_file.path))
+        return paths
 
     def _special_tree_entries(self, directory):
         '''

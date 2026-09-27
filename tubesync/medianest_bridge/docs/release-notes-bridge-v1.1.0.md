@@ -194,6 +194,10 @@ owner. This file records what the tag would contain and what was verified.
      refused in both modes before anything is saved or moved.
    - A cached thumbnail that exists but is not a regular file (a
      directory or FIFO) is never copied; both modes print a note.
+   - With `copy_channel_images` on, a source with a video recorded or
+     renamed at a channel-image file name (`poster.jpg` and the rest) is
+     refused before the save that could queue the image download, which
+     would overwrite that video.
    - **Plain source trees only.** Before anything else, each source's
      directory is walked once (without following links), and the source
      is refused in both modes when it holds any symlink (live or dangling)
@@ -475,3 +479,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 657 tests OK at the stack tip (T1-T3 unchanged: 389, 451 and 528). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 665 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: a `media_format` whose episode NFO would land on the video file itself (a `.nfo` extension) is refused before anything moves, and a cached thumbnail that is a directory or FIFO is never copied. Each test was checked to fail with its fix reverted.
+
+## Verification (2026-09-27, twenty-second review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 658 tests OK at the stack tip (T1-T3 unchanged: 389, 451 and 528). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 666 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: with channel images on, a video recorded or renamed at a channel-image file name refuses the source in both modes before the save (neither this command nor TubeSync's signal queues the image job). The test was checked to fail with the check removed.

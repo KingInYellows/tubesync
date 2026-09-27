@@ -3040,3 +3040,41 @@ class BackfillReviewFollowUp21TestCase(BackfillFollowUpMixin, TestCase):
                             self.assertIn('is not a regular file', output)
                     finally:
                         undo(cached)
+
+
+class BackfillReviewFollowUp22TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Twenty-second review pass: with channel images on, a video recorded
+        or renamed at a channel-image file name refuses the source before
+        the save that could queue the image download.
+    '''
+
+    def test_a_video_renamed_to_an_image_name_refuses_the_source(self):
+        overlay = (
+            '{"*": {"media_format": "poster.jpg", '
+            '"copy_channel_images": true}}'
+        )
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, media, old_path = self.make_downloaded()
+            with (
+                patch(f'{self.COMMAND}.TaskHistory') as mock_th,
+                patch('sync.signals.download_source_images') as mock_signal,
+            ):
+                dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+                applied, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            mock_th.schedule.assert_not_called()
+            mock_signal.assert_not_called()
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('would overwrite media', output)
+                self.assertIn('renamed: 0', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertEqual(old_path.read_bytes(), b'fake-mkv-bytes')
+            source.refresh_from_db()
+            self.assertFalse(source.copy_channel_images)  # never saved
