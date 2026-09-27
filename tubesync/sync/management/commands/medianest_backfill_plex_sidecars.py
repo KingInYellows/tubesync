@@ -657,6 +657,23 @@ class Command(BaseCommand):
                     media, working_source, self._claimed_paths,
                 )
             )
+            target = Path(media.filepath)
+            if _occupied(target):
+                # yt-dlp (overwrites=None) would take the file there for this
+                # media's finished download and attach the row to it.
+                problems.append(
+                    f'{media} (not downloaded yet): its target {target} is '
+                    'already taken by an existing file'
+                )
+            if working_source.copy_thumbnails:
+                thumb = self._sidecar_path(media, '.jpg')
+                if _occupied(thumb):
+                    # Media.copy_thumbnail() (shutil.copyfile) would replace
+                    # it when the media downloads.
+                    problems.append(
+                        f'{media} (not downloaded yet): its thumbnail path '
+                        f'{thumb} is already taken by an existing file'
+                    )
             if working_source.write_nfo:
                 # Its download writes the NFO unconditionally
                 # (Media.write_nfo_file()), replacing whatever is there.

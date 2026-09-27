@@ -3948,3 +3948,43 @@ class BackfillReviewFollowUp37TestCase(BackfillFollowUpMixin, TestCase):
             self.assertIsNotNone(error)
             self.assertIn(f'IN FLIGHT: {busy}', output)
             self.assertIn('in_flight: 1', output)
+
+
+class BackfillReviewFollowUp38TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Thirty-eighth review pass: a pending media's video target or
+        thumbnail path already taken by a file refuses the source.
+    '''
+
+    def assert_refused_for(self, existing_name, message):
+        names = {'pend1': 'pending.mkv'}
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.object(
+                Media, 'filename', property(lambda media: names[media.key]),
+            ),
+        ):
+            source = make_bridge_source()
+            source.make_directory()
+            pending = Media.objects.create(key='pend1', source=source, metadata=metadata)
+            Media.objects.filter(pk=pending.pk).update(skip=False, manual_skip=False)
+            existing = source.directory_path / existing_name
+            existing.write_bytes(b'someone else')
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn(message, output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertEqual(existing.read_bytes(), b'someone else')
+            source.refresh_from_db()
+            self.assertFalse(source.write_nfo)  # never saved
+
+    def test_an_existing_file_at_a_pending_target_is_refused(self):
+        self.assert_refused_for('pending.mkv', 'its target')
+
+    def test_an_existing_file_at_a_pending_thumbnail_path_is_refused(self):
+        self.assert_refused_for('pending.jpg', 'its thumbnail path')

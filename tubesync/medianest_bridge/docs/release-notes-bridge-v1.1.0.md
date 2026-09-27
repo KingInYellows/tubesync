@@ -233,7 +233,9 @@ owner. This file records what the tag would contain and what was verified.
      same-stem sidecars count against the channel-image names. A media not
      downloaded yet whose episode NFO path already holds a file that is
      not its own NFO refuses the source too (its download writes the NFO
-     unconditionally).
+     unconditionally), as does one whose video target or thumbnail path is
+     already taken by a file (yt-dlp would adopt a file at the target as
+     the finished download, and the thumbnail copy would replace one).
    - **Videos inside their own source.** Every downloaded row's recorded
      video must resolve inside its own source's directory; a legacy or
      custom layout recording one elsewhere refuses the source (the tree
@@ -618,3 +620,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 686 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 694 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: a pending media's NFO path holding a foreign file refuses the source, and turning `write_nfo` or `copy_thumbnails` on counts a running download as in flight. Each test was checked to fail with its fix reverted.
+
+## Verification (2026-09-27, thirty-eighth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 688 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 696 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: a pending media's video target or thumbnail path already taken by a file refuses the source. Each test was checked to fail with its check removed.
