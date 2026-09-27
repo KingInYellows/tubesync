@@ -609,6 +609,7 @@ class Command(BaseCommand):
         self._claimed_paths = {}
         self._claimed_generated = set()
         self._claimed_targets = {}
+        self._claimed_currents = {}
         self._other_source_dirs = [
             (str(other.directory_path), Path(other.directory_path).resolve())
             for other in Source.objects.exclude(pk=source.pk)
@@ -1328,8 +1329,10 @@ class Command(BaseCommand):
             thumbnail (with copy_thumbnails). With channel images on, the
             destinations of the sidecar and {key} moves its rename would
             make count too. A current file inside another source's
-            directory, a target that does not resolve to itself, and a
-            target another media also renders to are problems as well.
+            directory, a target that does not resolve to itself, a target
+            another media also renders to, a target directory that cannot
+            be created (an ancestor is not a directory), and a recorded
+            video another row also records are problems as well.
         '''
         directory = Path(working_source.directory_path)
         target = Path(media.filepath)
@@ -1363,6 +1366,29 @@ class Command(BaseCommand):
             # never reach the per-media rename checks).
             problems.append(f'its target {target} is also the target of {owner}')
         self._claimed_targets.setdefault(target, str(media))
+        storage_root = Path(media_file_storage.location)
+        for ancestor in (target.parent, *target.parent.parents):
+            if ancestor == storage_root or not ancestor.is_relative_to(storage_root):
+                break
+            if _occupied(ancestor) and not ancestor.is_dir():
+                # rename_files() would fail creating the directory after the
+                # save (and its cascade) went ahead.
+                problems.append(
+                    f'its target directory {target.parent} cannot be created: '
+                    f'{ancestor} is not a directory'
+                )
+                break
+        if media.media_file:
+            recorded = Path(media.media_file.path).resolve()
+            owner = self._claimed_currents.get(recorded)
+            if owner is not None and owner != str(media):
+                # Two rows recording one file: moving it for one would leave
+                # the other pointing at nothing.
+                problems.append(
+                    f'its video {media.media_file.path} is also recorded for '
+                    f'{owner}'
+                )
+            self._claimed_currents.setdefault(recorded, str(media))
         target_dir = target.parent.resolve()
         for other_name, other_dir in self._other_source_dirs:
             if target_dir.is_relative_to(other_dir):

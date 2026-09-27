@@ -212,8 +212,10 @@ owner. This file records what the tag would contain and what was verified.
      count too (an existing `.jpg` moved onto `poster.jpg`), and a video
      recorded, or targeted, inside another source's directory is a
      collision as well (a stored `media_format` with a `..` segment), as
-     are a target that does not resolve to itself (`sub/../x`) and two
-     media rendering to one video target. A
+     are a target that does not resolve to itself (`sub/../x`), two media
+     rendering to one video target, two rows recording one video file,
+     and a target directory that cannot be created (an ancestor is a
+     regular file). A
      collision refuses the source in both modes before anything is saved or moved; a download
      that finishes during `--apply` is checked against the same claims and
      skipped as an error on a collision. Media not downloaded yet
@@ -567,3 +569,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 676 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 684 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: skipped rows that are not downloaded meet the reserved-path checks as well. The late-download test now creates its row after the preflight, since a row pending at preflight time is checked there. The new test was checked to fail with the skip filter restored.
+
+## Verification (2026-09-27, thirty-second review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 678 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 686 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: two rows recording one file, and a target whose directory cannot be created, each refuse the source before anything is saved or moved. Each test was checked to fail with its check removed.

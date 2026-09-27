@@ -3656,3 +3656,48 @@ class BackfillReviewFollowUp31TestCase(BackfillFollowUpMixin, TestCase):
             self.assertEqual(summary_of(dry), summary_of(applied))
             source.refresh_from_db()
             self.assertFalse(source.write_nfo)  # the unsafe profile is not saved
+
+
+class BackfillReviewFollowUp32TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Thirty-second review pass: two rows recording one file refuse the
+        source, and so does a target whose directory cannot be created.
+    '''
+
+    def assert_refused(self, source, message):
+        dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+        applied, exc = run_backfill_capture(
+            '--source', str(source.uuid), '--apply',
+        )
+        for output, error in ((dry, dry_exc), (applied, exc)):
+            self.assertIsNotNone(error)
+            self.assertIn(message, output)
+            self.assertIn('renamed: 0', output)
+        self.assertEqual(summary_of(dry), summary_of(applied))
+
+    def test_two_rows_recording_one_file_refuse_the_source(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, first, old_path = self.make_downloaded(key='aaa')
+            second = Media.objects.create(key='bbb', source=source, metadata=metadata)
+            second.media_file.name = first.media_file.name
+            second.downloaded = True
+            second.save()
+            self.assert_refused(source, 'is also recorded for')
+            self.assertTrue(old_path.exists())
+
+    def test_a_target_under_a_regular_file_is_refused(self):
+        overlay = '{"*": {"media_format": "occupied/{key}.{ext}"}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, media, old_path = self.make_downloaded()
+            (source.directory_path / 'occupied').write_bytes(b'a regular file')
+            self.assert_refused(source, 'cannot be created')
+            self.assertTrue(old_path.exists())
+            source.refresh_from_db()
+            self.assertNotEqual(source.media_format, 'occupied/{key}.{ext}')
