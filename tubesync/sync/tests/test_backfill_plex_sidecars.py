@@ -3820,3 +3820,42 @@ class BackfillReviewFollowUp34TestCase(BackfillFollowUpMixin, TestCase):
                 self.assertIn(f'the channel image download would overwrite {thumb}', output)
             self.assertEqual(summary_of(dry), summary_of(applied))
             self.assertEqual(thumb.read_bytes(), b'episode thumbnail')
+
+
+class BackfillReviewFollowUp35TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Thirty-fifth review pass: a dry-run's old-stem glob sees the files
+        earlier renames of the run put there, as apply's does.
+    '''
+
+    def test_a_projected_video_counts_in_a_later_stem_glob(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, first, first_path = self.make_downloaded(key='aaa')
+            _, second, second_path = self.make_downloaded(key='bbb', source=source)
+            # bbb already sits at foo.mkv; aaa's rename puts its video at
+            # foo.webm, which bbb's old-stem glob then takes.
+            foo = source.directory_path / 'foo.mkv'
+            second_path.rename(foo)
+            second.media_file.name = str(foo.relative_to(media_file_storage.location))
+            second.save()
+            names = {'aaa': 'foo.webm', 'bbb': 'bar.mkv'}
+            with patch.object(
+                Media, 'filename', property(lambda media: names[media.key]),
+            ):
+                dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+                applied, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('other media files would be moved with it', output)
+                self.assertIn('renamed: 1', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            first.refresh_from_db()
+            self.assertEqual(
+                Path(first.media_file.path), source.directory_path / 'foo.webm',
+            )
+            self.assertTrue((source.directory_path / 'foo.webm').exists())

@@ -595,6 +595,8 @@ class Command(BaseCommand):
         # videos and moved sidecars): gone in apply, still on disk in a
         # dry-run, so a later media may target them (_present()).
         self._projected_vacated = set()
+        # Video targets earlier renames of this source move to.
+        self._projected_videos = set()
         # Both modes read media.filepath/media.source.* against the
         # would-be values from here on: `working_source` is the validated
         # copy (or `source` itself when there is no overlay).
@@ -884,8 +886,10 @@ class Command(BaseCommand):
         scratch_media_files = set(media_files)
         projected = self._projected_destinations
         vacated = self._projected_vacated
+        videos = self._projected_videos
         self._projected_destinations = set(projected)
         self._projected_vacated = set(vacated)
+        self._projected_videos = set(videos)
         refused = 0
         try:
             for media in downloaded:
@@ -904,6 +908,7 @@ class Command(BaseCommand):
         finally:
             self._projected_destinations = projected
             self._projected_vacated = vacated
+            self._projected_videos = videos
         return refused
 
     def _cascade_gate_message(self, refused):
@@ -1308,6 +1313,7 @@ class Command(BaseCommand):
             other for other, _ in moves + key_moves
         })
         self._projected_vacated -= destinations | {target}
+        self._projected_videos.add(target)
         return 'renamed'
 
     def _present(self, path):
@@ -1803,9 +1809,19 @@ class Command(BaseCommand):
         '''
         (old_dir, old_stem) = directory_and_stem(current)
         (new_dir, new_stem) = directory_and_stem(target)
+        found = set(old_dir.glob(glob_quote(old_stem) + '*'))
+        # What earlier renames of this run leave there: files they project
+        # into the directory (videos and sidecars, not yet on disk in a
+        # dry-run or the cascade preflight) are there, and files they move
+        # away are not. In apply the disk already says the same.
+        found |= {
+            path for path in self._projected_destinations | self._projected_videos
+            if path.parent == old_dir and path.name.startswith(old_stem)
+        }
+        found -= self._projected_vacated
         return [
             (other, new_dir / (new_stem + other.name[len(old_stem):]))
-            for other in sorted(old_dir.glob(glob_quote(old_stem) + '*'))
+            for other in sorted(found)
             if other != current
         ]
 

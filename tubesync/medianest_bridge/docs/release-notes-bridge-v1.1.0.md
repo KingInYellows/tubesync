@@ -217,7 +217,8 @@ owner. This file records what the tag would contain and what was verified.
      and a target directory that cannot be created (an ancestor is a
      regular file). A sidecar move that would land on the renamed video
      itself refuses that media. A dry-run treats a path an earlier rename
-     moves away from as free, as apply finds it. A
+     moves away from as free, and a file an earlier rename puts in place as
+     present (in later old-stem globs too), as apply finds them. A
      collision refuses the source in both modes before anything is saved or moved; a download
      that finishes during `--apply` is checked against the same claims and
      skipped as an error on a collision. Media not downloaded yet
@@ -593,3 +594,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 682 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 690 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: profile-level collisions are refused without any media, and an in-place video's sidecars count against channel-image names. The late-download test now uses a collision specific to the late row, since profile-wide ones are refused up front. Each test was checked to fail with its fix reverted.
+
+## Verification (2026-09-27, thirty-fifth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 683 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 691 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: the dry-run and cascade-preflight old-stem glob includes files earlier renames project into the directory (and excludes those they vacate), so a later media meets the same refusal apply gives. The test was checked to fail with the projection removed.
