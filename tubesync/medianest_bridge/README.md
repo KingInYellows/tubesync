@@ -34,7 +34,7 @@ signal-driven task scheduling.
 
 ## Fork delta
 
-Four upstream files are touched at five points (`settings.py` twice), four of the five minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
+Eight upstream files are touched at nine points (`settings.py` twice), six of the nine minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
 
 1. `tubesync/tubesync/settings.py` -- `INSTALLED_APPS += 'medianest_bridge'`.
 2. `tubesync/tubesync/urls.py` -- one `include('medianest_bridge.urls')` at
@@ -56,6 +56,84 @@ Four upstream files are touched at five points (`settings.py` twice), four of th
    an existing multi-line `ENV`, no new `ENV` instruction). Empty by
    default, so every image build that doesn't pass the build-arg behaves
    identically to every pre-T5 build. See "Compatibility reporting" below.
+6. `sync/models/media.py` (Plex T1) -- adds module-level `_aware_utc`,
+   `_format_field_names`, `_episode_date_coalesce`,
+   `_episode_day_index_from_name` and `_parse_episode_token` helpers and
+   their constants, and new members `Media.episode_date`,
+   `Media.title_full_bounded`, `Media._same_day_index`,
+   `Media._episode_sort_key`, `Media._same_day_others`,
+   `Media._episode_day_index`, `Media._frozen_day_index`,
+   `Media._episode_mmdd_and_index`, `Media.episode_yyyy`,
+   `Media.episode_mmddnn` and `Media.nfo_episode_number`. Three existing
+   method bodies change: `format_dict` gains `title_full_bounded` always
+   and `episode_yyyy`/`episode_mmddnn` only when the source's
+   `media_format` uses them (each costs a query); `rename_files` rewrites
+   the episode NFO whenever `write_nfo` is on (previously only with
+   `copy_thumbnails` too), so a renumbered file's `<episode>` follows its
+   new name; and `nfoxml` computes
+   `<season>`/`<episode>` from the episode date (previously
+   `upload_date.year` / `calculate_episode_number()`) for channels and for
+   playlists whose `media_format` uses `{episode_mmddnn}` (every
+   bridge-created playlist), so the NFO matches the filename. Other
+   playlists keep the pre-T1 values: season `1`, episode
+   `calculate_episode_number()`. `episode_date` prefers the related
+   `Metadata` row's `published` (see point 8) over `Media.published`
+   because the latter is rewritten with approximate data on every
+   re-index; `_same_day_index` is a single annotated `COUNT` (via
+   `_episode_date_coalesce`) instead of an O(n) Python scan; and
+   `episode_mmddnn` returns `nfo_episode_number`'s overflow value past 99
+   same-day items so the filename and the NFO's `<episode>` never
+   disagree once parsed as an int. For a source filed by
+   `{episode_mmddnn}`, a downloaded file keeps the number its name
+   carries and other same-day items take the free numbers around it
+   (`_episode_day_index`), so a later-indexed earlier video never gets
+   an existing file's name as its download target. Other formats number
+   live, so once an earlier same-day row is gone for good (its skipped
+   placeholder deleted too) a later one's `<episode>` shifts on its next
+   NFO rewrite, as upstream's `calculate_episode_number()` does.
+7. `sync/models/source.py` (Plex T1) -- adds the same three keys
+   (`episode_yyyy`, `episode_mmddnn`, `title_full_bounded`) to the dict
+   `example_media_format_dict` returns, required for
+   `get_example_media_format()` (and so `run_edit_source_checks`) to accept
+   a `media_format` that uses them. That is the only change to its body;
+   no existing keys change.
+8. `sync/models/metadata.py` (Plex T1) -- `Metadata.ingest_metadata`'s
+   `published` fallback (when the ingested data has neither
+   `release_timestamp` nor `timestamp`) now tries `upload_date` (parsed
+   the same way `Media.upload_date` does) before falling back to
+   `media.published` or `retrieved`. This makes `new_metadata.published`
+   a stable, date-accurate value point 6's `episode_date` and
+   `_episode_date_coalesce` can rely on, including for metadata ingested
+   without an epoch timestamp (e.g. `import-existing-media`). No other
+   change to this file.
+9. `sync/templates/sync/_mediaformatvars.html` (Plex T1) -- three new
+   rows in the source form's "Available media name variables" table
+   (`{title_full_bounded}`, `{episode_yyyy}`, `{episode_mmddnn}`). No
+   existing row changes.
+
+Points 1-5 are tagged with the bridge's own slices (T1-T5); points 6 on
+are tagged with the Plex TV library slices (Plex T1-T4), a separate
+series.
+
+Known limits of the Plex T1 date-based numbering:
+
+- An index-only source (`download_media` off; see fork PR #14's
+  `TUBESYNC_INDEX_ONLY_SKIP_METADATA`) never fetches per-item metadata,
+  so its items only carry the approximate listing date (`Media.published`,
+  which yt-dlp can derive from text like "3 weeks ago" and which a
+  re-index can move) until an item is downloaded manually, which fetches
+  its metadata first.
+- `{yyyy}`, `{mm}` and `{dd}` still come from `upload_date` (upstream
+  behavior), so they can name a different day than `{episode_yyyy}` and
+  `{episode_mmddnn}`, which come from `Media.episode_date`.
+- A downloaded file whose name carries no number for its current day (a
+  legacy name, or fetched metadata moved the item to another day) is
+  renumbered and moved by the next rename. Its NFO is rewritten when
+  `write_nfo` is on, but Plex sees a new file.
+- A same-day renumber of items not yet downloaded is expected: only a
+  downloaded file's number is kept. A custom `media_format` with no
+  literal text on either side of `{episode_mmddnn}` keeps no numbers at
+  all (nothing reliable anchors the number in the file name).
 
 Everything else the bridge needs is imported (models,
 `common.utils.getenv`, `common.logger.log`, `sync.tasks` helpers), never
@@ -525,7 +603,7 @@ public), satisfying AGPLv3 §13's network-use clause.
 fork; it is not present in upstream `meeb/tubesync` at the pinned
 upstream-base commit (`medianest_bridge/docs/UPSTREAM_SHA`). It is
 licensed identically to the rest of this repository, AGPLv3, under the
-unmodified `LICENSE` at the repository root. The five upstream files this
+unmodified `LICENSE` at the repository root. The eight upstream files this
 fork's delta touches ("Fork delta" section above) remain licensed as
 upstream TubeSync itself is licensed, modified only as that section
 describes. See `medianest_bridge/docs/agpl-compliance.md` for the full

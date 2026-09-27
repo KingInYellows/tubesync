@@ -1,11 +1,12 @@
 import uuid
+from datetime import datetime
 from common.json_encoder import JSONEncoder
 from common.timestamp import timestamp_to_datetime
 from common.utils import django_queryset_generator as qs_gen
 from django import db
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
-from .media import Media, Source
+from .media import Media, Source, _aware_utc
 
 
 class Metadata(db.models.Model):
@@ -146,9 +147,38 @@ class Metadata(db.models.Model):
                     ('release_timestamp', 'timestamp',),
                     arg_dict=data,
                 )
-            ) or self.media.published or self.retrieved
+            )
         except AssertionError:
-            self.published = self.media.published or self.retrieved
+            self.published = None
+        if self.published is None:
+            # No real release/upload timestamp in `data` (`timestamp` and
+            # `release_timestamp` are both absent, e.g. a source indexed
+            # without per-video metadata, or a bare `upload_date`-only
+            # import). Fall back to `upload_date` (YYYYMMDD), the same
+            # field and parsing `Media.upload_date` uses, rather than an
+            # arbitrary ingest/retrieval time -- this is what lets
+            # `Media.episode_date` (sync/models/media.py) treat
+            # `new_metadata.published` as a stable, SQL-queryable date
+            # source for every row that has gone through
+            # `ingest_metadata` at all, instead of needing its own
+            # `upload_date` fallback branch for them (`upload_date`
+            # itself is derived from JSON in Python, so it can't appear
+            # in a SQL query). `episode_date` still keeps a narrow
+            # `upload_date` fallback of its own, only reachable when no
+            # `new_metadata` row exists at all -- see its docstring.
+            upload_date = None
+            upload_date_str = self.media.get_metadata_first_value(
+                'upload_date', arg_dict=data,
+            )
+            if upload_date_str:
+                try:
+                    upload_date = datetime.strptime(upload_date_str, '%Y%m%d')
+                except (TypeError, ValueError):
+                    upload_date = None
+            self.published = (
+                _aware_utc(upload_date) if upload_date is not None
+                else self.media.published or self.retrieved
+            )
 
         self.value = data.copy() # try not to have side-effects for the caller
         formats_key = self.media.get_metadata_field('formats')
