@@ -626,8 +626,10 @@ class Command(BaseCommand):
         # the rendered path), so they meet every reserved-path check too:
         # an NFO on the video itself, tvshow.nfo, channel-image names (the
         # image job this run may queue), and other media's sidecars.
+        # Skipped rows included: a filter change or a manual re-enable can
+        # make one eligible later, under the profile saved now.
         pending = Media.objects.filter(
-            source=source, downloaded=False, skip=False, manual_skip=False,
+            source=source, downloaded=False,
         ).order_by('key')
         for media in pending.iterator():
             media.source = working_source

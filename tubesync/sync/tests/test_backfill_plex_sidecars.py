@@ -3149,11 +3149,14 @@ class BackfillReviewFollowUp23TestCase(BackfillFollowUpMixin, TestCase):
         ):
             source = make_bridge_source()
             source.make_directory()
-            late = Media.objects.create(key='late1', source=source, metadata=metadata)
             real_preflight = BackfillCommand._count_refused_media
             late_path = []
 
             def finish_a_download(command, downloaded, media_files):
+                # Indexed and downloaded after the preflight read the
+                # source's media (a row pending at preflight time is now
+                # checked there already, see review pass 31).
+                late = Media.objects.create(key='late1', source=source, metadata=metadata)
                 late_path.append(download_dummy_file(late))
                 return real_preflight(command, downloaded, media_files)
 
@@ -3622,3 +3625,34 @@ class BackfillReviewFollowUp30TestCase(BackfillFollowUpMixin, TestCase):
             self.assertEqual(summary_of(dry), summary_of(applied))
             source.refresh_from_db()
             self.assertNotEqual(source.media_format, 'shared.{ext}')  # not saved
+
+
+class BackfillReviewFollowUp31TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Thirty-first review pass: skipped rows that are not downloaded meet
+        the reserved-path checks too, since they can become eligible later
+        under the profile saved now.
+    '''
+
+    def test_a_skipped_pending_media_is_checked(self):
+        overlay = '{"*": {"media_format": "{key}.nfo", "write_nfo": true}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source = make_bridge_source()
+            source.make_directory()
+            skipped = Media.objects.create(key='skip1', source=source, metadata=metadata)
+            Media.objects.filter(pk=skipped.pk).update(skip=True, manual_skip=True)
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('skip1', output)
+                self.assertIn('its episode NFO would be the video file itself', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            source.refresh_from_db()
+            self.assertFalse(source.write_nfo)  # the unsafe profile is not saved

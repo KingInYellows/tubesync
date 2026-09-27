@@ -217,9 +217,10 @@ owner. This file records what the tag would contain and what was verified.
      collision refuses the source in both modes before anything is saved or moved; a download
      that finishes during `--apply` is checked against the same claims and
      skipped as an error on a collision. Media not downloaded yet
-     (in-flight ones included) meet every one of these checks too before
-     the profile is saved, since they get the profile's paths when they
-     land.
+     (in-flight and skipped ones included, since a filter change or a
+     manual re-enable can make a skipped row eligible later) meet every
+     one of these checks too before the profile is saved, since they get
+     the profile's paths when they land.
    - **Videos inside their own source.** Every downloaded row's recorded
      video must resolve inside its own source's directory; a legacy or
      custom layout recording one elsewhere refuses the source (the tree
@@ -560,3 +561,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 675 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 683 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: a non-canonical target is refused before the rename, and two media (pending ones included) rendering to one video target refuse the source up front; two earlier tests that expected the per-media refusal of the second row now expect this source-level refusal. Each new test was checked to fail with its check removed.
+
+## Verification (2026-09-27, thirty-first review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 676 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 684 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: skipped rows that are not downloaded meet the reserved-path checks as well. The late-download test now creates its row after the preflight, since a row pending at preflight time is checked there. The new test was checked to fail with the skip filter restored.
