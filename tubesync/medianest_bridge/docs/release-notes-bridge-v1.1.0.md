@@ -224,7 +224,11 @@ owner. This file records what the tag would contain and what was verified.
      (in-flight and skipped ones included, since a filter change or a
      manual re-enable can make a skipped row eligible later) meet every
      one of these checks too before the profile is saved, since they get
-     the profile's paths when they land.
+     the profile's paths when they land. Collisions the profile makes for
+     every media (a literal `.nfo` extension with `write_nfo`, a literal
+     `tvshow` or channel-image name in the source directory) are refused
+     even for a source with no media yet, and an in-place video's existing
+     same-stem sidecars count against the channel-image names.
    - **Videos inside their own source.** Every downloaded row's recorded
      video must resolve inside its own source's directory; a legacy or
      custom layout recording one elsewhere refuses the source (the tree
@@ -583,3 +587,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 680 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 688 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: a sidecar move landing on the renamed video is refused, and a dry-run models paths vacated by earlier renames, so it predicts the same renames apply makes. Each test was checked to fail with its fix reverted.
+
+## Verification (2026-09-27, thirty-fourth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 682 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 690 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: profile-level collisions are refused without any media, and an in-place video's sidecars count against channel-image names. The late-download test now uses a collision specific to the late row, since profile-wide ones are refused up front. Each test was checked to fail with its fix reverted.
