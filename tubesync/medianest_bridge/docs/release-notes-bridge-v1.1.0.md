@@ -188,8 +188,12 @@ owner. This file records what the tag would contain and what was verified.
      siblings, never nested.
    - A `media_format` that renders an episode file named `tvshow` in the
      source directory would put its episode NFO at `tvshow.nfo`, after
-     which the show-level NFO could never be written; such a source is
+     which the show-level NFO could never be written, and one whose
+     extension is `.nfo` would put the episode NFO on the video itself
+     (`rename_files()` would replace the video with XML); such a source is
      refused in both modes before anything is saved or moved.
+   - A cached thumbnail that exists but is not a regular file (a
+     directory or FIFO) is never copied; both modes print a note.
    - **Plain source trees only.** Before anything else, each source's
      directory is walked once (without following links), and the source
      is refused in both modes when it holds any symlink (live or dangling)
@@ -465,3 +469,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 655 tests OK at the stack tip (T1-T3 unchanged: 389, 451 and 528). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 663 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: a source nested inside another source's directory is refused (overlap is now checked in both directions), and a `media_format` rendering an episode NFO at `tvshow.nfo` is refused in both modes before anything is written. Each test was checked to fail with its fix reverted.
+
+## Verification (2026-09-27, twenty-first review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 657 tests OK at the stack tip (T1-T3 unchanged: 389, 451 and 528). In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 665 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: a `media_format` whose episode NFO would land on the video file itself (a `.nfo` extension) is refused before anything moves, and a cached thumbnail that is a directory or FIFO is never copied. Each test was checked to fail with its fix reverted.

@@ -793,7 +793,7 @@ both). The whole run is refused when `DOWNLOAD_ROOT` itself goes through a
 symlink, and a whole source when any of its downloaded rows is recorded
 through a symlinked directory, when its directory contains another
 source's or lies inside one, or when its media_format would put an
-episode NFO at `tvshow.nfo`. Before any of that, a source whose
+episode NFO at `tvshow.nfo` or on the video file itself. Before any of that, a source whose
 directory holds any symlink or special file (FIFO, socket, device) is
 refused outright; TubeSync never creates those itself. A media already at
 its target

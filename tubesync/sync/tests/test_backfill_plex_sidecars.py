@@ -2965,3 +2965,78 @@ class BackfillReviewFollowUp20TestCase(BackfillFollowUpMixin, TestCase):
             self.assertFalse((source.directory_path / 'tvshow.nfo').exists())
             source.refresh_from_db()
             self.assertFalse(source.write_nfo)  # never saved
+
+
+class BackfillReviewFollowUp21TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Twenty-first review pass: an episode NFO path equal to the video's
+        own target is refused, and a cached thumbnail that is not a regular
+        file is never copied.
+    '''
+
+    def setUp(self):
+        super().setUp()
+        # Reading a FIFO blocks; fail the test instead of hanging the run.
+        signal.signal(signal.SIGALRM, self._timed_out)
+        signal.alarm(30)
+
+    def tearDown(self):
+        signal.alarm(0)
+
+    @staticmethod
+    def _timed_out(signum, frame):
+        raise _ReadBlocked('a thumbnail read blocked')
+
+    def test_an_episode_nfo_at_the_video_target_is_refused(self):
+        overlay = '{"*": {"media_format": "{key}.nfo", "write_nfo": true}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, media, old_path = self.make_downloaded()
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('or at the video file itself', output)
+                self.assertIn('renamed: 0', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertEqual(old_path.read_bytes(), b'fake-mkv-bytes')
+
+    def test_a_non_regular_cached_thumbnail_is_not_copied(self):
+        with temp_download_root():
+            source, media, old_path = self.make_downloaded()
+            for kind, make, undo in (
+                ('directory', lambda path: path.mkdir(), lambda path: path.rmdir()),
+                ('fifo', os.mkfifo, lambda path: path.unlink()),
+            ):
+                with self.subTest(kind=kind):
+                    name = f'thumbs/backfill-test-{kind}-{os.urandom(4).hex()}.jpg'
+                    cached = Path(media.thumb.storage.path(name))
+                    cached.parent.mkdir(parents=True, exist_ok=True)
+                    make(cached)
+                    try:
+                        # Dimensions recorded, as for a real download:
+                        # otherwise Django's ImageField reads the file to
+                        # measure it whenever the row loads.
+                        Media.objects.filter(pk=media.pk).update(
+                            thumb=name, thumb_width=10, thumb_height=10,
+                        )
+                        with patch.object(Media, 'copy_thumbnail') as mock_copy:
+                            dry, dry_exc = run_backfill_capture(
+                                '--source', str(source.uuid),
+                            )
+                            applied, exc = run_backfill_capture(
+                                '--source', str(source.uuid), '--apply',
+                            )
+                        self.assertIsNone(dry_exc, dry)
+                        self.assertIsNone(exc, applied)
+                        mock_copy.assert_not_called()
+                        for output in (dry, applied):
+                            self.assertIn('thumbs_copied: 0', output)
+                            self.assertIn('is not a regular file', output)
+                    finally:
+                        undo(cached)

@@ -573,24 +573,30 @@ class Command(BaseCommand):
         for media in downloaded:
             media.source = working_source
 
-        # An episode NFO rendered at the source's tvshow.nfo path (a
-        # media_format producing a video named `tvshow` in the source
-        # directory) would be written there by the rename or this
-        # command's own NFO step, after which the show-level NFO can never
-        # be written; a dry-run would predict both. Refuse such a source,
-        # in both modes, before anything is saved or moved.
+        # An episode NFO rendered at a path something else needs: the
+        # source's tvshow.nfo (a video named `tvshow` in the source
+        # directory), after which the show-level NFO can never be written
+        # and a dry-run would predict both; or the video's own target (a
+        # media_format whose extension is .nfo), which rename_files()
+        # would replace with the NFO's XML right after moving the video
+        # there. Refuse such a source, in both modes, before anything is
+        # saved or moved.
         tvshow_path = Path(working_source.directory_path) / 'tvshow.nfo'
         clashing = sorted(
             str(media) for media in downloaded
             if working_source.write_nfo
-            and self._sidecar_path(media, '.nfo') == tvshow_path
+            and self._sidecar_path(media, '.nfo') in (
+                tvshow_path, Path(media.filepath),
+            )
         )
         if clashing:
             summary['errors'] += 1
             message = (
                 'the media_format renders episode NFOs at the show\'s '
-                f'{tvshow_path} (' + ', '.join(clashing) + '); choose a '
-                'format whose file names cannot be "tvshow" and re-run'
+                f'{tvshow_path} or at the video file itself (' +
+                ', '.join(clashing) + '); choose a format whose file names '
+                'cannot be "tvshow" and whose extension is not .nfo, and '
+                're-run'
             )
             if apply_changes:
                 log.error(f'medianest_backfill_plex_sidecars: {source}: {message}')
@@ -1522,6 +1528,19 @@ class Command(BaseCommand):
         # network (via download_media_image.call_local()) when it is not,
         # which this command must never trigger.
         if not media.thumb_file_exists:
+            return
+        # thumb_file_exists only checks existence: copying from a
+        # directory would raise after the video moved, and from a FIFO
+        # would block. Skip it (both modes) unless it is a regular file.
+        try:
+            cached = Path(media.thumb.path)
+        except ValueError:
+            cached = None  # no file recorded; copy_thumbnail() decides
+        if cached is not None and cached.exists() and not cached.is_file():
+            self.stdout.write(self.style.WARNING(
+                f'  NOTE: {media}: cached thumbnail {cached} is not a '
+                'regular file; not copying it'
+            ))
             return
         thumb_path = self._sidecar_path(media, '.jpg')
         # A dry-run has not moved the old-stem .jpg its rename projects
