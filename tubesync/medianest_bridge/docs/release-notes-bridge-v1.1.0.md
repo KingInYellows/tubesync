@@ -227,7 +227,9 @@ owner. This file records what the tag would contain and what was verified.
      manual re-enable can make a skipped row eligible later) meet every
      one of these checks too before the profile is saved, since they get
      the profile's paths when they land. Collisions the profile makes for
-     every media (a literal `.nfo` extension with `write_nfo`, a literal
+     every media (a literal `.nfo` extension with `write_nfo`, a literal `.jpg`
+     extension with `copy_thumbnails` (the thumbnail copy would replace the
+     video), a literal
      `tvshow` or channel-image name in the source directory) are refused
      even for a source with no media yet, and an in-place video's existing
      same-stem sidecars count against the channel-image names. A media not
@@ -236,6 +238,9 @@ owner. This file records what the tag would contain and what was verified.
      unconditionally), as does one whose video target or thumbnail path is
      already taken by a file (yt-dlp would adopt a file at the target as
      the finished download, and the thumbnail copy would replace one).
+   - A source directory outside `DOWNLOAD_ROOT` (an absolute legacy or
+     custom path) is refused in both modes before anything is saved, since
+     the save would create it there.
    - **Videos inside their own source.** Every downloaded row's recorded
      video must resolve inside its own source's directory; a legacy or
      custom layout recording one elsewhere refuses the source (the tree
@@ -626,3 +631,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 688 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 696 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: a pending media's video target or thumbnail path already taken by a file refuses the source. Each test was checked to fail with its check removed.
+
+## Verification (2026-09-27, thirty-ninth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 691 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 699 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: a thumbnail rendered on the video itself is refused (per media, and for a `.jpg` profile even without media), and a source directory outside the download root is refused before any save. Each test was checked to fail with its check removed.

@@ -3988,3 +3988,69 @@ class BackfillReviewFollowUp38TestCase(BackfillFollowUpMixin, TestCase):
 
     def test_an_existing_file_at_a_pending_thumbnail_path_is_refused(self):
         self.assert_refused_for('pending.jpg', 'its thumbnail path')
+
+
+class BackfillReviewFollowUp39TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Thirty-ninth review pass: a thumbnail rendered on the video itself
+        is refused (per media and for the profile), and a source directory
+        outside the download root is refused before any save.
+    '''
+
+    def test_a_jpg_video_profile_is_refused_without_media(self):
+        overlay = '{"*": {"media_format": "{key}.jpg", "copy_thumbnails": true}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source = make_bridge_source()
+            source.make_directory()
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('gives every video a .jpg extension', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            source.refresh_from_db()
+            self.assertFalse(source.copy_thumbnails)  # never saved
+
+    def test_a_thumbnail_on_the_video_itself_is_refused(self):
+        names = {'vid1': 'movie.jpg'}
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, media, old_path = self.make_downloaded()
+            with patch.object(
+                Media, 'filename', property(lambda media: names[media.key]),
+            ):
+                dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+                applied, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('its thumbnail would be the video file itself', output)
+                self.assertIn('renamed: 0', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertEqual(old_path.read_bytes(), b'fake-mkv-bytes')
+
+    def test_a_source_directory_outside_the_root_is_refused_before_saving(self):
+        with temp_download_root(), tempfile.TemporaryDirectory() as outside:
+            elsewhere = Path(outside) / 'legacy-source'
+            source = make_bridge_source(directory=str(elsewhere))
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('is outside', output)
+                self.assertIn('errors: 1', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            self.assertFalse(elsewhere.exists())
+            source.refresh_from_db()
+            self.assertFalse(source.copy_channel_images)  # never saved

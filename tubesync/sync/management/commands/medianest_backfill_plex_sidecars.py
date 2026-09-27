@@ -452,6 +452,20 @@ class Command(BaseCommand):
             log.error(f'medianest_backfill_plex_sidecars: {source}: {message}')
             self.stdout.write(self.style.ERROR(f'  SKIPPED: {message}'))
             return
+        storage_root = Path(media_file_storage.location)
+        if not directory.resolve().is_relative_to(storage_root.resolve()):
+            # An absolute directory elsewhere (a legacy or custom source):
+            # the save's check_source_directory_exists would create it
+            # there before any later check could refuse the source.
+            summary['errors'] += 1
+            message = (
+                f'the source directory {directory} is outside '
+                f'{storage_root}; the backfill only handles sources under '
+                'the download root'
+            )
+            log.error(f'medianest_backfill_plex_sidecars: {source}: {message}')
+            self.stdout.write(self.style.ERROR(f'  SKIPPED: {message}'))
+            return
 
         overlay = defaults_by_type.get(contract_type, {})
         working_source = source
@@ -1417,6 +1431,11 @@ class Command(BaseCommand):
                 f'media_format {media_format!r} gives every video a .nfo '
                 'extension, so each episode NFO would replace its video'
             )
+        if working_source.copy_thumbnails and last.endswith('.jpg'):
+            problems.append(
+                f'media_format {media_format!r} gives every video a .jpg '
+                'extension, so each thumbnail copy would replace its video'
+            )
         if working_source.write_nfo and in_source_dir and stem == 'tvshow':
             problems.append(
                 f'media_format {media_format!r} names every video "tvshow", '
@@ -1469,6 +1488,12 @@ class Command(BaseCommand):
             problems.append(f"its episode NFO would be the show's {nfo}")
         if nfo is not None and nfo == target:
             problems.append(f'its episode NFO would be the video file itself ({nfo})')
+        thumb = generated.get('thumbnail')
+        if thumb is not None and thumb == target:
+            problems.append(
+                f'its thumbnail would be the video file itself ({thumb}); '
+                'copy_thumbnail() would replace the video'
+            )
         if target.resolve() != target.absolute():
             # A stored media_format with a "." or ".." segment (bridge
             # overlays reject ".."): rename_files() records the resolved
