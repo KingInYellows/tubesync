@@ -1480,9 +1480,10 @@ class Command(BaseCommand):
         def piece_pattern(piece):
             if not piece.startswith('{'):
                 return re.escape(piece)
-            name = re.split(r'[:!]', piece[1:-1])[0]
-            # A YouTube key is always 11 of these; anything else is data.
-            return '[A-Za-z0-9_-]{11}' if name == 'key' else '.*'
+            # A bare {key} is always a whole 11-character YouTube ID; with a
+            # format spec or conversion ({key:.6}) it can be cut to any
+            # prefix, so like every other field it is treated as data.
+            return '[A-Za-z0-9_-]{11}' if piece == '{key}' else '.*'
         stem_pattern = ''.join(
             piece_pattern(piece)
             for piece in re.split(r'(\{[^{}]*\})', template_stem) if piece

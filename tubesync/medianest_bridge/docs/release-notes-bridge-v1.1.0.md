@@ -234,8 +234,9 @@ owner. This file records what the tag would contain and what was verified.
      with any of those options on, a format whose last segment does not end
      in a fixed extension, since a media's own data could then supply one,
      or, in the source directory itself, a stem that media data could turn
-     into `tvshow` or a channel-image name, such as `{title_full}`; `{key}`
-     never can, being an 11-character YouTube ID) are refused
+     into `tvshow` or a channel-image name, such as `{title_full}`; a bare
+     `{key}` never can, being a whole 11-character YouTube ID, but a
+     shortened one such as `{key:.6}` can) are refused
      even for a source with no media yet, and an in-place video's existing
      same-stem sidecars count against the channel-image names. A media not
      downloaded yet whose episode NFO path already holds a file that is
@@ -662,3 +663,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 698 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 706 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: a data-driven stem in the source directory that could become `tvshow` or a channel-image name is refused (a `{key}` stem is not), and a save that queues the channel image job waits for running downloads with the cascade off. Each test was checked to fail with its check removed.
+
+## Verification (2026-09-27, forty-third review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 699 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 707 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: only a bare `{key}` counts as a fixed 11-character ID in the stem check; a key with a format spec is treated as data. The test was checked to fail with any key field treated as 11 characters.

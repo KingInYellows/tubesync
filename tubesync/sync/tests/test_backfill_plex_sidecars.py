@@ -4162,6 +4162,12 @@ class BackfillReviewFollowUp42TestCase(BackfillFollowUpMixin, TestCase):
             'can name a video "tvshow"',
         )
 
+    def test_a_shortened_key_stem_is_refused(self):
+        self.assert_profile_refused(
+            '{"*": {"media_format": "{key:.6}.mkv", "write_nfo": true}}',
+            'can name a video "tvshow"',
+        )
+
     def test_a_key_stem_is_not_refused(self):
         overlay = (
             '{"*": {"media_format": "{key}.{ext}", "write_nfo": true, '
