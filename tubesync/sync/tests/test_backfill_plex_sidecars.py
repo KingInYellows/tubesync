@@ -2910,3 +2910,58 @@ class BackfillReviewFollowUp19TestCase(BackfillFollowUpMixin, TestCase):
             self.assertEqual(summary_of(dry), summary_of(applied))
             self.assertTrue(old_path.exists())
             self.assertEqual(nested_file.read_bytes(), b'nested copy')
+
+
+class BackfillReviewFollowUp20TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Twentieth review pass: overlap with another source is refused in
+        both directions, and a media_format that renders an episode NFO at
+        tvshow.nfo is refused before anything is written.
+    '''
+
+    def assert_refused(self, source, message):
+        dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+        applied, exc = run_backfill_capture(
+            '--source', str(source.uuid), '--apply',
+        )
+        for output, error in ((dry, dry_exc), (applied, exc)):
+            self.assertIsNotNone(error)
+            self.assertIn(message, output)
+            self.assertIn('renamed: 0', output)
+            self.assertIn('tvshow_written: 0', output)
+        self.assertEqual(summary_of(dry), summary_of(applied))
+
+    def test_a_source_nested_inside_another_is_refused(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            parent = make_bridge_source(
+                key='UCparentabcdefghijklmnop',
+                name='acq-src-parent',
+                directory='acq-src-parent',
+            )
+            parent.make_directory()
+            child = make_bridge_source(directory='acq-src-parent/child')
+            child.make_directory()
+            child, media, old_path = self.make_downloaded(source=child)[0:3]
+            # The parent's video beside the child's, sharing its old stem.
+            parent_file = old_path.with_name(old_path.stem + '.extra.mkv')
+            parent_file.write_bytes(b'parent video')
+            self.assert_refused(child, "other sources' directories")
+            self.assertTrue(old_path.exists())
+            self.assertEqual(parent_file.read_bytes(), b'parent video')
+
+    def test_an_episode_nfo_at_tvshow_nfo_is_refused(self):
+        overlay = '{"*": {"media_format": "tvshow.{ext}", "write_nfo": true}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, media, old_path = self.make_downloaded()
+            self.assert_refused(source, 'renders episode NFOs at the show')
+            self.assertTrue(old_path.exists())
+            self.assertFalse((source.directory_path / 'tvshow.nfo').exists())
+            source.refresh_from_db()
+            self.assertFalse(source.write_nfo)  # never saved

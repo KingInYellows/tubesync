@@ -547,8 +547,8 @@ class Command(BaseCommand):
         if nested:
             summary['errors'] += 1
             message = (
-                "other sources' directories are this directory or inside "
-                'it (' + ', '.join(nested) + '); '
+                "other sources' directories are this directory, inside it "
+                'or contain it (' + ', '.join(nested) + '); '
                 'rename_files() could move their files. Separate them and '
                 're-run'
             )
@@ -572,6 +572,35 @@ class Command(BaseCommand):
         # copy (or `source` itself when there is no overlay).
         for media in downloaded:
             media.source = working_source
+
+        # An episode NFO rendered at the source's tvshow.nfo path (a
+        # media_format producing a video named `tvshow` in the source
+        # directory) would be written there by the rename or this
+        # command's own NFO step, after which the show-level NFO can never
+        # be written; a dry-run would predict both. Refuse such a source,
+        # in both modes, before anything is saved or moved.
+        tvshow_path = Path(working_source.directory_path) / 'tvshow.nfo'
+        clashing = sorted(
+            str(media) for media in downloaded
+            if working_source.write_nfo
+            and self._sidecar_path(media, '.nfo') == tvshow_path
+        )
+        if clashing:
+            summary['errors'] += 1
+            message = (
+                'the media_format renders episode NFOs at the show\'s '
+                f'{tvshow_path} (' + ', '.join(clashing) + '); choose a '
+                'format whose file names cannot be "tvshow" and re-run'
+            )
+            if apply_changes:
+                log.error(f'medianest_backfill_plex_sidecars: {source}: {message}')
+                self.stdout.write(self.style.ERROR(f'  SKIPPED: {message}'))
+            else:
+                self.stdout.write(self.style.WARNING(
+                    '  NOTE: --apply would skip this source without saving '
+                    f'it: {message}'
+                ))
+            return
 
         # Rename-cascade gate: saving a source whose overlay actually
         # changes a field fires source_post_save's
@@ -1223,17 +1252,19 @@ class Command(BaseCommand):
     def _nested_source_directories(self, source, working_source):
         '''
             The directories of other sources that resolve to
-            `working_source`'s own directory, or lie inside it: either
-            can be reached by rename_files()'s old-stem glob beside each
-            recorded video (a recorded path can already sit in a nested
-            directory) as well as by the {key} sweep of the whole tree,
-            so any overlap is refused regardless of media_format.
+            `working_source`'s own directory, lie inside it, or contain it:
+            rename_files()'s old-stem glob beside each recorded video (a
+            recorded path can already sit in a nested directory) and the
+            {key} sweep of the whole tree can reach a nested source's
+            files, and a parent source's files can sit beside this
+            source's videos, where the same glob takes them for sidecars.
+            Any overlap is refused regardless of media_format.
         '''
         top = Path(working_source.directory_path).resolve()
         overlapping = []
         for other in Source.objects.exclude(pk=source.pk):
             other_dir = Path(other.directory_path).resolve()
-            if other_dir.is_relative_to(top):
+            if other_dir.is_relative_to(top) or top.is_relative_to(other_dir):
                 overlapping.append(str(other.directory_path))
         return sorted(overlapping)
 
