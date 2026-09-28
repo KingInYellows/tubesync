@@ -4725,3 +4725,33 @@ class BackfillReviewFollowUp56TestCase(BackfillFollowUpMixin, TestCase):
             self.assertEqual(summary_of(dry), summary_of(applied))
             source.refresh_from_db()
             self.assertEqual(source.media_format, old_format)  # never saved
+
+
+class BackfillReviewFollowUp57TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Fifty-seventh review pass: the file name itself must not be able
+        to render "", "." or "..".
+    '''
+
+    assert_profile_refused = BackfillReviewFollowUp42TestCase.assert_profile_refused
+
+    def test_a_title_only_file_name_is_refused(self):
+        # A title of ".." renders "<key>/..": the source directory itself.
+        self.assert_profile_refused(
+            '{"*": {"media_format": "{key}/{title_full}", "write_nfo": false, '
+            '"copy_thumbnails": false, "copy_channel_images": false}}',
+            'can render a file name of',
+        )
+
+    def test_a_file_name_with_an_extension_is_not_refused(self):
+        overlay = '{"*": {"media_format": "{key}/{title_full}.{ext}"}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+            patch(f'{self.COMMAND}.TaskHistory'),
+        ):
+            source = make_bridge_source()
+            source.make_directory()
+            output = run_backfill_capture('--source', str(source.uuid))[0]
+            self.assertNotIn('can render a file name of', output)

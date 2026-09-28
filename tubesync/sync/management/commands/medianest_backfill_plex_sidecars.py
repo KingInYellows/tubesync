@@ -1601,6 +1601,20 @@ class Command(BaseCommand):
                 f'media_format {media_format!r} can put a video above the '
                 f'source directory from its own data: {reason}'
             )
+        # The file name itself: only dots and fields that can be empty (or
+        # anything) can render "", "." or "..", naming the directory above
+        # it ("{key}/{title_full}" with a title of "..") instead of a file.
+        name_skeleton = re.split(r'[\\/]', literal_skeleton)[-1]
+        name_literal = name_skeleton.translate(_MARKER_DELETE)
+        if '\0' not in name_skeleton and (
+            '\2' in name_skeleton and not name_literal.strip('.')
+            or name_literal in ('', '.', '..')
+        ):
+            problems.append(
+                f'media_format {media_format!r} can render a file name of '
+                '"", "." or ".." from media data, naming a directory instead '
+                'of a file'
+            )
         # Only the whole video ID is unique per media: dates, titles and
         # the source, format and channel fields repeat. It must also stay
         # in the path: "{key}/../shared.{ext}" drops the directory it is in.

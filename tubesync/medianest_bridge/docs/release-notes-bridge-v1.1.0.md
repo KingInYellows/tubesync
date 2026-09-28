@@ -769,3 +769,9 @@ A source whose stored or overlaid media_format lacks `{key}` is now refused by `
 - `manage.py test sync medianest_bridge`, same image and setup as above: 731 tests OK at the stack tip. In CI's configuration: 739 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: every path-changing save waits for running (or finishing) downloads, whether or not the cascade is on and an image job is queued. A download still using the old profile has not created its final file yet, so this run could otherwise rename another video onto that path first. `test_in_flight_is_counted_for_an_acodec_only_overlay` now expects the save to be held back. The test was checked to fail without the fix.
+
+## Verification (2026-09-28, fifty-seventh review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 733 tests OK at the stack tip. In CI's configuration: 741 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: the file name gets the same check as a directory segment. `{key}/{title_full}` is refused, since a title of `..` names the source directory itself; `{key}/{title_full}.{ext}` is not. The test was checked to fail without the fix.

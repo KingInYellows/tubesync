@@ -806,7 +806,8 @@ per media. It must not be able to leave the source directory, which rules
 out `uploader`/`playlist_title` (never cleaned, so they can hold `/`), a
 format spec with a `/` fill or a nested field (which can supply one), a
 directory made only of title fields or padded fields that can render
-`..`, and literal `..` segments, the source's own name included. It must
+`..`, and literal `..` segments, the source's own name included. Its file
+name must not be able to render as empty, `.` or `..` either. It must
 also not be able to name a video after `tvshow` or a channel image in the
 source directory. Before any of that, a source whose
 directory holds any symlink or special file (FIFO, socket, device) is
