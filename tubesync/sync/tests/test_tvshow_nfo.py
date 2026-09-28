@@ -32,10 +32,12 @@ from sync.choices import (
 )
 from sync.models import Media, Metadata, Source
 from sync.models._migrations import media_file_storage
+from sync import tvshow_nfo as tvshow_nfo_module
 from sync.tvshow_nfo import (
     _clear_show_title_cache, _invalidate_show_title_cache,
     _show_title_cache, _store_show_title,
-    build_tvshow_nfo, resolve_show_title, write_tvshow_nfo,
+    build_tvshow_nfo, resolve_show_title, tvshow_nfo_needs_write,
+    write_tvshow_nfo,
 )
 
 from .fixtures import all_test_metadata
@@ -303,6 +305,33 @@ class WriteTvshowNfoTestCase(TestCase):
             self._nfo_path().write_text(manual, encoding='utf-8')
             write_tvshow_nfo(self.source)
             self.assertEqual(self._nfo_path().read_text(encoding='utf-8'), manual)
+
+    def test_builds_the_nfo_only_once(self):
+        '''
+            write_tvshow_nfo() used to call tvshow_nfo_needs_write() (which
+            builds the NFO to compare bytes) and then build it AGAIN
+            itself -- doubling the underlying metadata queries on every
+            index_source/download_source_images/download_media_metadata
+            run. Both public functions now share one call through
+            _tvshow_nfo_content_to_write().
+        '''
+        with temp_download_root():
+            self.source.make_directory()
+            with patch.object(
+                tvshow_nfo_module, 'build_tvshow_nfo',
+                wraps=tvshow_nfo_module.build_tvshow_nfo,
+            ) as mock_build:
+                write_tvshow_nfo(self.source)
+            mock_build.assert_called_once()
+
+            # Nothing changed: tvshow_nfo_needs_write() alone also builds
+            # exactly once (to compare against the bytes on disk).
+            with patch.object(
+                tvshow_nfo_module, 'build_tvshow_nfo',
+                wraps=tvshow_nfo_module.build_tvshow_nfo,
+            ) as mock_build_needs:
+                self.assertFalse(tvshow_nfo_needs_write(self.source))
+            mock_build_needs.assert_called_once()
 
     def test_still_owned_and_rewritten_after_the_source_key_changes(self):
         # A source-update form edit to `key` must not orphan a file this
@@ -1092,3 +1121,40 @@ class TvshowNfoFollowUp12TestCase(TestCase):
                 self.assertEqual(resolve_show_title(self.source), 'test uploader')
                 tree = ElementTree.fromstring(media.nfoxml)
                 self.assertEqual(tree.find('showtitle').text, 'test uploader')
+
+
+class TvshowNfoFollowUp57TestCase(TestCase):
+    '''
+        A resolve_show_title() lookup that runs while write_tvshow_nfo()
+        rebuilds the NFO cannot cache its title under the generation the
+        write leaves behind.
+    '''
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+        _clear_show_title_cache()
+        self.source = make_source()
+
+    def tearDown(self):
+        _clear_show_title_cache()
+
+    def test_a_lookup_during_the_rebuild_is_not_cached(self):
+        seen = []
+
+        def build_while_a_lookup_starts(source):
+            # A concurrent lookup reads the generation now, before this
+            # build's (newer) data is written.
+            seen.append(tvshow_nfo_module._show_title_generations.get(source.pk, 0))
+            return real_build(source)
+
+        real_build = tvshow_nfo_module.build_tvshow_nfo
+        with temp_download_root():
+            self.source.make_directory()
+            with patch(
+                'sync.tvshow_nfo.build_tvshow_nfo',
+                side_effect=build_while_a_lookup_starts,
+            ):
+                self.assertTrue(write_tvshow_nfo(self.source))
+            # The in-flight lookup now finishes with an older title.
+            _store_show_title(self.source, seen[0], 'stale title')
+        self.assertNotIn(self.source.pk, _show_title_cache)
