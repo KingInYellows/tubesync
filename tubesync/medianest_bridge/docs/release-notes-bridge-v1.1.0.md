@@ -775,3 +775,9 @@ A source whose stored or overlaid media_format lacks `{key}` is now refused by `
 - `manage.py test sync medianest_bridge`, same image and setup as above: 733 tests OK at the stack tip. In CI's configuration: 741 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: the file name gets the same check as a directory segment. `{key}/{title_full}` is refused, since a title of `..` names the source directory itself; `{key}/{title_full}.{ext}` is not. The test was checked to fail without the fix.
+
+## Verification (2026-09-28, fifty-eighth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 734 tests OK at the stack tip. In CI's configuration: 742 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: `write_tvshow_nfo()` bumps the `resolve_show_title()` cache generation after rebuilding the NFO again, as it did before this PR's refactor. A lookup that runs during the rebuild cannot cache an older title for the TTL. The test was checked to fail with the early invalidation alone.

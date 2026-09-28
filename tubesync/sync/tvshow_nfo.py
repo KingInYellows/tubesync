@@ -563,8 +563,8 @@ def write_tvshow_nfo(source, raise_errors=False):
         T4's backfill command, which counts failures in its summary and
         exit status.
 
-        Every call recomputes the show's data from scratch and drops this
-        source's `resolve_show_title()` cache entry (see
+        Every call recomputes the show's data from scratch and, having done
+        so, drops this source's `resolve_show_title()` cache entry (see
         `_invalidate_show_title_cache`) -- this is that cache's one refresh
         point, so a subsequent `resolve_show_title()`/`Media.nfoxml` call in
         this process picks up the fresh value immediately rather than
@@ -588,10 +588,13 @@ def write_tvshow_nfo(source, raise_errors=False):
         race instead.
     '''
     try:
-        # Every call is a refresh point for this process's
-        # resolve_show_title() cache (see the docstring above).
-        _invalidate_show_title_cache(source)
         content = _tvshow_nfo_content_to_write(source)
+        # Every call is a refresh point for this process's
+        # resolve_show_title() cache (see the docstring above). After the
+        # rebuild, not before: a lookup that started before it read the
+        # previous generation, so the bump makes the generation guard drop
+        # its (possibly older) title instead of caching it.
+        _invalidate_show_title_cache(source)
         if content is None:
             return False
         log.info(f'Writing tvshow.nfo for: {source}')

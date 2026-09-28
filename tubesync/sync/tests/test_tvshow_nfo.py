@@ -1121,3 +1121,40 @@ class TvshowNfoFollowUp12TestCase(TestCase):
                 self.assertEqual(resolve_show_title(self.source), 'test uploader')
                 tree = ElementTree.fromstring(media.nfoxml)
                 self.assertEqual(tree.find('showtitle').text, 'test uploader')
+
+
+class TvshowNfoFollowUp57TestCase(TestCase):
+    '''
+        A resolve_show_title() lookup that runs while write_tvshow_nfo()
+        rebuilds the NFO cannot cache its title under the generation the
+        write leaves behind.
+    '''
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+        _clear_show_title_cache()
+        self.source = make_source()
+
+    def tearDown(self):
+        _clear_show_title_cache()
+
+    def test_a_lookup_during_the_rebuild_is_not_cached(self):
+        seen = []
+
+        def build_while_a_lookup_starts(source):
+            # A concurrent lookup reads the generation now, before this
+            # build's (newer) data is written.
+            seen.append(tvshow_nfo_module._show_title_generations.get(source.pk, 0))
+            return real_build(source)
+
+        real_build = tvshow_nfo_module.build_tvshow_nfo
+        with temp_download_root():
+            self.source.make_directory()
+            with patch(
+                'sync.tvshow_nfo.build_tvshow_nfo',
+                side_effect=build_while_a_lookup_starts,
+            ):
+                self.assertTrue(write_tvshow_nfo(self.source))
+            # The in-flight lookup now finishes with an older title.
+            _store_show_title(self.source, seen[0], 'stale title')
+        self.assertNotIn(self.source.pk, _show_title_cache)
