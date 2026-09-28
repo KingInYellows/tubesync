@@ -793,7 +793,16 @@ both). The whole run is refused when `DOWNLOAD_ROOT` itself goes through a
 symlink, and a whole source when any of its downloaded rows is recorded
 through a symlinked directory, when its directory contains another
 source's or lies inside one, or when its media_format would put an
-episode NFO at `tvshow.nfo` or on the video file itself. Before any of that, a source whose
+episode NFO at `tvshow.nfo` or on the video file itself. The media_format
+itself is also checked for what media data could do to it, so an empty
+source cannot save an unsafe one. It must use the whole `{key}`, since
+dates, titles and episode numbers repeat and only the video ID is unique
+per media. It must not be able to leave the source directory, which rules
+out `uploader`/`playlist_title` (never cleaned, so they can hold `/`), a
+directory made only of title fields or padded fields that can render
+`..`, and literal `..` segments, the source's own name included. It must
+also not be able to name a video after `tvshow` or a channel image in the
+source directory. Before any of that, a source whose
 directory holds any symlink or special file (FIFO, socket, device) is
 refused outright; TubeSync never creates those itself. A media already at
 its target

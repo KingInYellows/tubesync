@@ -725,3 +725,13 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 720 tests OK at the stack tip. In CI's configuration: 728 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: an indexed or attribute field, such as `{key[0]}`, takes only part of the value, so it no longer counts as telling media apart. The test was checked to fail without the fix.
+
+## Verification (2026-09-28, fifty-first review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 722 tests OK at the stack tip. In CI's configuration: 730 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: a media_format must use the whole `{key}`, since it is the only field unique per media. Dates, titles and the episode fields repeat, and the same-day index in `{episode_mmddnn}` is recomputed as media are indexed. A keyless format such as `{yyyy}.{ext}` or `Season {episode_yyyy}/s{episode_yyyy}e{episode_mmddnn}.{ext}` is refused up front. Padding the key (`{key:_>12}`) keeps it whole. The built-in profile includes `[{key}]`, so it is unaffected. The README lists every media_format check. The tests were checked to fail without the fix.
+
+### Upgrade note
+
+A source whose stored or overlaid media_format lacks `{key}` is now refused by `medianest_backfill_plex_sidecars` until `{key}` is added.

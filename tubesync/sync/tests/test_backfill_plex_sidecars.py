@@ -1660,7 +1660,9 @@ class BackfillReviewFollowUp3TestCase(BackfillFollowUpMixin, TestCase):
                 '--source', str(source.uuid), '--apply',
             )
             self.assertIsNotNone(exc)
-            self.assertIn('directories would be moved with it', output)
+            # Review pass 51: a format without the whole {key} is refused
+            # up front (the episode fields are not unique per media).
+            self.assertIn('does not use the whole {key}', output)
             self.assertTrue(old_path.exists())
             self.assertTrue(extras.is_dir())
 
@@ -4465,7 +4467,7 @@ class BackfillReviewFollowUp48TestCase(BackfillFollowUpMixin, TestCase):
         self.assert_profile_refused(
             '{"*": {"media_format": "shared.{ext}", "write_nfo": false, '
             '"copy_thumbnails": false, "copy_channel_images": false}}',
-            'has no field that tells media apart',
+            'does not use the whole {key}',
         )
 
     def test_a_stream_field_directory_is_not_refused(self):
@@ -4528,7 +4530,7 @@ class BackfillReviewFollowUp49TestCase(BackfillFollowUpMixin, TestCase):
         self.assert_profile_refused(
             '{"*": {"media_format": "{key:.1}.{ext}", "write_nfo": false, '
             '"copy_thumbnails": false, "copy_channel_images": false}}',
-            'has no field that tells media apart',
+            'does not use the whole {key}',
         )
 
 
@@ -4543,5 +4545,34 @@ class BackfillReviewFollowUp50TestCase(BackfillFollowUpMixin, TestCase):
         self.assert_profile_refused(
             '{"*": {"media_format": "{key[0]}.{ext}", "write_nfo": false, '
             '"copy_thumbnails": false, "copy_channel_images": false}}',
-            'has no field that tells media apart',
+            'does not use the whole {key}',
         )
+
+
+class BackfillReviewFollowUp51TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Fifty-first review pass: only the whole {key} tells every media
+        apart.
+    '''
+
+    assert_profile_refused = BackfillReviewFollowUp42TestCase.assert_profile_refused
+
+    def test_a_date_does_not_tell_media_apart(self):
+        self.assert_profile_refused(
+            '{"*": {"media_format": "{yyyy}.{ext}", "write_nfo": false, '
+            '"copy_thumbnails": false, "copy_channel_images": false}}',
+            'does not use the whole {key}',
+        )
+
+    def test_a_padded_key_tells_media_apart(self):
+        overlay = '{"*": {"media_format": "{key:_>12}.{ext}"}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+            patch(f'{self.COMMAND}.TaskHistory'),
+        ):
+            source = make_bridge_source()
+            source.make_directory()
+            output = run_backfill('--source', str(source.uuid))
+            self.assertNotIn('whole {key}', output)

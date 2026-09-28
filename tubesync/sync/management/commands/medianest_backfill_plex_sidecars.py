@@ -214,14 +214,6 @@ _NEVER_EMPTY_FIELDS = frozenset((
     'episode_yyyy', 'episode_mmddnn',
 ))
 
-# media_format fields that take the same value for most or all of a
-# source's media (the source itself, its format preferences, its channel
-# or playlist): a format made only of them cannot tell media apart.
-_NON_DISTINGUISHING_FIELDS = frozenset((
-    'source', 'source_full', 'ext', 'format', 'resolution', 'height', 'width',
-    'vcodec', 'acodec', 'fps', 'hdr', 'uploader', 'playlist_title',
-))
-
 # Deletes the field markers of _profile_problems()'s literal skeleton.
 _MARKER_DELETE = str.maketrans('', '', '\0\1\2')
 
@@ -1583,22 +1575,21 @@ class Command(BaseCommand):
                 f'media_format {media_format!r} can put a video above the '
                 f'source directory from its own data: {reason}'
             )
-        distinguishing = {
-            _field_name(field)
+        # Only the whole video ID is unique per media: dates, titles and
+        # the source, format and channel fields repeat. An index or
+        # attribute takes a part of it ("{key[0]}") and a precision
+        # truncates it ("{key:.1}"); fill, width and alignment keep it all.
+        whole_key = any(
+            field == 'key' and not re.search(r'\.[\d{]', spec)
             for _literal, field, spec, _conversion in template_pieces
-            # Only the whole value: an index or attribute takes a part of
-            # it ("{key[0]}"), and a precision truncates it ("{key:.1}");
-            # fill, width and alignment keep all of it.
-            if field is not None and field == _field_name(field)
-            and not re.search(r'\.[\d{]', spec)
-        } - _NON_DISTINGUISHING_FIELDS
-        if not distinguishing:
+        )
+        if not whole_key:
             # The duplicate-target check only sees rows that exist now; a
-            # media indexed later would share the same path.
+            # media indexed later could share another's path.
             problems.append(
-                f'media_format {media_format!r} has no field that tells media '
-                'apart (such as {key} or a title), so every video would '
-                'render to the same path'
+                f'media_format {media_format!r} does not use the whole {{key}}, '
+                'the only field that tells every media apart, so two videos '
+                'could render to the same path'
             )
         template_last = re.split(r'[\\/]', media_format)[-1]
         if (
