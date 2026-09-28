@@ -217,6 +217,10 @@ _NEVER_EMPTY_FIELDS = frozenset((
 # Deletes the field markers of _profile_problems()'s literal skeleton.
 _MARKER_DELETE = str.maketrans('', '', '\0\1\2\3')
 
+# Replaces marker characters in literal template text (and rendered source
+# values), so text such as "shared\x03" cannot pass for a field marker.
+_MARKER_ESCAPE = str.maketrans(dict.fromkeys('\0\1\2\3', '_'))
+
 
 def _field_name(field):
     '''The base name of a str.format() field ("uploader" of "uploader[0]").'''
@@ -769,7 +773,15 @@ class Command(BaseCommand):
             (_PATH_FIELDS | {'write_nfo', 'copy_thumbnails'}).intersection(changes)
         )
         cascade = overlay_changed and self._cascade_enabled_for(source)
-        if cascade or images_already_queued:
+        # This command's own image enqueue after the save counts too
+        # (_process_tvshow_and_images()): with copy_channel_images already
+        # on and poster.jpg missing, it queues the job whatever the
+        # overlay turned on.
+        images_will_queue = images_already_queued or (
+            working_source.copy_channel_images
+            and not _occupied(Path(working_source.directory_path) / 'poster.jpg')
+        )
+        if cascade or images_already_queued or (path_changing and images_will_queue):
             gate = None
             refused = (
                 self._count_refused_media(downloaded, media_files)
@@ -780,9 +792,10 @@ class Command(BaseCommand):
             elif (path_changing or images_already_queued) and (
                 busy := self._in_flight_media(source, finishing=True)
             ):
-                # Also without the cascade when the save queues the channel
-                # image job: a download still running under the old source
-                # could finish at a path that job then overwrites.
+                # Also without the cascade when the save or this run queues
+                # the channel image job: a download still running under the
+                # old source could finish at a path that job then
+                # overwrites.
                 for media in busy:
                     self._report_in_flight(media)
                 gate = ('in_flight', len(busy), self._in_flight_gate_message(busy))
@@ -1507,7 +1520,7 @@ class Command(BaseCommand):
             try:
                 return formatter.format_field(
                     formatter.convert_field(constants[field], conversion), spec,
-                )
+                ).translate(_MARKER_ESCAPE)
             except (KeyError, ValueError, TypeError):
                 # A nested field in the spec ("{source:{width}}").
                 return '\2'
@@ -1516,7 +1529,7 @@ class Command(BaseCommand):
         # key is unique per media ("{key[0]}" and "{key:.1}" are not; fill,
         # width and alignment keep it whole).
         literal_skeleton = ''.join(
-            literal + (
+            literal.translate(_MARKER_ESCAPE) + (
                 '' if field is None
                 else rendered_constant(field, spec, conversion)
                 if field in constants

@@ -747,3 +747,11 @@ A source whose stored or overlaid media_format lacks `{key}` is now refused by `
 - `manage.py test sync medianest_bridge`, same image and setup as above: 725 tests OK at the stack tip. In CI's configuration: 733 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: the whole `{key}` must stay in the path once `..` segments are resolved. It has to be in the file name or in a directory that no `..` pops. `{key}/../shared.{ext}` is refused. The test was checked to fail without the fix.
+
+## Verification (2026-09-28, fifty-fourth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 727 tests OK at the stack tip. In CI's configuration: 735 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep, each test checked to fail without its fix:
+  - The in-flight gate also counts the channel-image job this run queues after the save. When `copy_channel_images` is already on and `poster.jpg` is missing, a path-changing save waits for running downloads, with the cascade off too.
+  - Marker characters in literal template text (or in a rendered source value) are replaced before the structural check. So `shared\x03.{ext}` cannot pass for a format that uses `{key}`.

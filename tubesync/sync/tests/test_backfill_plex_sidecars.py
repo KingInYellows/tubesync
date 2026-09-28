@@ -4611,3 +4611,49 @@ class BackfillReviewFollowUp53TestCase(BackfillFollowUpMixin, TestCase):
     def test_a_key_directory_that_stays_is_not_refused(self):
         for output, _error in self.run_with_stored_format('{key}/shared.{ext}'):
             self.assertNotIn('whole {key}', output)
+
+
+class BackfillReviewFollowUp54TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Fifty-fourth review pass: the run's own channel-image enqueue
+        holds back a path-changing save while a download is running, and
+        literal text cannot pass for a field marker.
+    '''
+
+    make_busy_source = BackfillReviewFollowUp4TestCase.make_busy_source
+    locked = BackfillReviewFollowUp4TestCase.locked
+    run_with_stored_format = BackfillReviewFollowUp49TestCase.run_with_stored_format
+
+    def test_a_pending_image_enqueue_waits_for_running_downloads(self):
+        # copy_channel_images is already on and poster.jpg is missing, so
+        # this run queues the image job itself after saving the format.
+        overlay = (
+            '{"*": {"media_format": "{key}.{ext}", "copy_channel_images": true}}'
+        )
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+            patch(f'{self.COMMAND}.TaskHistory') as task_history,
+        ):
+            source, busy = self.make_busy_source()
+            Source.objects.filter(pk=source.pk).update(copy_channel_images=True)
+            old_format = Source.objects.get(pk=source.pk).media_format
+            with self.locked(busy):
+                dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+                applied, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            task_history.schedule.assert_not_called()
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn(f'IN FLIGHT: {busy}', output)
+                self.assertIn('in_flight: 1', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            source.refresh_from_db()
+            self.assertEqual(source.media_format, old_format)  # never saved
+
+    def test_literal_text_cannot_pass_for_the_key(self):
+        for output, error in self.run_with_stored_format('shared\x03.{ext}'):
+            self.assertIsNotNone(error)
+            self.assertIn('does not use the whole {key}', output)
