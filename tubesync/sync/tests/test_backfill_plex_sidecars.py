@@ -4530,3 +4530,18 @@ class BackfillReviewFollowUp49TestCase(BackfillFollowUpMixin, TestCase):
             '"copy_thumbnails": false, "copy_channel_images": false}}',
             'has no field that tells media apart',
         )
+
+
+class BackfillReviewFollowUp50TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Fiftieth review pass: an indexed field does not tell media apart.
+    '''
+
+    assert_profile_refused = BackfillReviewFollowUp42TestCase.assert_profile_refused
+
+    def test_an_indexed_key_does_not_tell_media_apart(self):
+        self.assert_profile_refused(
+            '{"*": {"media_format": "{key[0]}.{ext}", "write_nfo": false, '
+            '"copy_thumbnails": false, "copy_channel_images": false}}',
+            'has no field that tells media apart',
+        )

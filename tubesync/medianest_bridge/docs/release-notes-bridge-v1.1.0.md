@@ -719,3 +719,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - New this sweep, each test checked to fail without its fix:
   - `{source}` and `{source_full}` are the same for every media, so the structural check uses the values `Media.format_dict` gives them rather than a marker. A format is refused when its `..` segments leave the source directory, whether those come from literals or the source's own name (a source named `..`). `{source_full}/{key}.{ext}` on an ordinary source is still accepted.
   - A field whose format spec truncates it with a precision, such as `{key:.1}`, no longer counts as telling media apart.
+
+## Verification (2026-09-28, fiftieth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 720 tests OK at the stack tip. In CI's configuration: 728 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: an indexed or attribute field, such as `{key[0]}`, takes only part of the value, so it no longer counts as telling media apart. The test was checked to fail without the fix.

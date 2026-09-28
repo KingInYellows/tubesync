@@ -1586,9 +1586,10 @@ class Command(BaseCommand):
         distinguishing = {
             _field_name(field)
             for _literal, field, spec, _conversion in template_pieces
-            if field is not None
-            # A precision truncates the value ("{key:.1}"); fill, width
-            # and alignment keep all of it.
+            # Only the whole value: an index or attribute takes a part of
+            # it ("{key[0]}"), and a precision truncates it ("{key:.1}");
+            # fill, width and alignment keep all of it.
+            if field is not None and field == _field_name(field)
             and not re.search(r'\.[\d{]', spec)
         } - _NON_DISTINGUISHING_FIELDS
         if not distinguishing:
