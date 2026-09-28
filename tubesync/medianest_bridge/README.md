@@ -795,7 +795,8 @@ through a symlinked directory, when its directory contains another
 source's or lies inside one, or when its media_format would put an
 episode NFO at `tvshow.nfo` or on the video file itself. The media_format
 itself is also checked for what media data could do to it, so an empty
-source cannot save an unsafe one. It must use the whole `{key}`, since
+source cannot save an unsafe one. It must use the whole `{key}`, in a part
+of the path no `..` segment removes, since
 dates, titles and episode numbers repeat and only the video ID is unique
 per media. It must not be able to leave the source directory, which rules
 out `uploader`/`playlist_title` (never cleaned, so they can hold `/`), a

@@ -741,3 +741,9 @@ A source whose stored or overlaid media_format lacks `{key}` is now refused by `
 - `manage.py test sync medianest_bridge`, same image and setup as above: 723 tests OK at the stack tip. In CI's configuration: 731 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: a format spec that holds a nested field (`{hdr:{uploader[0]}>1}`) counts as able to put `/` into the path, since the nested field's media value can supply the fill. The test was checked to fail without the fix.
+
+## Verification (2026-09-28, fifty-third review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 725 tests OK at the stack tip. In CI's configuration: 733 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: the whole `{key}` must stay in the path once `..` segments are resolved. It has to be in the file name or in a directory that no `..` pops. `{key}/../shared.{ext}` is refused. The test was checked to fail without the fix.

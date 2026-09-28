@@ -215,7 +215,7 @@ _NEVER_EMPTY_FIELDS = frozenset((
 ))
 
 # Deletes the field markers of _profile_problems()'s literal skeleton.
-_MARKER_DELETE = str.maketrans('', '', '\0\1\2')
+_MARKER_DELETE = str.maketrans('', '', '\0\1\2\3')
 
 
 def _field_name(field):
@@ -1512,6 +1512,9 @@ class Command(BaseCommand):
                 # A nested field in the spec ("{source:{width}}").
                 return '\2'
 
+        # \3 also marks the whole {key}: only an index-free, untruncated
+        # key is unique per media ("{key[0]}" and "{key:.1}" are not; fill,
+        # width and alignment keep it whole).
         literal_skeleton = ''.join(
             literal + (
                 '' if field is None
@@ -1520,6 +1523,9 @@ class Command(BaseCommand):
                 else '\2' if _field_name(field) in _DOT_FIELDS or spec
                 else '\0' if _field_name(field) in _NEVER_EMPTY_FIELDS
                 else '\1'
+            ) + (
+                '\3' if field == 'key' and not re.search(r'\.[\d{]', spec)
+                else ''
             )
             for literal, field, spec, conversion in template_pieces
         )
@@ -1577,20 +1583,19 @@ class Command(BaseCommand):
                 f'source directory from its own data: {reason}'
             )
         # Only the whole video ID is unique per media: dates, titles and
-        # the source, format and channel fields repeat. An index or
-        # attribute takes a part of it ("{key[0]}") and a precision
-        # truncates it ("{key:.1}"); fill, width and alignment keep it all.
-        whole_key = any(
-            field == 'key' and not re.search(r'\.[\d{]', spec)
-            for _literal, field, spec, _conversion in template_pieces
+        # the source, format and channel fields repeat. It must also stay
+        # in the path: "{key}/../shared.{ext}" drops the directory it is in.
+        key_stays = '\3' in re.split(r'[\\/]', literal_skeleton)[-1] or any(
+            '\3' in directory for directory in directories
         )
-        if not whole_key:
+        if not key_stays:
             # The duplicate-target check only sees rows that exist now; a
             # media indexed later could share another's path.
             problems.append(
-                f'media_format {media_format!r} does not use the whole {{key}}, '
-                'the only field that tells every media apart, so two videos '
-                'could render to the same path'
+                f'media_format {media_format!r} does not use the whole {{key}} '
+                'in a part of its path that ".." does not remove, and only '
+                'the whole {key} tells every media apart, so two videos could '
+                'render to the same path'
             )
         template_last = re.split(r'[\\/]', media_format)[-1]
         if (

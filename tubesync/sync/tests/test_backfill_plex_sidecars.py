@@ -4593,3 +4593,21 @@ class BackfillReviewFollowUp52TestCase(BackfillFollowUpMixin, TestCase):
             '"..{hdr:{uploader[0]}>1}..{hdr:{uploader[0]}>1}..{key}.mkv"}}',
             'can put a video above the source directory',
         )
+
+
+class BackfillReviewFollowUp53TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Fifty-third review pass: the whole {key} must stay in the path
+        once ".." segments are resolved.
+    '''
+
+    run_with_stored_format = BackfillReviewFollowUp49TestCase.run_with_stored_format
+
+    def test_a_key_directory_a_parent_segment_drops_is_refused(self):
+        for output, error in self.run_with_stored_format('{key}/../shared.{ext}'):
+            self.assertIsNotNone(error)
+            self.assertIn('does not use the whole {key}', output)
+
+    def test_a_key_directory_that_stays_is_not_refused(self):
+        for output, _error in self.run_with_stored_format('{key}/shared.{ext}'):
+            self.assertNotIn('whole {key}', output)
