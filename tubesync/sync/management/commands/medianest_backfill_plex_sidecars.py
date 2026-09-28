@@ -199,6 +199,10 @@ _SOURCE_IMAGE_NAMES = (
     'season-poster.jpg',
 )
 
+# media_format fields whose value is raw metadata, not passed through
+# clean_filename(), so it can hold "/" (Media.format_dict).
+_UNCLEANED_FIELDS = frozenset({'uploader', 'playlist_title'})
+
 
 # Source fields the preflight's path, sidecar and image checks rely on
 # (every Source attribute Media.format_dict and the source's paths read:
@@ -1436,11 +1440,14 @@ class Command(BaseCommand):
         rendered = working_source.get_example_media_format() or media_format
         segments = re.split(r'[\\/]', rendered.lstrip('/'))
         last = segments[-1]
-        # A directory segment built only from fields (and dots) can render
-        # empty or "." for some media -- "{uploader}/poster.jpg" with no
-        # uploader is "/poster.jpg", which Media.filename makes
-        # "./poster.jpg" -- and so vanish from the path. When every one
-        # can, some media's file can land in the source directory itself.
+        # Where the template can put a file, read from its structure, not
+        # only from the example: a directory segment that holds a field
+        # can render empty, "." or ".." for some media (title_full keeps
+        # dots; uploader and playlist_title are not cleaned at all and
+        # can hold "/"), so it can take the file up to the source
+        # directory -- "{uploader}/poster.jpg" with no uploader is
+        # "/poster.jpg", which Media.filename makes "./poster.jpg".
+        # Literal "." and ".." segments are resolved as the path would be.
         try:
             template_pieces = list(string.Formatter().parse(media_format))
         except ValueError:
@@ -1449,9 +1456,24 @@ class Command(BaseCommand):
             literal + ('' if field is None else '\0')
             for literal, field, _spec, _conversion in template_pieces
         )
-        in_source_dir = len(segments) == 1 or all(
-            not segment.replace('\0', '').strip('.')
-            for segment in re.split(r'[\\/]', literal_skeleton)[:-1]
+        directories = []
+        escaped = False
+        field_directory = False
+        for segment in re.split(r'[\\/]', literal_skeleton)[:-1]:
+            if '\0' in segment:
+                field_directory = True
+            elif segment in ('', '.'):
+                continue
+            elif segment == '..':
+                if directories:
+                    directories.pop()
+                else:
+                    escaped = True
+            else:
+                directories.append(segment)
+        in_source_dir = (
+            len(segments) == 1 or field_directory
+            or (not directories and not escaped)
         )
         stem, ext = os.path.splitext(last)
         problems = []
@@ -1507,7 +1529,13 @@ class Command(BaseCommand):
             stem_pattern += re.escape(literal)
             if field is None:
                 continue
-            if field == 'key' and not spec and not conversion:
+            if re.split(r'[.\[]', field)[0] in _UNCLEANED_FIELDS:
+                # A "/" in the value starts a new name (and "../" can
+                # climb to the source directory): only what follows it
+                # is the file's name.
+                stem_pattern = '.*'
+                in_source_dir = True
+            elif field == 'key' and not spec and not conversion:
                 stem_pattern += '[A-Za-z0-9_-]{11}'
             else:
                 stem_pattern += '.*'

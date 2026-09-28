@@ -4217,9 +4217,10 @@ class BackfillReviewFollowUp42TestCase(BackfillFollowUpMixin, TestCase):
 
 class BackfillReviewFollowUp45TestCase(BackfillFollowUpMixin, TestCase):
     '''
-        Forty-fifth review pass: a dry-run's {key} sweep sees the files
-        earlier renames of the run put there, and a directory segment that
-        can render empty counts as the source directory.
+        Forty-fifth and forty-sixth review passes: a dry-run's {key} sweep
+        sees the files earlier renames of the run put there, and a
+        directory segment or name that media data can empty, climb out of
+        (".."), or split ("/") counts as reaching the source directory.
     '''
 
     assert_profile_refused = BackfillReviewFollowUp42TestCase.assert_profile_refused
@@ -4261,9 +4262,49 @@ class BackfillReviewFollowUp45TestCase(BackfillFollowUpMixin, TestCase):
             'at the channel image poster.jpg',
         )
 
-    def test_a_directory_with_literal_text_is_not_the_source_directory(self):
+    def test_a_title_directory_that_can_climb_is_the_source_directory(self):
+        # A title of ".." takes "fixed/../poster.jpg" to the source root.
+        self.assert_profile_refused(
+            '{"*": {"media_format": "fixed/{title_full}/poster.jpg", '
+            '"copy_channel_images": true}}',
+            'at the channel image poster.jpg',
+        )
+
+    def test_a_literal_parent_segment_is_resolved(self):
+        overlay = '{"*": {"copy_channel_images": true}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source = make_bridge_source()
+            source.make_directory()
+            # A stored format (not a validated overlay): "fixed/.." is the
+            # source directory itself.
+            Source.objects.filter(pk=source.pk).update(
+                media_format='fixed/../poster.jpg',
+            )
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('at the channel image poster.jpg', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+
+    def test_a_slash_capable_field_in_the_stem_frees_the_name(self):
+        # An uploader of "/../../poster" makes the name poster.jpg in the
+        # source directory, whatever literal text precedes it.
+        self.assert_profile_refused(
+            '{"*": {"media_format": "fixed/s{uploader}.jpg", '
+            '"copy_channel_images": true}}',
+            'can name a video after a channel image',
+        )
+
+    def test_a_literal_directory_is_not_the_source_directory(self):
         overlay = (
-            '{"*": {"media_format": "Channel {uploader}/poster.jpg", '
+            '{"*": {"media_format": "Channel/poster.jpg", '
             '"copy_channel_images": true}}'
         )
         with (
@@ -4276,3 +4317,4 @@ class BackfillReviewFollowUp45TestCase(BackfillFollowUpMixin, TestCase):
             source.make_directory()
             output = run_backfill('--source', str(source.uuid))
             self.assertNotIn('at the channel image', output)
+            self.assertNotIn('can name a video', output)

@@ -683,3 +683,12 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - New this sweep, each test checked to fail without its fix:
   - A dry-run's `{key}` sweep now includes the files earlier renames project into the source tree and leaves out the ones they move away, as the old-stem glob already did. A later media whose key appears in an earlier media's new name is refused in both modes.
   - A directory segment made only of fields (and dots) can render empty, so the profile check treats such a format as placing files in the source directory. `{uploader}/poster.jpg` with channel images on is refused.
+
+## Verification (2026-09-28, forty-sixth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 706 tests OK at the stack tip. In CI's configuration: 714 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep, each test checked to fail without its fix:
+  - Any directory segment that holds a field counts as able to reach the source directory, because media data can render it empty, `.` or `..` (`title_full` keeps dots). `fixed/{title_full}/poster.jpg` with channel images on is refused.
+  - `uploader` and `playlist_title` are not cleaned and can hold `/`. In the file name they free the whole name, so `fixed/s{uploader}.jpg` counts as able to name a video after a channel image.
+  - Literal `.` and `..` segments in a stored (unvalidated) format are resolved the way the path would resolve them.
