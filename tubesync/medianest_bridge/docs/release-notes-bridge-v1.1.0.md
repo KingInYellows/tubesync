@@ -675,3 +675,11 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 - `manage.py test sync medianest_bridge`, same image and setup as above: 700 tests OK at the stack tip. In CI's configuration (every app, `TUBESYNC_DEBUG=True`, final `DEBUG = False`): 708 tests OK.
 - `ruff check` run as CI runs it: only the two known hits.
 - New this sweep: the stem check parses the format with Python's own `string.Formatter`, so nested fields such as `{title_full:.{video_order}}` count as data. The test was checked to fail with the earlier regex tokenizer.
+
+## Verification (2026-09-28, forty-fifth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 703 tests OK at the stack tip. In CI's configuration: 711 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep, each test checked to fail without its fix:
+  - A dry-run's `{key}` sweep now includes the files earlier renames project into the source tree and leaves out the ones they move away, as the old-stem glob already did. A later media whose key appears in an earlier media's new name is refused in both modes.
+  - A directory segment made only of fields (and dots) can render empty, so the profile check treats such a format as placing files in the source directory. `{uploader}/poster.jpg` with channel images on is refused.

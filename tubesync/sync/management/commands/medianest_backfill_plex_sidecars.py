@@ -1436,7 +1436,23 @@ class Command(BaseCommand):
         rendered = working_source.get_example_media_format() or media_format
         segments = re.split(r'[\\/]', rendered.lstrip('/'))
         last = segments[-1]
-        in_source_dir = len(segments) == 1
+        # A directory segment built only from fields (and dots) can render
+        # empty or "." for some media -- "{uploader}/poster.jpg" with no
+        # uploader is "/poster.jpg", which Media.filename makes
+        # "./poster.jpg" -- and so vanish from the path. When every one
+        # can, some media's file can land in the source directory itself.
+        try:
+            template_pieces = list(string.Formatter().parse(media_format))
+        except ValueError:
+            template_pieces = [('', 'unparsable', '', None)]
+        literal_skeleton = ''.join(
+            literal + ('' if field is None else '\0')
+            for literal, field, _spec, _conversion in template_pieces
+        )
+        in_source_dir = len(segments) == 1 or all(
+            not segment.replace('\0', '').strip('.')
+            for segment in re.split(r'[\\/]', literal_skeleton)[:-1]
+        )
         stem, ext = os.path.splitext(last)
         problems = []
         template_last = re.split(r'[\\/]', media_format)[-1]
@@ -1853,9 +1869,19 @@ class Command(BaseCommand):
         stem_moved = {other for other, _ in sidecar_moves}
         taken = {target} | {destination for _, destination in sidecar_moves}
         taken |= reserved
+        key = str(media.key)
+        found = set(top_dir.rglob('*' + glob_quote(key) + '*'))
+        # What earlier renames of this run leave in the tree, as in
+        # _sidecar_moves(): files they project there (not yet on disk in a
+        # dry-run) are found, and files they move away are not.
+        found |= {
+            path for path in self._projected_destinations | self._projected_videos
+            if key in path.name and path.is_relative_to(top_dir)
+        }
+        found -= self._projected_vacated
         moves = []
         collisions = []
-        for path in sorted(top_dir.rglob('*' + glob_quote(str(media.key)) + '*')):
+        for path in sorted(found):
             if path == current or path in stem_moved:
                 continue
             (_, path_stem) = directory_and_stem(path, True)

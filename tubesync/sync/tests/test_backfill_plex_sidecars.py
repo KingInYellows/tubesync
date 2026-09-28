@@ -4213,3 +4213,66 @@ class BackfillReviewFollowUp42TestCase(BackfillFollowUpMixin, TestCase):
             self.assertEqual(summary_of(dry), summary_of(applied))
             source.refresh_from_db()
             self.assertFalse(source.copy_channel_images)  # never saved
+
+
+class BackfillReviewFollowUp45TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Forty-fifth review pass: a dry-run's {key} sweep sees the files
+        earlier renames of the run put there, and a directory segment that
+        can render empty counts as the source directory.
+    '''
+
+    assert_profile_refused = BackfillReviewFollowUp42TestCase.assert_profile_refused
+
+    def test_a_projected_video_counts_in_a_later_key_sweep(self):
+        overlay = '{"*": {"media_format": "{key}.{ext}"}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, first, _ = self.make_downloaded(key='aaa')
+            self.make_downloaded(key='bbb', source=source)
+            # aaa's new name carries bbb's key, so bbb's {key} sweep would
+            # take aaa's freshly moved video.
+            names = {'aaa': 'foo-bbb.mkv', 'bbb': 'bar.mkv'}
+            with patch.object(
+                Media, 'filename', property(lambda media: names[media.key]),
+            ):
+                dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+                applied, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn('bbb: not renamed', output)
+                self.assertIn(str(source.directory_path / 'foo-bbb.mkv'), output)
+                self.assertIn('renamed: 1', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            first.refresh_from_db()
+            self.assertEqual(
+                Path(first.media_file.path), source.directory_path / 'foo-bbb.mkv',
+            )
+
+    def test_a_directory_that_can_render_empty_is_the_source_directory(self):
+        self.assert_profile_refused(
+            '{"*": {"media_format": "{uploader}/poster.jpg", '
+            '"copy_channel_images": true}}',
+            'at the channel image poster.jpg',
+        )
+
+    def test_a_directory_with_literal_text_is_not_the_source_directory(self):
+        overlay = (
+            '{"*": {"media_format": "Channel {uploader}/poster.jpg", '
+            '"copy_channel_images": true}}'
+        )
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+            patch(f'{self.COMMAND}.TaskHistory'),
+        ):
+            source = make_bridge_source()
+            source.make_directory()
+            output = run_backfill('--source', str(source.uuid))
+            self.assertNotIn('at the channel image', output)
