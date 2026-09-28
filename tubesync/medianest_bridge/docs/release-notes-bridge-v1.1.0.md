@@ -711,3 +711,11 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
   - A directory segment counts as able to render `..` in two cases. The first is a field with a format spec, since `{hdr:.^2}` pads an empty `hdr` into `..`. The second is a field that can be empty between literal dots, such as `.{hdr}.`. Either case is refused. A spec that pads with `/` counts like an uncleaned field.
   - A segment with literal text, or with a field that always renders, such as `{key}` or `Season {episode_yyyy}`, is always a real directory. Only the other kinds count as possibly reaching the source directory.
   - A format with no field that tells media apart, such as `shared.{ext}` or one made only of source, format or channel fields, is refused up front. It does not have to wait for two existing rows to collide.
+
+## Verification (2026-09-28, forty-ninth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 719 tests OK at the stack tip. In CI's configuration: 727 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep, each test checked to fail without its fix:
+  - `{source}` and `{source_full}` are the same for every media, so the structural check uses the values `Media.format_dict` gives them rather than a marker. A format is refused when its `..` segments leave the source directory, whether those come from literals or the source's own name (a source named `..`). `{source_full}/{key}.{ext}` on an ordinary source is still accepted.
+  - A field whose format spec truncates it with a precision, such as `{key:.1}`, no longer counts as telling media apart.

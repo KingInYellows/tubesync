@@ -4481,3 +4481,52 @@ class BackfillReviewFollowUp48TestCase(BackfillFollowUpMixin, TestCase):
             output = run_backfill('--source', str(source.uuid))
             self.assertNotIn('above the source directory', output)
             self.assertNotIn('tells media apart', output)
+
+
+class BackfillReviewFollowUp49TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Forty-ninth review pass: the source fields are checked with their
+        real values, and a truncated field does not tell media apart.
+    '''
+
+    assert_profile_refused = BackfillReviewFollowUp42TestCase.assert_profile_refused
+
+    def run_with_stored_format(self, media_format, **source_fields):
+        # An overlay that changes a field, so the source would be saved.
+        overlay = '{"*": {"copy_channel_images": true}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+            patch(f'{self.COMMAND}.TaskHistory'),
+        ):
+            source = make_bridge_source(**source_fields)
+            source.make_directory()
+            # A stored format (not a validated overlay).
+            Source.objects.filter(pk=source.pk).update(media_format=media_format)
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            return (dry, dry_exc), (applied, exc)
+
+    def test_a_source_named_dot_dot_cannot_climb_out(self):
+        for output, error in self.run_with_stored_format(
+            '{source_full}/{source_full}/{key}.{ext}', name='..',
+        ):
+            self.assertIsNotNone(error)
+            self.assertIn('can put a video above the source directory', output)
+
+    def test_a_source_full_directory_is_not_refused(self):
+        for output, _error in self.run_with_stored_format(
+            '{source_full}/{key}.{ext}',
+        ):
+            self.assertNotIn('above the source directory', output)
+
+    def test_a_truncated_key_does_not_tell_media_apart(self):
+        self.assert_profile_refused(
+            '{"*": {"media_format": "{key:.1}.{ext}", "write_nfo": false, '
+            '"copy_thumbnails": false, "copy_channel_images": false}}',
+            'has no field that tells media apart',
+        )

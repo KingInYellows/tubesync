@@ -141,7 +141,7 @@ from huey.exceptions import TaskLockedException
 
 from common.logger import log
 from common.models import TaskHistory
-from common.utils import directory_and_stem, glob_quote
+from common.utils import clean_filename, directory_and_stem, glob_quote
 from medianest_bridge.config import load_validated_source_defaults
 from medianest_bridge.source_forms import (
     LIST_SHAPED_FIELDS, coerce_list_shaped_fields, extract_form_errors,
@@ -1496,24 +1496,39 @@ class Command(BaseCommand):
             template_pieces = list(string.Formatter().parse(media_format))
         except ValueError:
             template_pieces = [('', 'unparsable', '', None)]
-        field_names = [
-            _field_name(field)
-            for _literal, field, _spec, _conversion in template_pieces
-            if field is not None
-        ]
         # Each field as a marker for what it can render: \2 anything,
         # "." and ".." included (title fields keep dots, and a format spec
         # can pad even an empty value with a "." fill: "{hdr:.^2}"); \1
         # dot-free text or nothing (the stream fields of a non-HDR or
         # audio-only download); \0 always some dot-free text.
+        # The source fields are the same for every media, so they go in
+        # as the values Media.format_dict gives them ("{source_full}" of a
+        # source named ".." is ".."), not as markers.
+        constants = {
+            'source': working_source.slugname,
+            'source_full': clean_filename(working_source.name),
+        }
+        formatter = string.Formatter()
+
+        def rendered_constant(field, spec, conversion):
+            try:
+                return formatter.format_field(
+                    formatter.convert_field(constants[field], conversion), spec,
+                )
+            except (KeyError, ValueError, TypeError):
+                # A nested field in the spec ("{source:{width}}").
+                return '\2'
+
         literal_skeleton = ''.join(
             literal + (
                 '' if field is None
+                else rendered_constant(field, spec, conversion)
+                if field in constants
                 else '\2' if _field_name(field) in _DOT_FIELDS or spec
                 else '\0' if _field_name(field) in _NEVER_EMPTY_FIELDS
                 else '\1'
             )
-            for literal, field, spec, _conversion in template_pieces
+            for literal, field, spec, conversion in template_pieces
         )
         directories = []
         escaped = False
@@ -1552,7 +1567,7 @@ class Command(BaseCommand):
             for _literal, field, spec, _conversion in template_pieces
             if field is not None and _can_render_separators(field, spec)
         })
-        if separators or climbing:
+        if separators or climbing or escaped:
             # Media.filepath (and yt-dlp's output path) would follow it out
             # of the source directory, and possibly out of DOWNLOAD_ROOT.
             reason = (
@@ -1560,12 +1575,23 @@ class Command(BaseCommand):
                 if separators else
                 'a directory segment can render ".." from media data or a '
                 'format spec'
+                if climbing else
+                'its ".." segments (literal, or the source\'s own name) '
+                'leave the source directory'
             )
             problems.append(
                 f'media_format {media_format!r} can put a video above the '
                 f'source directory from its own data: {reason}'
             )
-        if not set(field_names) - _NON_DISTINGUISHING_FIELDS:
+        distinguishing = {
+            _field_name(field)
+            for _literal, field, spec, _conversion in template_pieces
+            if field is not None
+            # A precision truncates the value ("{key:.1}"); fill, width
+            # and alignment keep all of it.
+            and not re.search(r'\.[\d{]', spec)
+        } - _NON_DISTINGUISHING_FIELDS
+        if not distinguishing:
             # The duplicate-target check only sees rows that exist now; a
             # media indexed later would share the same path.
             problems.append(
