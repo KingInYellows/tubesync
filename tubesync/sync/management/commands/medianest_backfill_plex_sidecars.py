@@ -208,6 +208,39 @@ _UNCLEANED_FIELDS = frozenset({'uploader', 'playlist_title'})
 # them (and dots) can climb out of the source directory.
 _DOT_FIELDS = _UNCLEANED_FIELDS | {'title_full', 'title_full_bounded'}
 
+# media_format fields that always render some text without dots.
+_NEVER_EMPTY_FIELDS = frozenset((
+    'yyyymmdd', 'yyyy_mm_dd', 'yyyy_0mm_dd', 'yyyy', 'mm', 'dd', 'key', 'ext',
+    'episode_yyyy', 'episode_mmddnn',
+))
+
+# media_format fields that take the same value for most or all of a
+# source's media (the source itself, its format preferences, its channel
+# or playlist): a format made only of them cannot tell media apart.
+_NON_DISTINGUISHING_FIELDS = frozenset((
+    'source', 'source_full', 'ext', 'format', 'resolution', 'height', 'width',
+    'vcodec', 'acodec', 'fps', 'hdr', 'uploader', 'playlist_title',
+))
+
+# Deletes the field markers of _profile_problems()'s literal skeleton.
+_MARKER_DELETE = str.maketrans('', '', '\0\1\2')
+
+
+def _field_name(field):
+    '''The base name of a str.format() field ("uploader" of "uploader[0]").'''
+    return re.split(r'[.\[]', field)[0]
+
+
+def _can_render_separators(field, spec):
+    '''
+        True when the field can put "/" into a rendered path: its value is
+        not cleaned (_UNCLEANED_FIELDS), or its format spec pads with a "/"
+        or "\\" fill ("{hdr:/^3}").
+    '''
+    return _field_name(field) in _UNCLEANED_FIELDS or (
+        len(spec) > 1 and spec[1] in '<>=^' and spec[0] in '/\\'
+    )
+
 
 # Source fields the preflight's path, sidecar and image checks rely on
 # (every Source attribute Media.format_dict and the source's paths read:
@@ -1464,32 +1497,41 @@ class Command(BaseCommand):
         except ValueError:
             template_pieces = [('', 'unparsable', '', None)]
         field_names = [
-            re.split(r'[.\[]', field)[0]
+            _field_name(field)
             for _literal, field, _spec, _conversion in template_pieces
             if field is not None
         ]
-        # Each field as a marker: \1 for one that can render "." or "..",
-        # \0 for any other.
+        # Each field as a marker for what it can render: \2 anything,
+        # "." and ".." included (title fields keep dots, and a format spec
+        # can pad even an empty value with a "." fill: "{hdr:.^2}"); \1
+        # dot-free text or nothing (the stream fields of a non-HDR or
+        # audio-only download); \0 always some dot-free text.
         literal_skeleton = ''.join(
             literal + (
                 '' if field is None
-                else '\1' if re.split(r'[.\[]', field)[0] in _DOT_FIELDS
-                else '\0'
+                else '\2' if _field_name(field) in _DOT_FIELDS or spec
+                else '\0' if _field_name(field) in _NEVER_EMPTY_FIELDS
+                else '\1'
             )
-            for literal, field, _spec, _conversion in template_pieces
+            for literal, field, spec, _conversion in template_pieces
         )
         directories = []
         escaped = False
         field_directory = False
         climbing = False
         for segment in re.split(r'[\\/]', literal_skeleton)[:-1]:
-            if '\0' in segment or '\1' in segment:
+            literal = segment.translate(_MARKER_DELETE)
+            if literal != segment and '\0' not in segment and (
+                '\2' in segment and not literal.strip('.')
+                or literal in ('', '.', '..')
+            ):
+                # Only dots and fields that can be empty (or anything): it
+                # can render "", "." or ".." for some media.
                 field_directory = True
-                # Only dot-capable fields and dots: ".." for some media.
-                climbing = climbing or (
-                    '\0' not in segment
-                    and not segment.replace('\1', '').strip('.')
-                )
+                climbing = climbing or '\2' in segment or literal == '..'
+            elif literal != segment:
+                # Text or an always-present field: always a real directory.
+                directories.append(segment)
             elif segment in ('', '.'):
                 continue
             elif segment == '..':
@@ -1505,18 +1547,31 @@ class Command(BaseCommand):
         )
         stem, ext = os.path.splitext(last)
         problems = []
-        uncleaned = sorted(set(field_names) & _UNCLEANED_FIELDS)
-        if uncleaned or climbing:
+        separators = sorted({
+            _field_name(field)
+            for _literal, field, spec, _conversion in template_pieces
+            if field is not None and _can_render_separators(field, spec)
+        })
+        if separators or climbing:
             # Media.filepath (and yt-dlp's output path) would follow it out
             # of the source directory, and possibly out of DOWNLOAD_ROOT.
             reason = (
-                f'{", ".join(uncleaned)} can hold "/" and ".." segments'
-                if uncleaned else
-                'a directory segment made only of title fields can render ".."'
+                f'{", ".join(separators)} can hold "/" and ".." segments'
+                if separators else
+                'a directory segment can render ".." from media data or a '
+                'format spec'
             )
             problems.append(
                 f'media_format {media_format!r} can put a video above the '
                 f'source directory from its own data: {reason}'
+            )
+        if not set(field_names) - _NON_DISTINGUISHING_FIELDS:
+            # The duplicate-target check only sees rows that exist now; a
+            # media indexed later would share the same path.
+            problems.append(
+                f'media_format {media_format!r} has no field that tells media '
+                'apart (such as {key} or a title), so every video would '
+                'render to the same path'
             )
         template_last = re.split(r'[\\/]', media_format)[-1]
         if (
@@ -1570,7 +1625,7 @@ class Command(BaseCommand):
             stem_pattern += re.escape(literal)
             if field is None:
                 continue
-            if re.split(r'[.\[]', field)[0] in _UNCLEANED_FIELDS:
+            if _can_render_separators(field, spec):
                 # A "/" in the value starts a new name (and "../" can
                 # climb to the source directory): only what follows it
                 # is the file's name.

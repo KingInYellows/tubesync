@@ -4310,7 +4310,7 @@ class BackfillReviewFollowUp45TestCase(BackfillFollowUpMixin, TestCase):
 
     def test_a_literal_directory_is_not_the_source_directory(self):
         overlay = (
-            '{"*": {"media_format": "Channel/poster.jpg", '
+            '{"*": {"media_format": "Channel/{key}/poster.jpg", '
             '"copy_channel_images": true}}'
         )
         with (
@@ -4430,3 +4430,54 @@ class BackfillReviewFollowUp47TestCase(BackfillFollowUpMixin, TestCase):
                 self.assertIn('key_matched_moves: 1', output)
             self.assertEqual(summary_of(runs[0][0]), summary_of(runs[1][0]))
             self.assertFalse(notes.exists())
+
+
+class BackfillReviewFollowUp48TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Forty-eighth review pass: a format spec or an empty stream field
+        that can make a directory segment "..", or put "/" into a path, is
+        refused, and so is a format that cannot tell media apart.
+    '''
+
+    assert_profile_refused = BackfillReviewFollowUp42TestCase.assert_profile_refused
+
+    def test_a_format_spec_that_pads_a_directory_into_dots_is_refused(self):
+        # hdr is "" for a non-HDR download: each segment renders "..".
+        self.assert_profile_refused(
+            '{"*": {"media_format": '
+            '"fixed/{hdr:.^2}/{hdr:.^2}/{hdr:.^2}/{key}.{ext}"}}',
+            'can put a video above the source directory',
+        )
+
+    def test_an_empty_stream_field_between_dots_is_refused(self):
+        self.assert_profile_refused(
+            '{"*": {"media_format": "fixed/.{hdr}./{key}.{ext}"}}',
+            'can put a video above the source directory',
+        )
+
+    def test_a_slash_fill_is_refused(self):
+        self.assert_profile_refused(
+            '{"*": {"media_format": "{hdr:/^3}{key}.{ext}"}}',
+            'hdr can hold "/" and ".." segments',
+        )
+
+    def test_a_format_that_cannot_tell_media_apart_is_refused(self):
+        self.assert_profile_refused(
+            '{"*": {"media_format": "shared.{ext}", "write_nfo": false, '
+            '"copy_thumbnails": false, "copy_channel_images": false}}',
+            'has no field that tells media apart',
+        )
+
+    def test_a_stream_field_directory_is_not_refused(self):
+        overlay = '{"*": {"media_format": "{resolution}/{key}.{ext}"}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+            patch(f'{self.COMMAND}.TaskHistory'),
+        ):
+            source = make_bridge_source()
+            source.make_directory()
+            output = run_backfill('--source', str(source.uuid))
+            self.assertNotIn('above the source directory', output)
+            self.assertNotIn('tells media apart', output)

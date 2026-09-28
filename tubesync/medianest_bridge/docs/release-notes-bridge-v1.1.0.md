@@ -702,3 +702,12 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
   - A directory segment made only of title fields (and dots) can render `..`, and `uploader`/`playlist_title` are never cleaned. Either one lets a video's path climb above the source directory, so both are refused.
   - The stray-sidecar scan drops files that earlier renames of the run move away. It also no longer reports another media's video or sidecar, so a dry-run and apply decide alike.
 - Three lock tests now model a lock another task takes after the in-flight check (entering it raises). Before, constructing the lock itself raised.
+
+## Verification (2026-09-28, forty-eighth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 716 tests OK at the stack tip. In CI's configuration: 724 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep, each test checked to fail without its fix:
+  - A directory segment counts as able to render `..` in two cases. The first is a field with a format spec, since `{hdr:.^2}` pads an empty `hdr` into `..`. The second is a field that can be empty between literal dots, such as `.{hdr}.`. Either case is refused. A spec that pads with `/` counts like an uncleaned field.
+  - A segment with literal text, or with a field that always renders, such as `{key}` or `Season {episode_yyyy}`, is always a real directory. Only the other kinds count as possibly reaching the source directory.
+  - A format with no field that tells media apart, such as `shared.{ext}` or one made only of source, format or channel fields, is refused up front. It does not have to wait for two existing rows to collide.
