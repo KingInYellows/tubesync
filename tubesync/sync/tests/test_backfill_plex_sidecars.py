@@ -4657,3 +4657,37 @@ class BackfillReviewFollowUp54TestCase(BackfillFollowUpMixin, TestCase):
         for output, error in self.run_with_stored_format('shared\x03.{ext}'):
             self.assertIsNotNone(error)
             self.assertIn('does not use the whole {key}', output)
+
+
+class BackfillReviewFollowUp55TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Fifty-fifth review pass: indexed source fields are resolved from
+        the source's value, and any other indexed field can render dots.
+    '''
+
+    run_with_stored_format = BackfillReviewFollowUp49TestCase.run_with_stored_format
+
+    def test_an_indexed_source_name_cannot_climb_out(self):
+        segment = '{source_full[0]}{source_full[1]}'
+        for output, error in self.run_with_stored_format(
+            f'fixed/{segment}/{segment}/{{key}}.{{ext}}', name='..',
+        ):
+            self.assertIsNotNone(error)
+            self.assertIn('can put a video above the source directory', output)
+
+    def test_an_indexed_stream_field_can_render_dots(self):
+        # An index can pick any character of a media value (vcodec
+        # "avc1.64001f" has a "." at index 4); hdr renders with the
+        # example values the source form checks.
+        for output, error in self.run_with_stored_format(
+            'fixed/{hdr[0]}{hdr[0]}/{key}.{ext}',
+        ):
+            self.assertIsNotNone(error)
+            self.assertIn('can put a video above the source directory', output)
+
+    def test_an_indexed_ordinary_source_name_is_not_refused(self):
+        # Resolved from the source's own name: a letter, not "..".
+        for output, _error in self.run_with_stored_format(
+            'fixed/{source_full[0]}/{key}.{ext}',
+        ):
+            self.assertNotIn('above the source directory', output)

@@ -1518,11 +1518,17 @@ class Command(BaseCommand):
 
         def rendered_constant(field, spec, conversion):
             try:
+                # get_field() resolves an index or attribute too
+                # ("{source_full[0]}").
+                value, _key = formatter.get_field(field, (), constants)
                 return formatter.format_field(
-                    formatter.convert_field(constants[field], conversion), spec,
+                    formatter.convert_field(value, conversion), spec,
                 ).translate(_MARKER_ESCAPE)
-            except (KeyError, ValueError, TypeError):
-                # A nested field in the spec ("{source:{width}}").
+            except (
+                KeyError, ValueError, TypeError, IndexError, AttributeError,
+            ):
+                # A nested field in the spec ("{source:{width}}"), or an
+                # index or attribute the value does not have.
                 return '\2'
 
         # \3 also marks the whole {key}: only an index-free, untruncated
@@ -1532,8 +1538,13 @@ class Command(BaseCommand):
             literal.translate(_MARKER_ESCAPE) + (
                 '' if field is None
                 else rendered_constant(field, spec, conversion)
-                if field in constants
-                else '\2' if _field_name(field) in _DOT_FIELDS or spec
+                if _field_name(field) in constants
+                # An index or attribute can pick any character of the value
+                # ("{vcodec[4]}" of "avc1.64001f" is ".").
+                else '\2' if (
+                    _field_name(field) in _DOT_FIELDS or spec
+                    or field != _field_name(field)
+                )
                 else '\0' if _field_name(field) in _NEVER_EMPTY_FIELDS
                 else '\1'
             ) + (

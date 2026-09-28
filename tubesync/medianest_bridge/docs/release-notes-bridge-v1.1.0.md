@@ -755,3 +755,11 @@ A source whose stored or overlaid media_format lacks `{key}` is now refused by `
 - New this sweep, each test checked to fail without its fix:
   - The in-flight gate also counts the channel-image job this run queues after the save. When `copy_channel_images` is already on and `poster.jpg` is missing, a path-changing save waits for running downloads, with the cascade off too.
   - Marker characters in literal template text (or in a rendered source value) are replaced before the structural check. So `shared\x03.{ext}` cannot pass for a format that uses `{key}`.
+
+## Verification (2026-09-28, fifty-fifth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 730 tests OK at the stack tip. In CI's configuration: 738 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep, each test checked to fail without its fix:
+  - An indexed or attribute source field, such as `{source_full[0]}`, is resolved from the source's own value. A source named `..` cannot spell `..` one character at a time, and `fixed/{source_full[0]}/...` on an ordinary source is still accepted.
+  - An index or attribute on any other field counts as able to render anything, dots included (`{vcodec[4]}` of `avc1.64001f` is `.`).
