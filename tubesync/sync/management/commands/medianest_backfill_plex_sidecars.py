@@ -773,15 +773,13 @@ class Command(BaseCommand):
             (_PATH_FIELDS | {'write_nfo', 'copy_thumbnails'}).intersection(changes)
         )
         cascade = overlay_changed and self._cascade_enabled_for(source)
-        # This command's own image enqueue after the save counts too
-        # (_process_tvshow_and_images()): with copy_channel_images already
-        # on and poster.jpg missing, it queues the job whatever the
-        # overlay turned on.
-        images_will_queue = images_already_queued or (
-            working_source.copy_channel_images
-            and not _occupied(Path(working_source.directory_path) / 'poster.jpg')
-        )
-        if cascade or images_already_queued or (path_changing and images_will_queue):
+        # Every path-changing save waits for running downloads, cascade or
+        # not: a download still using the old profile has not created its
+        # final file yet, so this run could rename another video onto that
+        # path, which the download then replaces; and this run's own image
+        # job (queued after the save when poster.jpg is missing) could
+        # overwrite a video it finishes at a channel-image name.
+        if cascade or images_already_queued or path_changing:
             gate = None
             refused = (
                 self._count_refused_media(downloaded, media_files)
@@ -792,10 +790,7 @@ class Command(BaseCommand):
             elif (path_changing or images_already_queued) and (
                 busy := self._in_flight_media(source, finishing=True)
             ):
-                # Also without the cascade when the save or this run queues
-                # the channel image job: a download still running under the
-                # old source could finish at a path that job then
-                # overwrites.
+                # Also without the cascade (see above).
                 for media in busy:
                     self._report_in_flight(media)
                 gate = ('in_flight', len(busy), self._in_flight_gate_message(busy))

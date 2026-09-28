@@ -1764,7 +1764,9 @@ class BackfillReviewFollowUp4TestCase(BackfillFollowUpMixin, TestCase):
             self.assertIn("source_acodec: 'OPUS' -> 'MP4A'", output)
             self.assertIn('in_flight: 1', output)
             source.refresh_from_db()
-            self.assertEqual(source.source_acodec, 'MP4A')  # cascade off: saved
+            # Review pass 56: a path-changing save waits for running
+            # downloads with the cascade off too.
+            self.assertEqual(source.source_acodec, 'OPUS')  # not saved
 
     def test_an_in_flight_download_refuses_a_cascade_enabled_save(self):
         with (
@@ -4691,3 +4693,35 @@ class BackfillReviewFollowUp55TestCase(BackfillFollowUpMixin, TestCase):
             'fixed/{source_full[0]}/{key}.{ext}',
         ):
             self.assertNotIn('above the source directory', output)
+
+
+class BackfillReviewFollowUp56TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Fifty-sixth review pass: every path-changing save waits for
+        running downloads, with the cascade off and no image job too.
+    '''
+
+    make_busy_source = BackfillReviewFollowUp4TestCase.make_busy_source
+    locked = BackfillReviewFollowUp4TestCase.locked
+
+    def test_a_format_change_waits_for_running_downloads_without_the_cascade(self):
+        overlay = '{"*": {"media_format": "{key}.{ext}"}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+        ):
+            source, busy = self.make_busy_source()
+            old_format = source.media_format
+            with self.locked(busy):
+                dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+                applied, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn(f'IN FLIGHT: {busy}', output)
+                self.assertIn('in_flight: 1', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            source.refresh_from_db()
+            self.assertEqual(source.media_format, old_format)  # never saved

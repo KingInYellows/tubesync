@@ -763,9 +763,13 @@ operator to resolve the conflicts, or set `TUBESYNC_RENAME_ALL_SOURCES=false`
 re-running. The same happens, counted as `in_flight` rather than as an
 error, when the overlay can change the rendered path (`media_format`,
 `source_resolution`, `source_vcodec`, `source_acodec`, `prefer_60fps`,
-`prefer_hdr` or `fallback`) and any of the source's media is downloading
-right now: that download would finish under the old name and the queued
-cascade would rename it later, unchecked. Dry-run runs the same preflight
+`prefer_hdr` or `fallback`) or the sidecars written on finishing
+(`write_nfo`, `copy_thumbnails`), or turns `copy_channel_images` on, and
+any of the source's media is downloading right now (or finishing, still
+under its lock). This applies with the cascade on or off. That download
+would finish under the old name, which the cascade would rename later
+unchecked, and it has not created its final file yet, so this run could
+rename another video onto that path first. Dry-run runs the same preflight
 and stops the source the same way, so its summary matches `--apply`'s.
 
 Per-media and per-source failures are both logged and printed to stdout
@@ -837,8 +841,9 @@ target's own directory counts too (only names that are the target's stem
 plus a `.` are its own). `--apply` saves only the
 overlay fields that change, onto a freshly read source row; processes
 media that finish downloading while it runs; and, after an overlay that
-can change the rendered path, counts media still busy downloading
-(skipped or not) as `in_flight` and exits non-zero so the run is repeated. Dry-run turns `TUBESYNC_SHRINK_OLD` off
+can change the rendered path, counts media that started downloading after
+that check (skipped or not) as `in_flight` and exits non-zero so the run
+is repeated. Dry-run turns `TUBESYNC_SHRINK_OLD` off
 so its metadata reads write nothing. The known limits (locked media, the
 cascade settings read in the command's own process, legacy names without
 the key, the in-flight race, downloads still in progress, legacy stored

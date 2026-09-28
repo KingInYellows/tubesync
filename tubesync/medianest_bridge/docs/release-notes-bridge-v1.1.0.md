@@ -763,3 +763,9 @@ A source whose stored or overlaid media_format lacks `{key}` is now refused by `
 - New this sweep, each test checked to fail without its fix:
   - An indexed or attribute source field, such as `{source_full[0]}`, is resolved from the source's own value. A source named `..` cannot spell `..` one character at a time, and `fixed/{source_full[0]}/...` on an ordinary source is still accepted.
   - An index or attribute on any other field counts as able to render anything, dots included (`{vcodec[4]}` of `avc1.64001f` is `.`).
+
+## Verification (2026-09-28, fifty-sixth review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 731 tests OK at the stack tip. In CI's configuration: 739 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: every path-changing save waits for running (or finishing) downloads, whether or not the cascade is on and an image job is queued. A download still using the old profile has not created its final file yet, so this run could otherwise rename another video onto that path first. `test_in_flight_is_counted_for_an_acodec_only_overlay` now expects the save to be held back. The test was checked to fail without the fix.
