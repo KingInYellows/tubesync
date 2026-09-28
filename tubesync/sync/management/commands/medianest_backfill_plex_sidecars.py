@@ -226,10 +226,11 @@ def _field_name(field):
 def _can_render_separators(field, spec):
     '''
         True when the field can put "/" into a rendered path: its value is
-        not cleaned (_UNCLEANED_FIELDS), or its format spec pads with a "/"
-        or "\\" fill ("{hdr:/^3}").
+        not cleaned (_UNCLEANED_FIELDS), its format spec pads with a "/"
+        or "\\" fill ("{hdr:/^3}"), or the spec holds a nested field, whose
+        media value can supply the fill ("{hdr:{uploader[0]}>1}").
     '''
-    return _field_name(field) in _UNCLEANED_FIELDS or (
+    return _field_name(field) in _UNCLEANED_FIELDS or '{' in spec or (
         len(spec) > 1 and spec[1] in '<>=^' and spec[0] in '/\\'
     )
 

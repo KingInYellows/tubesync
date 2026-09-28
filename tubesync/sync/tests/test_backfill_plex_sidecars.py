@@ -4576,3 +4576,20 @@ class BackfillReviewFollowUp51TestCase(BackfillFollowUpMixin, TestCase):
             source.make_directory()
             output = run_backfill('--source', str(source.uuid))
             self.assertNotIn('whole {key}', output)
+
+
+class BackfillReviewFollowUp52TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Fifty-second review pass: a nested field in a format spec can
+        supply a "/" fill.
+    '''
+
+    assert_profile_refused = BackfillReviewFollowUp42TestCase.assert_profile_refused
+
+    def test_a_nested_fill_field_is_refused(self):
+        # An uploader starting with "/" makes the empty hdr render "/".
+        self.assert_profile_refused(
+            '{"*": {"media_format": '
+            '"..{hdr:{uploader[0]}>1}..{hdr:{uploader[0]}>1}..{key}.mkv"}}',
+            'can put a video above the source directory',
+        )

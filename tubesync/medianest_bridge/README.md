@@ -799,6 +799,7 @@ source cannot save an unsafe one. It must use the whole `{key}`, since
 dates, titles and episode numbers repeat and only the video ID is unique
 per media. It must not be able to leave the source directory, which rules
 out `uploader`/`playlist_title` (never cleaned, so they can hold `/`), a
+format spec with a `/` fill or a nested field (which can supply one), a
 directory made only of title fields or padded fields that can render
 `..`, and literal `..` segments, the source's own name included. It must
 also not be able to name a video after `tvshow` or a channel image in the

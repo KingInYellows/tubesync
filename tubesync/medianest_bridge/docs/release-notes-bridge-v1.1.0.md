@@ -735,3 +735,9 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 ### Upgrade note
 
 A source whose stored or overlaid media_format lacks `{key}` is now refused by `medianest_backfill_plex_sidecars` until `{key}` is added.
+
+## Verification (2026-09-28, fifty-second review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 723 tests OK at the stack tip. In CI's configuration: 731 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep: a format spec that holds a nested field (`{hdr:{uploader[0]}>1}`) counts as able to put `/` into the path, since the nested field's media value can supply the fill. The test was checked to fail without the fix.
