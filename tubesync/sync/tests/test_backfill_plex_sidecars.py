@@ -24,7 +24,7 @@ import tempfile
 from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
-from unittest.mock import PropertyMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 from xml.etree import ElementTree
 
 from django.conf import settings
@@ -135,6 +135,21 @@ def run_backfill_refused(*args, **options):
     output, exc = run_backfill_capture(*args, **options)
     assert exc is not None, 'expected the backfill to exit non-zero'
     return output
+
+
+def locked_on_entry(message):
+    '''
+        Patches the command's huey_lock_task so every lock it takes is
+        held by another task (entering it raises TaskLockedException), as
+        when a task takes the lock after the in-flight check saw it free.
+    '''
+    lock = MagicMock()
+    lock.is_locked.return_value = False
+    lock.__enter__.side_effect = TaskLockedException(message)
+    return patch(
+        'sync.management.commands.medianest_backfill_plex_sidecars.huey_lock_task',
+        return_value=lock,
+    )
 
 
 def summary_of(output):
@@ -655,10 +670,7 @@ class BackfillFailureHandlingTestCase(TestCase):
         with temp_download_root():
             source, media, old_path = self.make_downloaded()
             with (
-                patch(
-                    f'{self.COMMAND}.huey_lock_task',
-                    side_effect=TaskLockedException('busy'),
-                ),
+                locked_on_entry('busy'),
                 self.assertRaises(CommandError) as ctx,
             ):
                 run_backfill('--source', str(source.uuid), '--apply')
@@ -969,10 +981,7 @@ class BackfillFailureHandlingTestCase(TestCase):
     def test_locked_media_prints_a_stdout_line(self):
         with temp_download_root():
             source, media, old_path = self.make_downloaded()
-            with patch(
-                f'{self.COMMAND}.huey_lock_task',
-                side_effect=TaskLockedException('busy'),
-            ):
+            with locked_on_entry('busy'):
                 output, exc = run_backfill_capture(
                     '--source', str(source.uuid), '--apply',
                 )
@@ -1466,10 +1475,7 @@ class BackfillReviewFollowUpTestCase(BackfillFollowUpMixin, TestCase):
     def test_the_lock_error_is_shown(self):
         with temp_download_root():
             source, media, old_path = self.make_downloaded()
-            with patch(
-                f'{self.COMMAND}.huey_lock_task',
-                side_effect=TaskLockedException('unable to acquire lock media:x'),
-            ):
+            with locked_on_entry('unable to acquire lock media:x'):
                 output, exc = run_backfill_capture(
                     '--source', str(source.uuid), '--apply',
                 )
@@ -4318,3 +4324,109 @@ class BackfillReviewFollowUp45TestCase(BackfillFollowUpMixin, TestCase):
             output = run_backfill('--source', str(source.uuid))
             self.assertNotIn('at the channel image', output)
             self.assertNotIn('can name a video', output)
+
+
+class BackfillReviewFollowUp47TestCase(BackfillFollowUpMixin, TestCase):
+    '''
+        Forty-seventh review pass: a download finishing under its lock
+        holds back a path-changing save, a title-derived directory that
+        can climb out of the source is refused, and the stray-sidecar scan
+        decides alike in both modes after earlier renames.
+    '''
+
+    assert_profile_refused = BackfillReviewFollowUp42TestCase.assert_profile_refused
+    locked = BackfillReviewFollowUp4TestCase.locked
+
+    def test_a_finishing_download_holds_back_an_image_queueing_save(self):
+        overlay = '{"*": {"copy_channel_images": true}}'
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+            patch.dict('os.environ', {'MEDIANEST_BRIDGE_SOURCE_DEFAULTS': overlay}),
+            patch('sync.signals.download_source_images') as mock_signal,
+        ):
+            # Saved as downloaded, still under its lock: its sidecars are
+            # still being written under the old source.
+            source, busy, _ = self.make_downloaded(key='busy1')
+            with self.locked(busy):
+                dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+                applied, exc = run_backfill_capture(
+                    '--source', str(source.uuid), '--apply',
+                )
+            mock_signal.assert_not_called()
+            for output, error in ((dry, dry_exc), (applied, exc)):
+                self.assertIsNotNone(error)
+                self.assertIn(f'IN FLIGHT: {busy}', output)
+                self.assertIn('in_flight: 1', output)
+            self.assertEqual(summary_of(dry), summary_of(applied))
+            source.refresh_from_db()
+            self.assertFalse(source.copy_channel_images)  # never saved
+
+    def test_a_title_directory_that_can_climb_out_is_refused(self):
+        # A title of ".." renders "../../<key>.mkv".
+        self.assert_profile_refused(
+            '{"*": {"media_format": "{title_full}/{title_full}/{key}.{ext}"}}',
+            'can put a video above the source directory',
+        )
+
+    def test_an_uncleaned_field_is_refused(self):
+        self.assert_profile_refused(
+            '{"*": {"media_format": "Channel/{uploader} [{key}].{ext}"}}',
+            'uploader can hold "/" and ".." segments',
+        )
+
+    def put_in_place(self, media, name):
+        path = Path(media.media_file.path).with_name(name)
+        Path(media.media_file.path).rename(path)
+        media.media_file.name = str(path.relative_to(media_file_storage.location))
+        media.save()
+        return path
+
+    def run_both_with_names(self, source, names):
+        with patch.object(
+            Media, 'filename', property(lambda media: names[media.key]),
+        ):
+            dry, dry_exc = run_backfill_capture('--source', str(source.uuid))
+            applied, exc = run_backfill_capture(
+                '--source', str(source.uuid), '--apply',
+            )
+        return (dry, dry_exc), (applied, exc)
+
+    def test_an_earlier_video_renamed_onto_a_later_key_is_not_a_stray(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, _first, _ = self.make_downloaded(key='aaa')
+            _, second, _ = self.make_downloaded(key='bbb', source=source)
+            self.put_in_place(second, 'bar.mkv')
+            runs = self.run_both_with_names(
+                source, {'aaa': 'foo-bbb.mkv', 'bbb': 'bar.mkv'},
+            )
+            for output, _error in runs:
+                self.assertNotIn('leftover sidecar', output)
+                self.assertIn('renamed: 1', output)
+                self.assertIn('already_in_place: 1', output)
+            self.assertEqual(summary_of(runs[0][0]), summary_of(runs[1][0]))
+
+    def test_a_key_match_an_earlier_rename_moves_away_is_not_a_stray(self):
+        with (
+            temp_download_root(),
+            override_settings(RENAME_ALL_SOURCES=False, RENAME_SOURCES=[]),
+        ):
+            source, _first, _ = self.make_downloaded(key='aaa')
+            _, second, _ = self.make_downloaded(key='bbb', source=source)
+            self.put_in_place(second, 'bar.mkv')
+            # aaa's {key} sweep moves this away; it carries bbb's key too.
+            notes = source.directory_path / 'notes-aaa-bbb.txt'
+            notes.write_bytes(b'notes')
+            runs = self.run_both_with_names(
+                source, {'aaa': 'foo.mkv', 'bbb': 'bar.mkv'},
+            )
+            for output, _error in runs:
+                self.assertNotIn('leftover sidecar', output)
+                self.assertIn('renamed: 1', output)
+                self.assertIn('already_in_place: 1', output)
+                self.assertIn('key_matched_moves: 1', output)
+            self.assertEqual(summary_of(runs[0][0]), summary_of(runs[1][0]))
+            self.assertFalse(notes.exists())

@@ -203,6 +203,11 @@ _SOURCE_IMAGE_NAMES = (
 # clean_filename(), so it can hold "/" (Media.format_dict).
 _UNCLEANED_FIELDS = frozenset({'uploader', 'playlist_title'})
 
+# media_format fields whose value is media text that can be exactly "." or
+# ".." (clean_filename() keeps dots), so a directory segment made only of
+# them (and dots) can climb out of the source directory.
+_DOT_FIELDS = _UNCLEANED_FIELDS | {'title_full', 'title_full_bounded'}
+
 
 # Source fields the preflight's path, sidecar and image checks rely on
 # (every Source attribute Media.format_dict and the source's paths read:
@@ -747,7 +752,7 @@ class Command(BaseCommand):
             if refused:
                 gate = ('errors', 1, self._cascade_gate_message(refused))
             elif (path_changing or images_already_queued) and (
-                busy := self._in_flight_media(source)
+                busy := self._in_flight_media(source, finishing=True)
             ):
                 # Also without the cascade when the save queues the channel
                 # image job: a download still running under the old source
@@ -865,17 +870,22 @@ class Command(BaseCommand):
                     continue
                 self._process_media(media, True, summary, media_files)
 
-    def _in_flight_media(self, source):
+    def _in_flight_media(self, source, *, finishing=False):
         '''
             Media of `source` that could be downloading right now: not
             downloaded yet and holding their `media:<uuid>` lock
             (download_media_file holds it for the whole download). Skipped
             rows count too: marking an item skipped does not stop a
-            download that is already running.
+            download that is already running. With `finishing`, downloaded
+            rows holding the lock count too: download_media_file saves
+            downloaded=True and then, still under the lock, runs
+            rename_files(), copy_thumbnail() and write_nfo_file() with the
+            source it read.
         '''
-        candidates = Media.objects.filter(
-            source=source, downloaded=False,
-        ).only('pk', 'uuid', 'key', 'title')
+        candidates = Media.objects.filter(source=source)
+        if not finishing:
+            candidates = candidates.filter(downloaded=False)
+        candidates = candidates.only('pk', 'uuid', 'key', 'title')
         return [
             media for media in candidates
             if huey_lock_task(
@@ -1178,7 +1188,7 @@ class Command(BaseCommand):
                 )
                 return None
             stray = self._stray_sidecars(
-                media, target, self._stray_snapshot(media.source),
+                media, target, self._stray_snapshot(media.source), media_files,
             )
             if stray:
                 self._media_error(
@@ -1221,6 +1231,7 @@ class Command(BaseCommand):
             if problem is None:
                 stray = self._stray_sidecars(
                     media, target, self._stray_snapshot(media.source),
+                    media_files,
                 )
                 if stray:
                     problem = (
@@ -1452,16 +1463,33 @@ class Command(BaseCommand):
             template_pieces = list(string.Formatter().parse(media_format))
         except ValueError:
             template_pieces = [('', 'unparsable', '', None)]
+        field_names = [
+            re.split(r'[.\[]', field)[0]
+            for _literal, field, _spec, _conversion in template_pieces
+            if field is not None
+        ]
+        # Each field as a marker: \1 for one that can render "." or "..",
+        # \0 for any other.
         literal_skeleton = ''.join(
-            literal + ('' if field is None else '\0')
+            literal + (
+                '' if field is None
+                else '\1' if re.split(r'[.\[]', field)[0] in _DOT_FIELDS
+                else '\0'
+            )
             for literal, field, _spec, _conversion in template_pieces
         )
         directories = []
         escaped = False
         field_directory = False
+        climbing = False
         for segment in re.split(r'[\\/]', literal_skeleton)[:-1]:
-            if '\0' in segment:
+            if '\0' in segment or '\1' in segment:
                 field_directory = True
+                # Only dot-capable fields and dots: ".." for some media.
+                climbing = climbing or (
+                    '\0' not in segment
+                    and not segment.replace('\1', '').strip('.')
+                )
             elif segment in ('', '.'):
                 continue
             elif segment == '..':
@@ -1477,6 +1505,19 @@ class Command(BaseCommand):
         )
         stem, ext = os.path.splitext(last)
         problems = []
+        uncleaned = sorted(set(field_names) & _UNCLEANED_FIELDS)
+        if uncleaned or climbing:
+            # Media.filepath (and yt-dlp's output path) would follow it out
+            # of the source directory, and possibly out of DOWNLOAD_ROOT.
+            reason = (
+                f'{", ".join(uncleaned)} can hold "/" and ".." segments'
+                if uncleaned else
+                'a directory segment made only of title fields can render ".."'
+            )
+            problems.append(
+                f'media_format {media_format!r} can put a video above the '
+                f'source directory from its own data: {reason}'
+            )
         template_last = re.split(r'[\\/]', media_format)[-1]
         if (
             working_source.write_nfo or working_source.copy_thumbnails
@@ -1931,17 +1972,18 @@ class Command(BaseCommand):
             whole tree (Path.rglob) again for each one -- one tree walk
             per source instead of one per already-in-place/adopted media.
 
-            Safe: _stray_sidecars() finds a media's own leftovers by a
-            substring match on THAT media's own `key`, and processing a
-            DIFFERENT media in this same run never creates or removes a
-            file carrying this media's key -- only that media's own
-            processing could do that, and _stray_sidecars() is only ever
+            Safe: another media's rename in this run can move a file
+            carrying this media's key (its old or new name can contain
+            it), but _stray_sidecars() reconciles the snapshot with those
+            renames (their projected destinations and vacated paths), and
+            the NFO/thumbnail a rename writes is named after that media's
+            video, which _stray_sidecars() never reports. It is only ever
             consulted for a media before anything of ITS OWN has moved
             (the already-in-place branch moves nothing; the adopted
             branch's own action, once this check clears, is a DB update,
             not a filesystem move). So a snapshot taken once, lazily, the
-            first time any media of this source needs it stays accurate
-            for the rest of the source's per-media loop.
+            first time any media of this source needs it serves the rest
+            of the source's per-media loop in both modes.
 
             Cached by `source.pk` (built only on first use, so a source
             whose media are all being renamed for the first time -- never
@@ -1959,7 +2001,7 @@ class Command(BaseCommand):
         self._stray_snapshot_cache[source.pk] = snapshot
         return snapshot
 
-    def _stray_sidecars(self, media, target, snapshot):
+    def _stray_sidecars(self, media, target, snapshot, media_files):
         '''
             Files elsewhere under the source directory (from `snapshot`,
             a pre-built per-source listing -- see _stray_snapshot()) whose
@@ -1977,15 +2019,26 @@ class Command(BaseCommand):
             a "." (the NFO, thumbnail, subtitles and info.json all are).
             So an old-stem leftover beside a target that kept its
             directory is found too, even one whose old stem starts with
-            the new stem.
+            the new stem. Another media's video or sidecar
+            (_claimed_by_other_media()) is not this media's leftover, even
+            when its name carries this key.
+
+            The snapshot is reconciled with this run's earlier renames of
+            the source, so a dry-run (old tree on disk) and apply (a
+            snapshot taken after some of those renames) decide alike:
+            files they move away are dropped, and every file they move or
+            write is named after their new video, so is another media's.
         '''
         key = str(media.key)
         (target_dir, target_stem) = directory_and_stem(target)
+        files = set(snapshot) - self._projected_vacated
         return sorted(
-            path for path in snapshot
+            path for path in files
             if key in path.name and path != target and not (
                 path.parent == target_dir
                 and path.name.startswith(target_stem + '.')
+            ) and not self._claimed_by_other_media(
+                path, Path(media.media_file.path), target, media_files,
             )
         )
 

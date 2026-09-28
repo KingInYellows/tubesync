@@ -692,3 +692,13 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
   - Any directory segment that holds a field counts as able to reach the source directory, because media data can render it empty, `.` or `..` (`title_full` keeps dots). `fixed/{title_full}/poster.jpg` with channel images on is refused.
   - `uploader` and `playlist_title` are not cleaned and can hold `/`. In the file name they free the whole name, so `fixed/s{uploader}.jpg` counts as able to name a video after a channel image.
   - Literal `.` and `..` segments in a stored (unvalidated) format are resolved the way the path would resolve them.
+
+## Verification (2026-09-28, forty-seventh review follow-up sweep)
+
+- `manage.py test sync medianest_bridge`, same image and setup as above: 711 tests OK at the stack tip. In CI's configuration: 719 tests OK.
+- `ruff check` run as CI runs it: only the two known hits.
+- New this sweep, each test checked to fail without its fix:
+  - The in-flight gate counts downloaded media that still hold their `media:<uuid>` lock. `download_media_file` saves `downloaded=True`, then runs `rename_files()`, `copy_thumbnail()` and `write_nfo_file()` under that lock with the source it read.
+  - A directory segment made only of title fields (and dots) can render `..`, and `uploader`/`playlist_title` are never cleaned. Either one lets a video's path climb above the source directory, so both are refused.
+  - The stray-sidecar scan drops files that earlier renames of the run move away. It also no longer reports another media's video or sidecar, so a dry-run and apply decide alike.
+- Three lock tests now model a lock another task takes after the in-flight check (entering it raises). Before, constructing the lock itself raised.
