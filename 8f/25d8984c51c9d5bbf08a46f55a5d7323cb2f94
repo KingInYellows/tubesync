@@ -1,0 +1,23 @@
+tubesync/medianest_bridge/docs/release-notes-bridge-v1.1.0.md
+  s_cde573e8b7efda::t_8c1503e830f22b 758-765
+tubesync/sync/tests/test_backfill_plex_sidecars.py
+  s_cde573e8b7efda::t_9e9d363437b8c6 4660-4693
+tubesync/sync/management/commands/medianest_backfill_plex_sidecars.py
+  s_cde573e8b7efda::t_a97e2884142e82 1521-1523,1525,1527-1531,1541-1547
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "8f25d8984c51c9d5bbf08a46f55a5d7323cb2f94",
+  "prompts": {},
+  "sessions": {
+    "s_cde573e8b7efda": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c802e626-0714-4643-af4d-3a3809c6112c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
