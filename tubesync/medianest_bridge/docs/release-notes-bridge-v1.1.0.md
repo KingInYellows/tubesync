@@ -1,4 +1,4 @@
-# Release notes: `bridge-v1.1.0` (proposed, not yet tagged)
+# Release notes: `bridge-v1.1.0`
 
 This release makes bridge-created YouTube sources land as proper TV shows in a
 Plex **TV Shows** library that uses the native "Plex NFO Series" agent
@@ -350,7 +350,7 @@ MediaNest calls `POST /sources/validate` before `POST /sources` and treats any v
 ## Before tagging
 
 - ~~Merge the canonical contract PR in MediaNest, then re-sync the vendored header SHA to the merged commit and re-lock `source_sha256`.~~ Done 2026-09-26: #2404 merged as `0e7d2375b`; the header names it, the body is byte-identical, and `source_sha256` is re-locked.
-- Bump `medianest_bridge/config.py::BRIDGE_VERSION` to `1.1.0`.
+- ~~Bump `medianest_bridge/config.py::BRIDGE_VERSION` to `1.1.0`.~~ Done in the release-prep PR that this tag sits on.
 - Update the "Fork delta" count in the README and `docs/upstream-sync.md` if an upstream sync lands in between. This release adds upstream touch points in `sync/models/media.py`, `sync/models/source.py`, `sync/models/metadata.py`, `sync/templates/sync/_mediaformatvars.html` and `sync/tasks.py` (nine upstream files, ten touch points in total).
 - Follow MediaNest `docs/deployment/youtube-plex-tv-library-migration.md` for rollout. It covers the ZFS snapshot, backfill dry-run, pilot, new Plex library, and `PLEX_LIBRARY_KEY` switch.
 
