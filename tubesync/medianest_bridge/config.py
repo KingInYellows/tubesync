@@ -24,9 +24,10 @@ from common.logger import log
 from common.utils import getenv
 
 
-# Contract version this app implements. Matches
+# This app's release version, reported as GET /meta's bridgeVersion and
+# matching the bridge-v* tag. The contract version it implements is
 # medianest_bridge/contract/bridge-openapi.v1.yaml's info.version.
-BRIDGE_VERSION = '1.0.0'
+BRIDGE_VERSION = '1.1.0'
 
 # Built-in profile applied when MEDIANEST_BRIDGE_SOURCE_DEFAULTS is unset
 # (distinct from an explicit `{}`, which means "no overrides" -- see

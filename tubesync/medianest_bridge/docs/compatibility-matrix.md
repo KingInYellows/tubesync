@@ -57,8 +57,10 @@ see that section for the current, authoritative list and line counts).
 (canonical source: `KingInYellows/medianest`,
 `docs/planning/tubesync-integration/bridge-openapi.v1.yaml`), vendored
 read-only into `medianest_bridge/contract/bridge-openapi.v1.yaml`. `info.version:
-"1.0.0"` inside that file, echoed by `GET /meta`'s `bridgeVersion` field
-(`config.py::BRIDGE_VERSION`). Full re-vendor history is in
+"1.0.0"` inside that file. This is the contract version, not the release
+version: `GET /meta`'s `bridgeVersion` field (`config.py::BRIDGE_VERSION`)
+reports the bridge release (`1.1.0` for `bridge-v1.1.0`), which can move
+ahead of the contract for additive or internal changes. Full re-vendor history is in
 `medianest_bridge/README.md`'s "Contract" section; not repeated here to
 avoid a second place that can drift out of sync with the first.
 
@@ -106,4 +108,6 @@ is created by the repository owner.
 
 | Bridge tag | Fork commit | `UPSTREAM_SHA` (upstream version) | Contract | MediaNest min | Notes |
 | --- | --- | --- | --- | --- | --- |
-| `bridge-v1.0.0` (proposed) | fork `main` after PR #9 merges (docs-only on top of `c802ff5e1efd49640bc32c1c460455041476e57a`; bridge code identical to that SHA) | `3b9d72f28dda9c931776f76e7428a72a24a57f82` (v0.18.3 era; 85 behind v0.18.4 at tag time, rehearsal merge clean) | `bridge-openapi.v1.yaml` `1.0.0` | `v1.0.0-rc2` (proposed) | See `release-notes-bridge-v1.0.0.md`. yt-dlp/FFmpeg resolved at build time (not source-pinned). |
+| `bridge-v1.0.0` | fork `main` after PR #9 merges (docs-only on top of `c802ff5e1efd49640bc32c1c460455041476e57a`; bridge code identical to that SHA) | `3b9d72f28dda9c931776f76e7428a72a24a57f82` (v0.18.3 era; 85 behind v0.18.4 at tag time, rehearsal merge clean) | `bridge-openapi.v1.yaml` `1.0.0` | `v1.0.0-rc2` (proposed) | See `release-notes-bridge-v1.0.0.md`. yt-dlp/FFmpeg resolved at build time (not source-pinned). |
+| `bridge-v1.0.1` | `049a6b230db286cf17c12e5e733fe9acb55fff4b` (#14) | `3b9d72f28dda9c931776f76e7428a72a24a57f82` | `bridge-openapi.v1.yaml` `1.0.0` | `v1.0.0-rc9` | Index-only sources skip per-item metadata and thumbnail fetches. Paired with MediaNest `v1.0.0` GA. `BRIDGE_VERSION` still read `1.0.0` in this build. |
+| `bridge-v1.1.0` | fork `main` after the release-prep PR merges | `3b9d72f28dda9c931776f76e7428a72a24a57f82` | `bridge-openapi.v1.yaml` `1.0.0` (additive `sourceDefaults` component) | `v1.0.0` (MediaNest `v1.1.0` requires this tag) | See `release-notes-bridge-v1.1.0.md`. Plex TV library NFO sidecars, date-based episode numbering, configurable source defaults, sidecar backfill command. |
