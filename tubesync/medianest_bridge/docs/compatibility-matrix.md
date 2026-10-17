@@ -57,8 +57,10 @@ see that section for the current, authoritative list and line counts).
 (canonical source: `KingInYellows/medianest`,
 `docs/planning/tubesync-integration/bridge-openapi.v1.yaml`), vendored
 read-only into `medianest_bridge/contract/bridge-openapi.v1.yaml`. `info.version:
-"1.0.0"` inside that file, echoed by `GET /meta`'s `bridgeVersion` field
-(`config.py::BRIDGE_VERSION`). Full re-vendor history is in
+"1.0.0"` inside that file. This is the contract version, not the release
+version: `GET /meta`'s `bridgeVersion` field (`config.py::BRIDGE_VERSION`)
+reports the bridge release (`1.1.0` for `bridge-v1.1.0`), which can move
+ahead of the contract for additive or internal changes. Full re-vendor history is in
 `medianest_bridge/README.md`'s "Contract" section; not repeated here to
 avoid a second place that can drift out of sync with the first.
 
