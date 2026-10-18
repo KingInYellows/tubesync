@@ -1,6 +1,7 @@
 from django.urls import path
 
 from .views import CapabilitiesView, HealthLiveView, HealthReadyView, MetaView
+from .views_resolve import ResolveSourceView
 from .views_sources import SourceDetailView, SourceMediaView
 from .views_write import CreateSourceView, SyncSourceView, ValidateSourceView
 
@@ -27,6 +28,12 @@ urlpatterns = [
     path('sources/validate',
          ValidateSourceView.as_view(),
          name='source-validate'),
+
+    # MED-589. Must stay above the sources/<str:source_uuid> pattern
+    # below, which would otherwise swallow "resolve" as a source UUID.
+    path('sources/resolve',
+         ResolveSourceView.as_view(),
+         name='source-resolve'),
 
     # CreateSourceView subclasses SourceLookupView (views_sources.py) --
     # GET is T2's key lookup, POST is T3's create-or-adopt. The

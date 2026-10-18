@@ -392,5 +392,8 @@ class CapabilitiesView(BridgeView):
             'pushEvents': False,
             'plexScan': False,
             'plexCollectionCreation': False,
+            # Contract 1.1.0 (MED-589): POST /sources/resolve
+            # (views_resolve.py).
+            'resolveChannelHandle': True,
         }
         return JsonResponse(body)

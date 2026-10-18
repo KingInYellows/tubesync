@@ -2,7 +2,7 @@
   "_provenance": {
     "note": "Generated once from the vendored YAML via PyYAML (a transitive dependency of hat-syslog, not a new Pipfile dependency) and checked in so bridge tests can assert contract shape using only the stdlib json module. test_contract_conformance.py sha256-locks this file against the YAML above and, when PyYAML happens to be importable in the test environment, additionally cross-checks this fixture was derived correctly. Regenerate together with the sha256 whenever the vendored YAML is re-vendored. Includes each property's \"pattern\" (e.g. MediaItem.relativePath's anti-absolute-path regex) so conformance tests can enforce it, not just required/enum.",
     "source": "medianest_bridge/contract/bridge-openapi.v1.yaml",
-    "source_sha256": "677a0ba2efda6ca6e900c4adb4bd7cb7d3ff21530d9b2ef9cb5d596feac11e5a"
+    "source_sha256": "d3b4662d46d65a8130b7e2f8416638a2671f657c6f6baca329f6771fc55386d0"
   },
   "health_ready_component_names": [
     "application",
@@ -296,6 +296,11 @@
           "pattern": null
         },
         "plexCollectionCreation": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "resolveChannelHandle": {
           "type": "boolean",
           "enum": null,
           "pattern": null
@@ -680,6 +685,53 @@
         },
         "page": {
           "type": "object",
+          "enum": null,
+          "pattern": null
+        }
+      }
+    },
+    "ResolveSourceRequest": {
+      "required": [
+        "url"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        }
+      }
+    },
+    "ResolvedSource": {
+      "required": [
+        "sourceType",
+        "canonicalKey",
+        "canonicalUrl",
+        "displayName"
+      ],
+      "properties": {
+        "sourceType": {
+          "type": "string",
+          "enum": [
+            "channel"
+          ],
+          "pattern": null
+        },
+        "canonicalKey": {
+          "type": "string",
+          "enum": null,
+          "pattern": "^UC[A-Za-z0-9_-]{22}$"
+        },
+        "canonicalUrl": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "displayName": {
+          "type": [
+            "string",
+            "null"
+          ],
           "enum": null,
           "pattern": null
         }
