@@ -33,6 +33,8 @@ import yt_dlp
 
 from common.logger import log
 
+from .error_sanitize import sanitize_error_message
+
 ALLOWED_HOSTS = frozenset({'youtube.com', 'www.youtube.com', 'm.youtube.com'})
 ALLOWED_TABS = ('videos', 'shorts', 'streams', 'featured', 'playlists', 'about')
 
@@ -114,26 +116,36 @@ def parse_channel_handle_url(url):
     return f'https://www.youtube.com/user/{match.group("user")}', None
 
 
+# Same bound views_resolve applies to its own lookup-failure log line.
+_YT_DLP_LOG_MAX_LENGTH = 500
+
+
+def _clean_log_message(msg):
+    return sanitize_error_message(str(msg or ''))[:_YT_DLP_LOG_MAX_LENGTH]
+
+
 class _YtDlpLogger:
     '''
         yt-dlp reports a failed extraction through logger.error() before
         raising DownloadError. A missing channel or a transient YouTube
         failure is an expected outcome for this endpoint, not a bridge
         error, so it is logged at warning; yt-dlp's progress chatter goes
-        to debug.
+        to debug. Every message is sanitized and bounded first, since
+        yt-dlp's text can carry the cookie path or credential-shaped
+        diagnostics.
     '''
 
     def debug(self, msg):
-        log.debug('medianest_bridge: resolve yt-dlp: %s', msg)
+        log.debug('medianest_bridge: resolve yt-dlp: %s', _clean_log_message(msg))
 
     def info(self, msg):
-        log.debug('medianest_bridge: resolve yt-dlp: %s', msg)
+        log.debug('medianest_bridge: resolve yt-dlp: %s', _clean_log_message(msg))
 
     def warning(self, msg):
-        log.warning('medianest_bridge: resolve yt-dlp: %s', msg)
+        log.warning('medianest_bridge: resolve yt-dlp: %s', _clean_log_message(msg))
 
     def error(self, msg):
-        log.warning('medianest_bridge: resolve yt-dlp: %s', msg)
+        log.warning('medianest_bridge: resolve yt-dlp: %s', _clean_log_message(msg))
 
 
 def _lookup_opts():

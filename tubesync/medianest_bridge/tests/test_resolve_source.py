@@ -438,6 +438,18 @@ class YtDlpLoggerTestCase(BridgeTestCase):
         mock_log.warning.assert_called_once()
         mock_log.error.assert_not_called()
 
+    def test_yt_dlp_messages_are_sanitized_and_bounded(self):
+        secret = 'ERROR: cookies at /config/cookies.txt token=abc123secret '
+        with patch('medianest_bridge.channel_resolve.log') as mock_log:
+            logger = channel_resolve._YtDlpLogger()
+            logger.error(secret + 'x' * 2000)
+            logger.debug(secret)
+        for call in (mock_log.warning.call_args, mock_log.debug.call_args):
+            logged = call.args[1]
+            self.assertNotIn('/config/cookies.txt', logged)
+            self.assertNotIn('abc123secret', logged)
+        self.assertLessEqual(len(mock_log.warning.call_args.args[1]), 500)
+
     def test_not_found_detection(self):
         self.assertTrue(channel_resolve._is_not_found(_http_404_download_error()))
         self.assertTrue(channel_resolve._is_not_found(
