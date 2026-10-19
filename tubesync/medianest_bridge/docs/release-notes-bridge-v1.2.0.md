@@ -22,7 +22,9 @@ owner. This file records what the tag would contain and what was verified.
    - Returns the `UC…` channel ID, its `/channel/` URL and the channel title.
    - Errors: 400 `SOURCE_INVALID` for a bad shape or a non-`UC…` result,
      404 `SOURCE_NOT_FOUND` when YouTube reports no such channel, and 503
-     `PROVIDER_UNAVAILABLE` (retryable) for any other lookup failure.
+     `PROVIDER_UNAVAILABLE` (retryable) for any other yt-dlp `DownloadError`.
+     An unexpected exception falls through to `BridgeView`'s 500
+     `INTERNAL_PROVIDER_ERROR`.
    - yt-dlp output is logged sanitized and capped at 500 characters, and no
      response ever carries it.
    - The view persists nothing, so it stays available in read-only mode.
