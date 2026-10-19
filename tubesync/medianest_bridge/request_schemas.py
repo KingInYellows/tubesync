@@ -1,12 +1,13 @@
 '''
-    Strict, hand-written validation for the two POST write request bodies
-    (ValidateSourceRequest, CreateSourceRequest), matching the vendored
+    Strict, hand-written validation for the POST request bodies
+    (ValidateSourceRequest, CreateSourceRequest and, since MED-589,
+    ResolveSourceRequest), matching the vendored
     contract's schemas field-for-field: unknown top-level keys are
     rejected, required fields must be present, string fields are bounded
     to the contract's declared minLength/maxLength, sourceType must be one
     of the contract's enum values. No JSON-Schema library is introduced --
     the request shapes are small and fixed, so an explicit per-field check
-    is more auditable than a generic schema engine for two request types.
+    is more auditable than a generic schema engine for three request types.
 
     Deliberately validates SourceProfile's structure (type-check each
     field, reject unknown profile keys) even though source_forms.py does
@@ -114,4 +115,29 @@ def validate_create_source_request(body):
             value = body[field]
             if not isinstance(value, str) or not (1 <= len(value) <= 100):
                 errors.append(f'{field} must be a string of 1-100 characters.')
+    return errors
+
+
+_ALLOWED_KEYS_RESOLVE = frozenset({'url'})
+
+
+def validate_resolve_source_request(body):
+    '''
+        MED-589: ResolveSourceRequest -- `url` required, a string of
+        1-2048 characters, no other keys. The URL's own shape is checked
+        separately (channel_resolve.parse_channel_handle_url()), after
+        this schema check passes.
+    '''
+    if not isinstance(body, dict):
+        return ['Request body must be a JSON object.']
+    errors = []
+    unknown = set(body.keys()) - _ALLOWED_KEYS_RESOLVE
+    if unknown:
+        errors.append(f'Request has unknown field(s): {sorted(unknown)!r}.')
+    if 'url' not in body:
+        errors.append('url is required.')
+    else:
+        url = body['url']
+        if not isinstance(url, str) or not (1 <= len(url) <= 2048):
+            errors.append('url must be a string of 1-2048 characters.')
     return errors

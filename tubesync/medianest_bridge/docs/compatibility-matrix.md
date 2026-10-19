@@ -57,7 +57,10 @@ see that section for the current, authoritative list and line counts).
 (canonical source: `KingInYellows/medianest`,
 `docs/planning/tubesync-integration/bridge-openapi.v1.yaml`), vendored
 read-only into `medianest_bridge/contract/bridge-openapi.v1.yaml`. `info.version:
-"1.0.0"` inside that file. This is the contract version, not the release
+"1.0.0"` inside that file at that commit; the current vendored copy is
+`"1.1.0"` (MED-589: adds the optional `POST /sources/resolve` and
+`Capabilities.resolveChannelHandle`, vendored from a MediaNest branch
+pending its PR -- see the README's "Contract" section). This is the contract version, not the release
 version: `GET /meta`'s `bridgeVersion` field (`config.py::BRIDGE_VERSION`)
 reports the bridge release (`1.1.0` for `bridge-v1.1.0`), which can move
 ahead of the contract for additive or internal changes. Full re-vendor history is in
@@ -92,6 +95,7 @@ something asserted here.
 | `POST /sources/validate` | T3 (slice-1 scope: `SourceForm` field-level checks + `validate_url()` shape cross-check only -- no directory-traversal/media-format checks, no network calls; DECISIONS #27) | Pre-submission validation in MediaNest's playlist-submission UI. |
 | `POST /sources` | T3 | Source creation/adoption. |
 | `POST /sources/{sourceUuid}/sync` | T3 | Sync-now trigger. |
+| `POST /sources/resolve` (contract 1.1.0, optional) | MED-589 (`@handle`/`c/`/`user/` URL -> `UC...` ID, one yt-dlp lookup on TubeSync's egress; `resolveChannelHandle: true`) | Channel-handle URL submission: MediaNest calls it only when `/capabilities` reports the flag. |
 | `GET /sources/{sourceUuid}/media` | T2 (list), response shape ADR-0006 §4-pinned | **M6's Plex reconciliation consumes this directly, per ADR-0006 §4** -- this response shape "MUST NOT change without an ADR amendment" (contract's own words, quoted, not paraphrased). |
 
 Endpoints the contract explicitly defers (out of v1.0.0 scope, per the

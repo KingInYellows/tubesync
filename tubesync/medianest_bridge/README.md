@@ -423,7 +423,8 @@ reads are `GET`; T3 writes are `POST`.
 - `GET /capabilities` -- capability negotiation. As of T2, `health`,
   `readSources`, and `readMedia` report `true`; every other capability
   (writes, tasks, Plex actions) stays `false` until the corresponding
-  endpoints ship.
+  endpoints ship. T3 turned the validate/create/sync flags on, and
+  MED-589 added `resolveChannelHandle` (contract 1.1.0, `true`).
 
 **T2 (read API, `medianest_bridge/views_sources.py`, all backed by
 `medianest_bridge/mapping.py`'s pure Source/Media -> contract-schema
@@ -541,6 +542,44 @@ choices inline -- most notably, TubeSync's `MediaState.UNKNOWN` maps to
   own caveat, this is a static-analysis-derived best-effort dedup, not a
   dynamically-verified idempotency guarantee.
 
+**MED-589 (contract 1.1.0, `medianest_bridge/views_resolve.py`, backed by
+`channel_resolve.py`):**
+
+- `POST /sources/resolve` -- body `{"url": "..."}` (required, 1-2048
+  characters, no other keys). Resolves a channel URL MediaNest users
+  paste as `https://www.youtube.com/@handle`, `/c/NAME` or `/user/NAME`
+  to the channel's stable `UC...` ID with one flat yt-dlp metadata
+  lookup, so MediaNest can then call `/sources/validate` and `/sources`
+  with the canonical `/channel/UC...` form. The lookup runs here, on
+  TubeSync's own YouTube egress (ADR-0006: MediaNest never contacts
+  YouTube). Accepted: scheme `https`, no username/password, no port, host
+  `youtube.com`, `www.youtube.com` or `m.youtube.com` (any case), path
+  exactly `/@HANDLE` (3-30 of `[A-Za-z0-9_.-]`), `/c/NAME` or
+  `/user/NAME` (1-100 of the same), optionally followed by a trailing
+  slash or one of the tabs `videos`, `shorts`, `streams`, `featured`,
+  `playlists`, `about`. Query string and fragment are ignored (YouTube's
+  own channel share links carry `?si=...`). Anything else, including a
+  percent-encoded character or a `/channel/UC...` URL (already
+  canonical -- nothing to resolve), is `400 SOURCE_INVALID` without any
+  lookup. The bridge rebuilds the lookup URL itself
+  (`https://www.youtube.com/@HANDLE`, `/c/NAME`, `/user/NAME`) and never
+  hands the caller's URL to yt-dlp. The lookup uses `get_yt_opts()` (so
+  `cookies.txt` applies) with `extract_flat`, `playlist_items: '1'`, a
+  10s `socket_timeout` and one extractor retry. Returns `200`
+  `{"sourceType": "channel", "canonicalKey": "UC...", "canonicalUrl":
+  "https://www.youtube.com/channel/UC...", "displayName": ...}`, where
+  `displayName` is the channel title (`channel`, else `uploader`, else
+  `title`; stripped, at most 200 characters) or `null`. A returned ID
+  that does not match `^UC[A-Za-z0-9_-]{22}$` is `400 SOURCE_INVALID`;
+  YouTube reporting no such channel (an HTTP 404, "does not exist", or
+  "does the playlist exist?" from yt-dlp) is `404 SOURCE_NOT_FOUND`
+  (`retryable: false`); any other lookup failure is `503
+  PROVIDER_UNAVAILABLE` (`retryable: true`). These lookup outcomes are
+  logged at warning with yt-dlp's message sanitized; the response never
+  carries yt-dlp's own text. Persists nothing, so it is not blocked by
+  `MEDIANEST_BRIDGE_READ_ONLY`. `GET /capabilities` reports
+  `resolveChannelHandle: true`.
+
 Every response (success and error) echoes `X-Request-ID`. A caller-supplied
 `X-Request-ID` header is echoed verbatim when it is a valid UUID; otherwise
 the bridge generates a new UUID4. `X-Correlation-ID`, if supplied, is logged (paired with the request
@@ -593,7 +632,13 @@ uuid, none of which can carry either.
 ## Contract
 
 `medianest_bridge/contract/bridge-openapi.v1.yaml` is a vendored, read-only
-copy of the canonical contract (MediaNest repo,
+copy of the canonical contract. **Current copy: contract 1.1.0 (MED-589),
+from the MediaNest branch `claude/project-thread-jtd5g8`, pending its
+MediaNest PR -- no merge SHA yet; re-sync the header once it lands.** It
+adds `POST /sources/resolve`, the `ResolveSourceRequest`/`ResolvedSource`
+schemas (both now in `contract_fixtures.json`) and the optional
+`Capabilities.resolveChannelHandle`; no existing schema changed. Before
+that (MediaNest repo,
 `docs/planning/tubesync-integration/bridge-openapi.v1.yaml` @
 `0e7d2375b42ac99505b11c4c1b88294f234d8d03`, the squash merge of MediaNest
 #2404 to `main`, a description-only re-vendor scoping the source-defaults
@@ -712,6 +757,18 @@ from the YAML rather than hand-edited.
   playlist, the `{}` escape hatch, `*`/per-type merge, and an invalid
   `MEDIANEST_BRIDGE_SOURCE_DEFAULTS` producing `503 PROVIDER_UNAVAILABLE`
   with nothing persisted and no raw env value in the response body.
+
+- `test_resolve_source.py` (MED-589) -- `POST /sources/resolve`: every
+  accepted URL shape and the rebuilt lookup URL actually passed to yt-dlp
+  (never the caller's), rejected shapes (http, other hosts, ports,
+  credentials, `/channel/UC...`, `/watch`, extra segments, bad charset or
+  length, percent-encoding) and body shapes, all with no lookup; the 200
+  body, the 404/503 mapping (message markers and the structural
+  `HTTPError` 404), an invalid returned ID, display-name fallbacks,
+  warning-not-error logging, no yt-dlp text or secrets in a response,
+  gating (401/503/413, read-only exemption, route not swallowed by
+  `sources/<uuid>`), and `resolveChannelHandle: true`. yt-dlp is always
+  mocked.
 
 Run with `cd tubesync && python3 manage.py test medianest_bridge` (or omit
 the app label to run the full suite, upstream included).

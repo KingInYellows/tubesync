@@ -97,6 +97,7 @@ class BasicAuthExemptionTestCase(BridgeTestCase):
             'meta': {},
             'capabilities': {},
             'source-lookup': {},
+            'source-resolve': {},
             'source-detail': sample_uuid,
             'source-media': sample_uuid,
         }

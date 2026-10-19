@@ -2,11 +2,19 @@
 #
 # Canonical source: KingInYellows/medianest,
 #   docs/planning/tubesync-integration/bridge-openapi.v1.yaml
-#   @ 0e7d2375b42ac99505b11c4c1b88294f234d8d03 (2026-09-26, the squash
-#   merge of MediaNest #2404 to main; its contract file is byte-identical to
-#   the pre-merge branch commit 479b97ea4fa990def968f99db7052b04cafd5e0d,
-#   2026-09-25, that this copy first recorded)
-#   (Description-only: the source-defaults 503 is scoped to the requested
+#   on branch claude/project-thread-jtd5g8 (MED-589, pending MediaNest PR;
+#   not yet merged, so no SHA is recorded -- re-sync this header to the
+#   merge commit once that PR lands). Contract version 1.1.0: adds
+#   POST /sources/resolve (operationId resolveSource), the
+#   ResolveSourceRequest / ResolvedSource schemas, and the OPTIONAL
+#   Capabilities.resolveChannelHandle flag (default false, not in
+#   Capabilities.required). No existing schema, path or response changed.
+#   (Previous re-vendor: 0e7d2375b42ac99505b11c4c1b88294f234d8d03
+#   (2026-09-26, the squash merge of MediaNest #2404 to main; its contract
+#   file is byte-identical to the pre-merge branch commit
+#   479b97ea4fa990def968f99db7052b04cafd5e0d, 2026-09-25, that this copy
+#   first recorded) --
+#   description-only: the source-defaults 503 is scoped to the requested
 #   source type, ProviderUnavailable's "serves no endpoint" to a disabled
 #   bridge, and the sourceDefaults promises to bridges that report the
 #   component; a reporting bridge says "healthy", never "not_configured",
@@ -45,7 +53,7 @@
 openapi: 3.1.0
 info:
   title: MediaNest TubeSync Bridge API
-  version: "1.0.0"
+  version: "1.1.0"
   summary: >-
     Slice-1 minimal server-to-server bridge exposed by the medianest_bridge
     Django app inside the KingInYellows/tubesync fork. Consumed only by the
@@ -243,6 +251,57 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ProviderUnavailable"
+
+  /sources/resolve:
+    post:
+      tags: [sources]
+      operationId: resolveSource
+      summary: Resolve a channel handle URL to its stable channel ID
+      description: >-
+        Added in contract 1.1.0 (MED-589). Optional: served only by bridges
+        whose /capabilities reports `resolveChannelHandle: true`; MediaNest
+        never calls it otherwise. Accepts an https youtube.com,
+        www.youtube.com or m.youtube.com URL whose path is exactly
+        `/@handle`, `/c/NAME` or `/user/NAME` (an optional trailing slash
+        or one trailing tab segment such as `/videos` is ignored) and
+        resolves it to the channel's stable `UC…` ID with one metadata
+        lookup. The lookup runs inside TubeSync, so it uses TubeSync's own
+        YouTube egress (the VPN boundary, ADR-0006 §2); MediaNest never
+        contacts YouTube itself. The bridge rebuilds the lookup URL from
+        the parsed host-independent path and never fetches the caller's
+        URL verbatim. Persists nothing. 400 SOURCE_INVALID for a URL that
+        is not one of the accepted shapes (or a lookup that yields no
+        valid channel ID), 404 SOURCE_NOT_FOUND when YouTube reports no
+        such channel, 503 PROVIDER_UNAVAILABLE (retryable) when the lookup
+        itself fails.
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolveSourceRequest"
+      responses:
+        "200":
+          description: The channel the URL names.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResolvedSource"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
         "429":
           $ref: "#/components/responses/RateLimited"
         "503":
@@ -835,6 +894,12 @@ components:
         plexCollectionCreation:
           type: boolean
           default: false
+        resolveChannelHandle:
+          type: boolean
+          default: false
+          description: >-
+            Contract 1.1.0 (MED-589): true when the bridge serves
+            POST /sources/resolve. Absent means false.
 
     SourceProfile:
       type: object
@@ -920,6 +985,41 @@ components:
         thumbnailUrl:
           type: [string, "null"]
           format: uri
+
+    ResolveSourceRequest:
+      type: object
+      required: [url]
+      additionalProperties: false
+      properties:
+        url:
+          type: string
+          minLength: 1
+          maxLength: 2048
+          description: >-
+            The raw channel URL the user supplied. Validated by the bridge
+            against the accepted shapes before any lookup.
+
+    ResolvedSource:
+      type: object
+      required: [sourceType, canonicalKey, canonicalUrl, displayName]
+      properties:
+        sourceType:
+          type: string
+          enum: [channel]
+        canonicalKey:
+          type: string
+          pattern: "^UC[A-Za-z0-9_-]{22}$"
+        canonicalUrl:
+          type: string
+          format: uri
+          description: Always `https://www.youtube.com/channel/{canonicalKey}`.
+        displayName:
+          type: [string, "null"]
+          maxLength: 200
+          description: >-
+            The channel title the lookup reported, or null when it reported
+            none. Display only; never used to derive a source name or
+            directory (ADR-0006 §4).
 
     CreateSourceRequest:
       type: object
