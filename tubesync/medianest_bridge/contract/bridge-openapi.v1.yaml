@@ -2,9 +2,10 @@
 #
 # Canonical source: KingInYellows/medianest,
 #   docs/planning/tubesync-integration/bridge-openapi.v1.yaml
-#   on branch claude/project-thread-jtd5g8 (MED-589, pending MediaNest PR;
-#   not yet merged, so no SHA is recorded -- re-sync this header to the
-#   merge commit once that PR lands). Contract version 1.1.0: adds
+#   @ 03aae130702e1a1cc36e9839f3d807c2bc3a28b5
+#   (2026-10-19, the squash merge of MediaNest #2783 to main; its contract
+#   file is byte-identical to the pre-merge branch copy first vendored
+#   here). Contract version 1.1.0 (MED-589): adds
 #   POST /sources/resolve (operationId resolveSource), the
 #   ResolveSourceRequest / ResolvedSource schemas, and the OPTIONAL
 #   Capabilities.resolveChannelHandle flag (default false, not in
