@@ -10,7 +10,7 @@ a process that exists only in principle.
 
 ## Before syncing: know what "the fork delta" actually is
 
-Everything the bridge needs lives in `medianest_bridge/` plus eleven
+Everything the bridge needs lives in `medianest_bridge/` plus twelve
 explicitly enumerated upstream touch points (see
 `medianest_bridge/README.md`'s "Fork delta" section for the exact
 files/lines -- not repeated here, so this doc can't drift out of sync with

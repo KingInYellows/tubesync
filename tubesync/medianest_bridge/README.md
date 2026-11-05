@@ -34,7 +34,7 @@ signal-driven task scheduling.
 
 ## Fork delta
 
-Ten upstream files are touched at eleven points (`settings.py` twice), seven of the eleven minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml`, `.github/workflows/medianest-bridge-refresh.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
+Eleven upstream files are touched at twelve points (`settings.py` twice), eight of the twelve minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml`, `.github/workflows/medianest-bridge-refresh.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
 
 1. `tubesync/tubesync/settings.py` -- `INSTALLED_APPS += 'medianest_bridge'`.
 2. `tubesync/tubesync/urls.py` -- one `include('medianest_bridge.urls')` at
@@ -146,6 +146,12 @@ Ten upstream files are touched at eleven points (`settings.py` twice), seven of 
    `/dev/shm/.healthcheck/yt-dlp-release.json` (installed, latest,
    stale, action, paused, checkedAt), which `readiness.check_yt_dlp()`
    reads. The `stop-queue` call itself is unchanged.
+12. `sync/apps.py` (MED-634) -- `SyncConfig.ready()` imports
+   `sync/signals.py`. Upstream connected those receivers only as a side
+   effect of importing `sync/views/sources.py` when the URLconf loads, so
+   `manage.py shell` (which skips system checks) had none: a source's
+   quality change saved there scheduled no "Checking all media" task and
+   skipped media stayed skipped. No receiver changes.
 
 `sync/tvshow_nfo.py` (Plex T2) is a new, wholly fork-owned module (like
 `medianest_bridge/` itself), not an upstream touch point -- it is not
