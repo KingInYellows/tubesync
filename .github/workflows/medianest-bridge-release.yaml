@@ -49,6 +49,33 @@ on:
         required: false
         type: boolean
         default: true
+  # MED-623: medianest-bridge-refresh.yaml calls this workflow on a
+  # schedule to rebuild the newest bridge-v* release with the newest yt-dlp.
+  workflow_call:
+    inputs:
+      tag:
+        description: Image tag to publish (bridge-v* namespace).
+        required: true
+        type: string
+      push:
+        description: Push the built image to ghcr.io.
+        required: false
+        type: boolean
+        default: true
+      ref:
+        description: >-
+          Git ref to build (a bridge-v* release tag). Empty builds the
+          caller's own ref.
+        required: false
+        type: string
+        default: ''
+      channel_tag:
+        description: >-
+          Optional moving tag to point at the same image. Only
+          'bridge-stable' is accepted.
+        required: false
+        type: string
+        default: ''
 
 jobs:
   info:
@@ -57,6 +84,8 @@ jobs:
       IMAGE_NAME: ${{ env.IMAGE_NAME }}
       REGISTRY: ${{ env.REGISTRY }}
       tag: ${{ steps.tag.outputs.tag }}
+      channel-tag: ${{ steps.tag.outputs.channel-tag }}
+      publish: ${{ steps.tag.outputs.publish }}
       upstream-sha: ${{ steps.upstream-sha.outputs.sha }}
       lowercase-github-repository_owner: ${{ steps.owner.outputs.lowercase }}
       ffmpeg-date: ${{ steps.ffmpeg.outputs.date }}
@@ -65,6 +94,8 @@ jobs:
       ejs-latest-release: ${{ steps.ejs.outputs.latest-release }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Resolve image tag
         id: tag
@@ -81,12 +112,33 @@ jobs:
         # environment-variable *data*, never as script source.
         env:
           DISPATCH_TAG: ${{ inputs.tag }}
+          CHANNEL_TAG: ${{ inputs.channel_tag }}
+          PUSH_INPUT: ${{ inputs.push }}
         run: |
-          if [ "${{ github.event_name }}" = 'workflow_dispatch' ]; then
+          # A bridge-v* tag push has no inputs and always publishes;
+          # workflow_dispatch and workflow_call publish only with push: true.
+          # A reusable call inherits its caller's event name, so a caller
+          # running on `push` is told apart by having a push input.
+          if [ "${GITHUB_EVENT_NAME}" = 'push' ] && [ -z "${PUSH_INPUT}" ]; then
+            publish=true
+          elif [ "${PUSH_INPUT}" = 'true' ]; then
+            publish=true
+          else
+            publish=false
+          fi
+          printf -- 'publish=%s\n' "${publish}" >> "${GITHUB_OUTPUT}"
+          # inputs.tag is set by workflow_dispatch and workflow_call (the
+          # scheduled refresh) and empty on a bridge-v* tag push.
+          if [ -n "${DISPATCH_TAG}" ]; then
             tag="${DISPATCH_TAG}"
           else
             tag="${GITHUB_REF#refs/tags/}"
           fi
+          case "${CHANNEL_TAG}" in
+            (''|bridge-stable) : ;;
+            (*) echo "::error::channel tag '${CHANNEL_TAG}' is not allowed (only bridge-stable)"; exit 1 ;;
+          esac
+          printf -- 'channel-tag=%s\n' "${CHANNEL_TAG}" >> "${GITHUB_OUTPUT}"
           test -n "${tag}" || { echo '::error::no image tag resolved'; exit 1; }
           # A `push` trigger is already restricted to `bridge-v*` by this
           # workflow's own `on.push.tags` filter above, but `workflow_dispatch`
@@ -157,13 +209,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
-      group: ${{ github.repository }}-${{ github.workflow }}
+      # One group for every publish path: a refresh calls this workflow as
+      # a reusable workflow, where github.workflow is the caller's name, so
+      # a per-workflow group would let a refresh and a release race the
+      # tag-absence check.
+      group: ${{ github.repository }}-medianest-bridge-publish
       cancel-in-progress: false
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -172,7 +230,7 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Log in to ${{ needs.info.outputs.REGISTRY }}
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
+        if: ${{ needs.info.outputs.publish == 'true' }}
         uses: docker/login-action@v3
         with:
           registry: ${{ needs.info.outputs.REGISTRY }}
@@ -194,7 +252,7 @@ jobs:
         # that explicitly confirms the manifest is absent is treated as
         # "safe to publish"; anything else retries a few times and then
         # fails closed rather than guessing.
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
+        if: ${{ needs.info.outputs.publish == 'true' }}
         shell: bash
         # Same env:-not-interpolation hardening as "Resolve image tag" above:
         # even though TAG is already namespace- and character-restricted by
@@ -238,10 +296,18 @@ jobs:
       - name: Build and publish
         uses: docker/build-push-action@v7
         with:
+          # Build the checked-out tree (inputs.ref when the scheduled refresh
+          # calls this workflow). Without `context`, build-push-action uses a
+          # Git context of the triggering event's ref (main on a schedule),
+          # which would publish unreleased code under a release tag.
+          context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
+          push: ${{ needs.info.outputs.publish == 'true' }}
+          # The second line is empty (and ignored) unless the scheduled
+          # refresh passed channel_tag: bridge-stable, the one moving tag.
           tags: |
             ${{ needs.info.outputs.REGISTRY }}/${{ needs.info.outputs.lowercase-github-repository_owner }}/${{ needs.info.outputs.IMAGE_NAME }}:${{ needs.info.outputs.tag }}
+            ${{ needs.info.outputs.channel-tag && format('{0}/{1}/{2}:{3}', needs.info.outputs.REGISTRY, needs.info.outputs.lowercase-github-repository_owner, needs.info.outputs.IMAGE_NAME, needs.info.outputs.channel-tag) || '' }}
           build-args: |
             IMAGE_NAME=${{ needs.info.outputs.IMAGE_NAME }}
             FFMPEG_DATE=${{ needs.info.outputs.ffmpeg-date }}
