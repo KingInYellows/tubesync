@@ -40,6 +40,11 @@ _BUILTIN_SOURCE_DEFAULTS_PROFILE = {
     'copy_thumbnails': True,
     'copy_channel_images': True,
     'index_streams': False,
+    # Best available: when a video has no format at source_resolution in the
+    # preferred codecs, take the next best resolution in any codec instead of
+    # skipping it (TubeSync's model default, REQUIRE_HD, skips anything that
+    # has no HD format at all, e.g. older uploads and live recordings).
+    'fallback': 'n',
     'media_format': (
         'Season {episode_yyyy}/'
         's{episode_yyyy}e{episode_mmddnn} - {title_full_bounded} [{key}].{ext}'

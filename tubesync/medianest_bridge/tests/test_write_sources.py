@@ -11,6 +11,7 @@ from django.db import IntegrityError
 from django.utils import timezone
 
 from common.models import TaskHistory
+from sync.choices import Fallback
 from sync.models import Media, Source
 
 from .. import config
@@ -1259,6 +1260,7 @@ class SourceDefaultsCreateTestCase(BridgeTestCase):
         self.assertTrue(source.copy_thumbnails)
         self.assertTrue(source.copy_channel_images)
         self.assertFalse(source.index_streams)
+        self.assertEqual(source.fallback, Fallback.NEXT_BEST_RESOLUTION.value)
         self.assertEqual(
             source.media_format,
             config._BUILTIN_SOURCE_DEFAULTS_PROFILE['media_format'],
@@ -1275,6 +1277,7 @@ class SourceDefaultsCreateTestCase(BridgeTestCase):
         self.assertTrue(source.copy_thumbnails)
         self.assertTrue(source.copy_channel_images)
         self.assertFalse(source.index_streams)
+        self.assertEqual(source.fallback, Fallback.NEXT_BEST_RESOLUTION.value)
         self.assertEqual(
             source.media_format,
             config._BUILTIN_SOURCE_DEFAULTS_PROFILE['media_format'],
@@ -1293,6 +1296,7 @@ class SourceDefaultsCreateTestCase(BridgeTestCase):
         self.assertEqual(source.write_nfo, blank.write_nfo)
         self.assertEqual(source.copy_thumbnails, blank.copy_thumbnails)
         self.assertEqual(source.copy_channel_images, blank.copy_channel_images)
+        self.assertEqual(source.fallback, blank.fallback)
         self.assertEqual(source.media_format, blank.media_format)
 
     def test_per_type_overlay_only_affects_that_type(self):
