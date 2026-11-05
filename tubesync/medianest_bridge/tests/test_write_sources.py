@@ -13,6 +13,7 @@ from django.utils import timezone
 from common.models import TaskHistory
 from sync.choices import Fallback
 from sync.models import Media, Source
+from sync.tests.fixtures import all_test_metadata
 
 from .. import config
 from .base import BridgeTestCase, BridgeTransactionTestCase
@@ -1282,6 +1283,26 @@ class SourceDefaultsCreateTestCase(BridgeTestCase):
             source.media_format,
             config._BUILTIN_SOURCE_DEFAULTS_PROFILE['media_format'],
         )
+
+    def test_builtin_profile_downloads_sd_only_video(self):
+        # A 1080p source with the built-in profile must still pick a format
+        # for a video whose best stream is 480p, instead of skipping it.
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        response = post_json(
+            self.client, SOURCES_URL, self._valid_channel_body(), **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 201)
+        source = Source.objects.get()
+        metadata = json.loads(all_test_metadata['boring'])
+        metadata['formats'] = [
+            f for f in metadata['formats'] if (f.get('height') or 0) <= 480
+        ]
+        media = Media.objects.create(
+            key='sdonlymedia', source=source, metadata=json.dumps(metadata),
+        )
+        exact_match, format_code = media.get_best_video_format()
+        self.assertFalse(exact_match)
+        self.assertEqual(format_code, '244')  # 480p VP9
 
     def test_empty_object_escape_hatch_uses_plain_model_defaults(self):
         self.enable_bridge(
