@@ -69,36 +69,41 @@ class WriteReleaseStateTestCase(SimpleTestCase):
         self.addCleanup(tmp.cleanup)
         self.dir = Path(tmp.name)
         self.version_file = self.dir / 'v.instance'
-        self.warned_file = self.dir / 'v.instance.l'
+        self.pause_marker = self.dir / 'v.instance.l'
         self.state_file = self.dir / 'state' / 'yt-dlp-release.json'
 
     def _write(self, action, installed='2026.10.01'):
         with patch.object(healthcheck, 'yt_dlp_version', installed):
             healthcheck.write_release_state(
-                str(self.state_file), str(self.version_file), str(self.warned_file), action,
+                str(self.state_file), str(self.version_file), str(self.pause_marker), action,
             )
         return json.loads(self.state_file.read_text())
 
     def test_no_file_until_the_latest_release_is_known(self):
         with patch.object(healthcheck, 'yt_dlp_version', '2026.10.01'):
             healthcheck.write_release_state(
-                str(self.state_file), str(self.version_file), str(self.warned_file), 'warn',
+                str(self.state_file), str(self.version_file), str(self.pause_marker), 'warn',
             )
         self.assertFalse(self.state_file.exists())
 
     def test_records_stale_in_warn_mode_without_pause(self):
         self.version_file.write_text('2026.11.03')
-        self.warned_file.write_text('1')
+        (self.dir / 'v.instance.w').write_text('1')
         state = self._write('warn')
         self.assertEqual(state['latest'], '2026.11.03')
         self.assertEqual(state['installed'], '2026.10.01')
         self.assertTrue(state['stale'])
         self.assertFalse(state['paused'])
 
+    def test_warn_marker_alone_never_reports_a_pause(self):
+        self.version_file.write_text('2026.11.03')
+        (self.dir / 'v.instance.w').write_text('1')
+        self.assertFalse(self._write('pause')['paused'])
+
     def test_records_pause_only_once_the_guard_fired(self):
         self.version_file.write_text('2026.11.03')
         self.assertFalse(self._write('pause')['paused'])
-        self.warned_file.write_text('1')
+        self.pause_marker.write_text('1')
         self.assertTrue(self._write('pause')['paused'])
 
     def test_up_to_date_is_not_stale(self):

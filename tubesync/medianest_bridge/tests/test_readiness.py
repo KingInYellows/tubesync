@@ -296,13 +296,13 @@ class YtDlpStalenessTestCase(ReadinessCacheResetMixin, SimpleTestCase):
         self.assertEqual(result['reason'], readiness.REASON_STALE_YTDLP)
         self.assertEqual(result['version'], self.installed)
         self.assertEqual(result['latestVersion'], '2099.01.01')
-        self.assertIn('downloads keep running', result['detail'])
+        self.assertIn('does not pause downloads', result['detail'])
 
     def test_detail_says_when_the_guard_paused_downloads(self):
         self._write(latest='2099.01.01', action='pause', paused=True)
         result = readiness.check_yt_dlp()
         self.assertEqual(result['reason'], readiness.REASON_STALE_YTDLP)
-        self.assertIn('paused', result['detail'])
+        self.assertIn('asked to stop the download queue', result['detail'])
 
     def test_installed_newer_than_latest_stable_is_not_stale(self):
         # A nightly build is ahead of the newest stable release tag.

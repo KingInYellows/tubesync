@@ -200,7 +200,10 @@ def is_older(installed, latest):
         return installed_key < latest_key
     return installed.strip() != latest.strip()
 
-def write_release_state(state_file, version_file, warned_file, action):
+def write_release_state(state_file, version_file, pause_marker, action):
+    # `paused` means the guard asked stop-queue to pause the download
+    # queue (pause mode, pause marker present). stop-queue runs detached,
+    # so readiness only uses it to label a queue it sees paused.
     latest = exists_read(version_file, '').strip()
     if not latest:
         return
@@ -210,7 +213,7 @@ def write_release_state(state_file, version_file, warned_file, action):
         'latest': latest,
         'stale': bool(stale),
         'action': action,
-        'paused': bool(stale and 'pause' == action and os.path.exists(warned_file)),
+        'paused': bool(stale and 'pause' == action and os.path.exists(pause_marker)),
         'checkedAt': exists_read(version_file + '.t', '').strip() or None,
     }
     os.makedirs(os.path.dirname(state_file), exist_ok=True)
@@ -249,9 +252,12 @@ if '__main__' == __name__:
     lf = vf + '.l'
     df = get_down_file(service_name)
     action = stale_ytdlp_action()
-    if is_old(vf, lock, df) and not os.path.exists(lf):
-        atomic_write(lf, 1)
-        if os.path.exists(lf):
+    # The pause marker (`.l`, upstream's) and the warn marker (`.w`, fork)
+    # are separate, so an earlier warning never suppresses a later pause.
+    marker = lf if 'pause' == action else vf + '.w'
+    if is_old(vf, lock, df) and not os.path.exists(marker):
+        atomic_write(marker, 1)
+        if os.path.exists(marker):
             latest_version = exists_read(vf, '').strip()
             if 'pause' == action:
                 cmd = [
@@ -265,9 +271,10 @@ if '__main__' == __name__:
             else:
                 print(
                     f'WARNING: yt-dlp {yt_dlp_version} is older than the latest '
-                    f'release {latest_version}; downloads keep running. Pull or '
-                    'rebuild a newer image (TUBESYNC_STALE_YTDLP_ACTION=pause '
-                    'stops the download queue instead).',
+                    f'release {latest_version}; this check does not pause '
+                    'downloads. Pull or rebuild a newer image '
+                    '(TUBESYNC_STALE_YTDLP_ACTION=pause stops the download '
+                    'queue instead).',
                     file=sys.stderr,
                 )
     try:

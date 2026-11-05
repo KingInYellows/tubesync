@@ -461,13 +461,15 @@ def check_yt_dlp():
     latest = latest.strip() if isinstance(latest, str) and latest.strip() else None
     if not _is_older(version, latest):
         return _status('healthy', version=version, latest_version=latest)
+    # Say only what the release state shows; whether the download queue is
+    # actually running is the `queues`/`workers` components' job.
     if state.get('paused') is True:
         effect = (
-            'the download queue (huey-net-limited) was paused by '
-            'TUBESYNC_STALE_YTDLP_ACTION=pause'
+            'TUBESYNC_STALE_YTDLP_ACTION=pause asked to stop the download '
+            'queue (see queues)'
         )
     else:
-        effect = 'downloads keep running'
+        effect = 'the stale-yt-dlp guard only warns and does not pause downloads'
     return _status(
         'degraded',
         version=version,

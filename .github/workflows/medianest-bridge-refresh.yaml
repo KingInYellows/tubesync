@@ -118,7 +118,7 @@ jobs:
           }
 
           build=false
-          if ! tag_exists "${tag}"; then
+          if [ "${FORCE}" != 'true' ] && ! tag_exists "${tag}"; then
             build=true
             reason="no image yet for yt-dlp ${ytdlp} on ${base}"
           elif [ "${FORCE}" = 'true' ] || { [ "${EVENT_NAME}" = 'schedule' ] && [ "$(date -u +%u)" = '1' ]; }; then
