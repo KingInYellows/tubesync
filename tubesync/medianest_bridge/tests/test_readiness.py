@@ -16,6 +16,7 @@
     readiness.requests.get -- no live network call is ever made from this
     suite, matching this program's "no live YouTube in CI" rule.
 '''
+import json
 import subprocess
 import tempfile
 import time
@@ -120,6 +121,46 @@ class WorkersCheckTestCase(ReadinessCacheResetMixin, SimpleTestCase):
         self.assertEqual(result['status'], 'unavailable')
 
 
+    def test_stopped_service_pid_minus_one_is_down(self):
+        # MED-624: s6-svstat prints -1 for a stopped service (stop-queue
+        # uses `s6-svc -D`). -1 is truthy, so it used to count as running
+        # and the check said 4/4 while huey-net-limited was stopped.
+        present = {'/run/service'} | {f'/run/service/{n}' for n in readiness.HUEY_SERVICE_NAMES}
+        pids = dict.fromkeys(readiness.HUEY_SERVICE_NAMES, 100)
+        pids['huey-net-limited'] = -1
+        with (
+            patch.object(readiness.os.path, 'isdir', _isdir_side_effect(present)),
+            patch.object(readiness.subprocess, 'check_output', _svstat_side_effect(pids)),
+        ):
+            result = readiness.check_workers()
+        self.assertEqual(result['status'], 'degraded')
+        self.assertEqual(result['reason'], readiness.REASON_WORKER_DOWN)
+        self.assertIn('3/4', result['detail'])
+        self.assertIn('down: huey-net-limited', result['detail'])
+
+    def test_all_stopped_pid_minus_one_is_unavailable(self):
+        present = {'/run/service'} | {f'/run/service/{n}' for n in readiness.HUEY_SERVICE_NAMES}
+        pids = dict.fromkeys(readiness.HUEY_SERVICE_NAMES, -1)
+        with (
+            patch.object(readiness.os.path, 'isdir', _isdir_side_effect(present)),
+            patch.object(readiness.subprocess, 'check_output', _svstat_side_effect(pids)),
+        ):
+            result = readiness.check_workers()
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertEqual(result['reason'], readiness.REASON_WORKER_DOWN)
+
+    def test_healthy_carries_no_reason(self):
+        present = {'/run/service'} | {f'/run/service/{n}' for n in readiness.HUEY_SERVICE_NAMES}
+        pids = dict.fromkeys(readiness.HUEY_SERVICE_NAMES, 100)
+        with (
+            patch.object(readiness.os.path, 'isdir', _isdir_side_effect(present)),
+            patch.object(readiness.subprocess, 'check_output', _svstat_side_effect(pids)),
+        ):
+            result = readiness.check_workers()
+        self.assertEqual(result['status'], 'healthy')
+        self.assertIsNone(result['reason'])
+
+
 class QueuesCheckTestCase(ReadinessCacheResetMixin, SimpleTestCase):
 
     def test_unknown_when_not_under_s6(self):
@@ -178,6 +219,126 @@ class QueuesCheckTestCase(ReadinessCacheResetMixin, SimpleTestCase):
             result = readiness.check_queues()
         self.assertEqual(result['status'], 'unknown')
         self.assertIn('huey-net-limited', result['detail'])
+
+
+    def _paused_net_limited(self):
+        present_dirs = {'/run/service'} | {f'/run/service/{n}' for n in readiness.HUEY_SERVICE_NAMES}
+
+        def wanted_up(name):
+            return name != 'huey-net-limited'
+
+        with (
+            patch.object(readiness.os.path, 'isdir', _isdir_side_effect(present_dirs)),
+            patch.object(readiness.os.path, 'exists', _exists_side_effect(set())),
+            patch.object(readiness, '_s6_service_wanted_up', side_effect=wanted_up),
+        ):
+            return readiness.check_queues()
+
+    def test_manual_pause_reports_queue_paused(self):
+        with patch.object(readiness, '_read_ytdlp_release_state', return_value={}):
+            result = self._paused_net_limited()
+        self.assertEqual(result['status'], 'degraded')
+        self.assertEqual(result['reason'], readiness.REASON_QUEUE_PAUSED)
+        self.assertIn('administratively paused: huey-net-limited', result['detail'])
+
+    def test_pause_by_stale_guard_reports_stale_ytdlp(self):
+        state = {'latest': '2099.01.01', 'stale': True, 'action': 'pause', 'paused': True}
+        with patch.object(readiness, '_read_ytdlp_release_state', return_value=state):
+            result = self._paused_net_limited()
+        self.assertEqual(result['status'], 'degraded')
+        self.assertEqual(result['reason'], readiness.REASON_STALE_YTDLP)
+
+    def test_stale_in_warn_mode_does_not_relabel_a_manual_pause(self):
+        state = {'latest': '2099.01.01', 'stale': True, 'action': 'warn', 'paused': False}
+        with patch.object(readiness, '_read_ytdlp_release_state', return_value=state):
+            result = self._paused_net_limited()
+        self.assertEqual(result['reason'], readiness.REASON_QUEUE_PAUSED)
+
+
+class YtDlpStalenessTestCase(ReadinessCacheResetMixin, SimpleTestCase):
+    '''
+        MED-623: check_yt_dlp() compares the installed yt-dlp with the
+        newest release healthcheck.py recorded in the shared state file.
+    '''
+
+    def setUp(self):
+        super().setUp()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.state_file = Path(tmp.name) / 'yt-dlp-release.json'
+        patcher = patch.object(readiness, 'YTDLP_RELEASE_STATE_FILE', str(self.state_file))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        import yt_dlp
+        self.installed = yt_dlp.version.__version__
+
+    def _write(self, **state):
+        self.state_file.write_text(json.dumps(state), encoding='utf-8')
+
+    def test_healthy_without_state_file(self):
+        result = readiness.check_yt_dlp()
+        self.assertEqual(result['status'], 'healthy')
+        self.assertEqual(result['version'], self.installed)
+        self.assertIsNone(result['latestVersion'])
+        self.assertIsNone(result['reason'])
+
+    def test_healthy_when_installed_is_latest(self):
+        self._write(latest=self.installed, paused=False)
+        result = readiness.check_yt_dlp()
+        self.assertEqual(result['status'], 'healthy')
+        self.assertEqual(result['latestVersion'], self.installed)
+        self.assertIsNone(result['reason'])
+
+    def test_degraded_stale_ytdlp_when_a_newer_release_exists(self):
+        self._write(latest='2099.01.01', action='warn', paused=False)
+        result = readiness.check_yt_dlp()
+        self.assertEqual(result['status'], 'degraded')
+        self.assertEqual(result['reason'], readiness.REASON_STALE_YTDLP)
+        self.assertEqual(result['version'], self.installed)
+        self.assertEqual(result['latestVersion'], '2099.01.01')
+        self.assertIn('downloads keep running', result['detail'])
+
+    def test_detail_says_when_the_guard_paused_downloads(self):
+        self._write(latest='2099.01.01', action='pause', paused=True)
+        result = readiness.check_yt_dlp()
+        self.assertEqual(result['reason'], readiness.REASON_STALE_YTDLP)
+        self.assertIn('paused', result['detail'])
+
+    def test_installed_newer_than_latest_stable_is_not_stale(self):
+        # A nightly build is ahead of the newest stable release tag.
+        self._write(latest='2000.01.01')
+        result = readiness.check_yt_dlp()
+        self.assertEqual(result['status'], 'healthy')
+        self.assertEqual(result['latestVersion'], '2000.01.01')
+
+    def test_malformed_state_file_is_ignored(self):
+        self.state_file.write_text('{not json', encoding='utf-8')
+        result = readiness.check_yt_dlp()
+        self.assertEqual(result['status'], 'healthy')
+        self.assertIsNone(result['latestVersion'])
+
+    def test_stale_ytdlp_degrades_overall_status(self):
+        self._write(latest='2099.01.01')
+        component = readiness.check_yt_dlp()
+        self.assertEqual(
+            readiness.aggregate_status({'database': {'status': 'healthy'}, 'ytDlp': component}),
+            'degraded',
+        )
+
+    def test_is_older_compares_dotted_dates_numerically(self):
+        self.assertTrue(readiness._is_older('2026.9.1', '2026.10.01'))
+        self.assertFalse(readiness._is_older('2026.11.03.232', '2026.11.03'))
+        self.assertFalse(readiness._is_older('2026.11.03', None))
+        self.assertTrue(readiness._is_older('weird', 'other'))
+
+
+class ComponentShapeTestCase(ReadinessCacheResetMixin, SimpleTestCase):
+
+    def test_every_component_carries_reason_and_latest_version(self):
+        for name, component in readiness.collect_components().items():
+            with self.subTest(component=name):
+                self.assertIn('reason', component)
+                self.assertIn('latestVersion', component)
 
 
 class StatDownloadRootSeamTestCase(SimpleTestCase):
@@ -435,7 +596,11 @@ class CheckFfmpegTestCase(SimpleTestCase):
     def test_missing_ffmpeg_is_unavailable(self, _which):
         self.assertEqual(
             readiness.check_ffmpeg(),
-            {'status': 'unavailable', 'version': None, 'detail': 'ffmpeg not found on PATH'},
+            {
+                'status': 'unavailable', 'version': None,
+                'detail': 'ffmpeg not found on PATH',
+                'reason': None, 'latestVersion': None,
+            },
         )
 
     @patch('medianest_bridge.readiness.shutil.which', return_value='/usr/bin/ffmpeg')

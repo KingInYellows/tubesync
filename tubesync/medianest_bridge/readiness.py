@@ -126,6 +126,15 @@
     it's a local env-var/DB-free check (no network call, no subprocess,
     nothing that benefits from a longer TTL).
 
+    MED-623/MED-624 (contract 1.2.0): every component also carries the
+    OPTIONAL `reason` and `latestVersion` fields, null unless set. `ytDlp`
+    compares the installed yt-dlp with the newest release the container
+    HEALTHCHECK recorded in YTDLP_RELEASE_STATE_FILE and reports
+    `degraded`/`stale_ytdlp` when it is older; the fork's healthcheck.py
+    only warns about that by default instead of stopping downloads (see
+    docs/adr-0001-stale-ytdlp-guard.md). `workers` counts only a PID above
+    0 as running: s6-svstat prints -1 for a stopped service.
+
     Failure isolation: every check function is called through
     _run_check(), which converts an unexpected exception into "unknown"
     (never lets one check's bug crash the whole /health/ready response)
@@ -148,6 +157,7 @@
         degraded outside a real s6-overlay deployment, which is not an
         honest signal either.
 '''
+import json
 import os
 import shutil
 import subprocess
@@ -221,8 +231,24 @@ HUEY_SERVICE_NAMES = (
 )
 
 
-def _status(status, *, version=None, detail=None):
-    return {'status': status, 'version': version, 'detail': detail}
+def _status(status, *, version=None, detail=None, reason=None, latest_version=None):
+    # `reason` and `latestVersion` are the contract's OPTIONAL
+    # ComponentStatus fields (contract 1.2.0, MED-623/MED-624). They are
+    # always sent, null when there is nothing to say.
+    return {
+        'status': status,
+        'version': version,
+        'detail': detail,
+        'reason': reason,
+        'latestVersion': latest_version,
+    }
+
+
+# Machine-readable reasons (ComponentStatus.reason). Callers must tolerate
+# codes they do not know.
+REASON_STALE_YTDLP = 'stale_ytdlp'
+REASON_QUEUE_PAUSED = 'queue_paused'
+REASON_WORKER_DOWN = 'worker_down'
 
 
 def _run_check(check_fn):
@@ -322,17 +348,24 @@ def check_workers():
     down = []
     for name in HUEY_SERVICE_NAMES:
         pid = _s6_service_pid(name)
-        # A PID of 0 (or the call failing) means s6 does not consider the
-        # service up; s6-svstat reports 0 for a down/not-yet-started
-        # service rather than raising.
-        (up if pid else down).append(name)
+        # MED-624: only a positive PID is a running process. s6-svstat
+        # prints -1 for a stopped service (e.g. after `s6-svc -D`, which is
+        # how stop-queue pauses a consumer) -- and -1 is truthy, so the old
+        # `if pid` test counted a stopped huey-net-limited as up. 0 and a
+        # failed/timed-out call (None) are down too.
+        (up if pid is not None and pid > 0 else down).append(name)
     if not down:
         return _status('healthy', detail=f'{len(up)}/{len(HUEY_SERVICE_NAMES)} huey consumers running')
     if not up:
-        return _status('unavailable', detail=f'no huey consumers running: {", ".join(down)}')
+        return _status(
+            'unavailable',
+            detail=f'no huey consumers running: {", ".join(down)}',
+            reason=REASON_WORKER_DOWN,
+        )
     return _status(
         'degraded',
         detail=f'{len(up)}/{len(HUEY_SERVICE_NAMES)} huey consumers running; down: {", ".join(down)}',
+        reason=REASON_WORKER_DOWN,
     )
 
 
@@ -365,10 +398,55 @@ def check_queues():
         )
     if not paused:
         return _status('healthy', detail='no queue is administratively paused')
+    reason = REASON_QUEUE_PAUSED
+    if _STALE_GUARD_SERVICE in paused and _read_ytdlp_release_state().get('paused') is True:
+        # Only when the opt-in pause mode of the stale-yt-dlp guard
+        # (TUBESYNC_STALE_YTDLP_ACTION=pause) is what stopped it.
+        reason = REASON_STALE_YTDLP
     return _status(
         'degraded',
         detail=f'administratively paused: {", ".join(paused)}',
+        reason=reason,
     )
+
+
+# MED-623: the container's Docker HEALTHCHECK (healthcheck.py) looks up the
+# newest yt-dlp release and records it here. That file is the only source
+# for `latestVersion`: this process never calls GitHub itself.
+YTDLP_RELEASE_STATE_FILE = '/dev/shm/.healthcheck/yt-dlp-release.json'
+_STALE_GUARD_SERVICE = 'huey-net-limited'
+
+
+def _read_ytdlp_release_state():
+    '''
+        Returns the healthcheck's recorded state as a dict, or {} when the
+        file is absent (outside the container, or before the first lookup
+        finished) or unreadable. Never raises.
+    '''
+    try:
+        with open(YTDLP_RELEASE_STATE_FILE, encoding='utf-8') as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _version_key(version):
+    try:
+        return tuple(int(part) for part in str(version).strip().split('.'))
+    except ValueError:
+        return None
+
+
+def _is_older(installed, latest):
+    '''Same comparison as healthcheck.py::is_older().'''
+    if not installed or not latest:
+        return False
+    installed_key = _version_key(installed)
+    latest_key = _version_key(latest)
+    if installed_key is not None and latest_key is not None:
+        return installed_key < latest_key
+    return str(installed).strip() != str(latest).strip()
 
 
 def check_yt_dlp():
@@ -378,7 +456,28 @@ def check_yt_dlp():
         version = getattr(version, '__version__', None) if version else None
     except ImportError:
         return _status('unavailable', detail='yt_dlp module not importable')
-    return _status('healthy', version=version)
+    state = _read_ytdlp_release_state()
+    latest = state.get('latest')
+    latest = latest.strip() if isinstance(latest, str) and latest.strip() else None
+    if not _is_older(version, latest):
+        return _status('healthy', version=version, latest_version=latest)
+    if state.get('paused') is True:
+        effect = (
+            'the download queue (huey-net-limited) was paused by '
+            'TUBESYNC_STALE_YTDLP_ACTION=pause'
+        )
+    else:
+        effect = 'downloads keep running'
+    return _status(
+        'degraded',
+        version=version,
+        latest_version=latest,
+        reason=REASON_STALE_YTDLP,
+        detail=(
+            f'yt-dlp {version} is older than the latest release {latest}; '
+            f'{effect}. Pull or rebuild a newer image.'
+        ),
+    )
 
 
 def check_ffmpeg():

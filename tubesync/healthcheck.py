@@ -11,6 +11,7 @@
 
 
 import hashlib
+import json
 import os
 import random
 import requests
@@ -27,6 +28,11 @@ except:
 
 
 TIMEOUT = 5  # Seconds
+# Fork change (MED-623): a stable, instance-independent record of the
+# newest yt-dlp release this check has seen, read by the medianest_bridge
+# readiness check (medianest_bridge/readiness.py::check_yt_dlp). The
+# per-instance `v.<id>` files below stay as they are upstream.
+STALE_YTDLP_STATE_FILE = '/dev/shm/.healthcheck/yt-dlp-release.json'
 HTTP_USER = os.getenv('HTTP_USER')
 HTTP_PASS = os.getenv('HTTP_PASS')
 # never use proxy for healthcheck requests
@@ -167,6 +173,49 @@ def get_unique_id(service_name=None):
     combined_seed = f'{boot_id}_{container_id}_{root_start}_{cgroup_data}'
     return hashlib.md5(combined_seed.encode()).hexdigest()[:8]
 
+def stale_ytdlp_action():
+    # Fork change (MED-623): upstream stops the huey-net-limited consumer
+    # as soon as the bundled yt-dlp is older than the newest release, which
+    # halts every download until the image is rebuilt. The fork only warns
+    # by default; TUBESYNC_STALE_YTDLP_ACTION=pause restores upstream.
+    value = (os.getenv('TUBESYNC_STALE_YTDLP_ACTION') or 'warn').strip().lower()
+    return 'pause' if 'pause' == value else 'warn'
+
+def version_key(version):
+    try:
+        return tuple(int(part) for part in version.strip().split('.'))
+    except (AttributeError, ValueError):
+        return None
+
+def is_older(installed, latest):
+    # yt-dlp versions are dotted dates (2026.11.03, nightly 2026.11.03.232).
+    # Compare them numerically so a nightly build newer than the latest
+    # stable release is not called stale; fall back to inequality for
+    # anything that does not parse.
+    if not installed or not latest:
+        return False
+    installed_key = version_key(installed)
+    latest_key = version_key(latest)
+    if installed_key is not None and latest_key is not None:
+        return installed_key < latest_key
+    return installed.strip() != latest.strip()
+
+def write_release_state(state_file, version_file, warned_file, action):
+    latest = exists_read(version_file, '').strip()
+    if not latest:
+        return
+    stale = is_older(yt_dlp_version, latest)
+    state = {
+        'installed': yt_dlp_version,
+        'latest': latest,
+        'stale': bool(stale),
+        'action': action,
+        'paused': bool(stale and 'pause' == action and os.path.exists(warned_file)),
+        'checkedAt': exists_read(version_file + '.t', '').strip() or None,
+    }
+    os.makedirs(os.path.dirname(state_file), exist_ok=True)
+    atomic_write(state_file, json.dumps(state, sort_keys=True))
+
 def is_hex(s, length):
     # Strict length and character validation
     hex_chars = '0123456789abcdef'
@@ -189,7 +238,7 @@ def is_old(s, lock, down_file):
             threading.Thread(target=bg_v, args=(s, lock), daemon=True).start()
     except:
         pass
-    return latest_version and yt_dlp_version != latest_version
+    return is_older(yt_dlp_version, latest_version)
 
 
 if '__main__' == __name__:
@@ -199,18 +248,32 @@ if '__main__' == __name__:
     vf = f'/dev/shm/.healthcheck/v.{container_instance}'
     lf = vf + '.l'
     df = get_down_file(service_name)
+    action = stale_ytdlp_action()
     if is_old(vf, lock, df) and not os.path.exists(lf):
         atomic_write(lf, 1)
         if os.path.exists(lf):
             latest_version = exists_read(vf, '').strip()
-            cmd = [
-                '/usr/bin/env', 'python3', '/app/manage.py', 'stop-queue',
-                '--installed', yt_dlp_version,
-                '--latest', latest_version,
-                '--name', 'yt-dlp',
-                service_name,
-            ]
-            subprocess.Popen(cmd, stdout=-1, stderr=-1, start_new_session=True)
+            if 'pause' == action:
+                cmd = [
+                    '/usr/bin/env', 'python3', '/app/manage.py', 'stop-queue',
+                    '--installed', yt_dlp_version,
+                    '--latest', latest_version,
+                    '--name', 'yt-dlp',
+                    service_name,
+                ]
+                subprocess.Popen(cmd, stdout=-1, stderr=-1, start_new_session=True)
+            else:
+                print(
+                    f'WARNING: yt-dlp {yt_dlp_version} is older than the latest '
+                    f'release {latest_version}; downloads keep running. Pull or '
+                    'rebuild a newer image (TUBESYNC_STALE_YTDLP_ACTION=pause '
+                    'stops the download queue instead).',
+                    file=sys.stderr,
+                )
+    try:
+        write_release_state(STALE_YTDLP_STATE_FILE, vf, lf, action)
+    except Exception:
+        pass
     # if gunicorn is marked as intentionally down, nothing else matters
     df = get_down_file('gunicorn')
     if os.path.exists(df):

@@ -1,0 +1,153 @@
+name: MediaNest Bridge Image Refresh
+
+# MED-623: keep the published bridge image's bundled yt-dlp current.
+#
+# YouTube changes break old yt-dlp releases quickly, and an image only
+# picks up a new yt-dlp when it is rebuilt. This workflow rebuilds the
+# newest bridge-v<major>.<minor>.<patch> release tag (its code is not
+# changed; only yt-dlp, FFmpeg and the base layers are refreshed):
+#
+#   - daily, when a yt-dlp release exists that has no image yet:
+#       bridge-vX.Y.Z-yt<yt-dlp version>
+#   - every Monday even without a new yt-dlp release, for base-image and
+#     FFmpeg fixes:
+#       bridge-vX.Y.Z-yt<yt-dlp version>-r<YYYYMMDD>
+#
+# Every published tag is immutable (medianest-bridge-release.yaml refuses
+# to overwrite one). Each refresh also moves the one channel tag,
+# `bridge-stable`, to the new image, so a deployment that pins
+# `bridge-stable` gets the fresh yt-dlp on its next `docker compose pull`.
+# Deployments that pin an exact tag keep it until an operator changes it.
+# See medianest_bridge/docs/adr-0001-stale-ytdlp-guard.md.
+
+on:
+  schedule:
+    # Daily 06:17 UTC; Mondays also rebuild without a new yt-dlp release.
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: >-
+          Rebuild even when an image for the current yt-dlp release already
+          exists (publishes a -r<date> tag).
+        required: false
+        type: boolean
+        default: false
+      push:
+        description: Push the built image. Leave unchecked for a dry run.
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.repository }}-medianest-bridge-refresh
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      tag: ${{ steps.plan.outputs.tag }}
+      ref: ${{ steps.plan.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Lowercase github repository owner
+        id: owner
+        uses: ./.github/actions/string-case
+        with:
+          string: ${{ github.repository_owner }}
+
+      - name: Retrieve yt-dlp/yt-dlp releases with GitHub CLI
+        id: yt-dlp
+        uses: ./.github/actions/yt-dlp
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Decide whether to build
+        id: plan
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          FORCE: ${{ inputs.force }}
+          IMAGE: ghcr.io/${{ steps.owner.outputs.lowercase }}/tubesync
+          YTDLP_RELEASE: ${{ steps.yt-dlp.outputs.latest-release }}
+        run: |
+          base="$(git tag -l 'bridge-v*' --sort=-v:refname \
+            | grep -E '^bridge-v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)"
+          test -n "${base}" || { echo '::error::no bridge-vX.Y.Z release tag found'; exit 1; }
+          ytdlp="$(jq -r '.tag.name' <<< "${YTDLP_RELEASE}")"
+          case "${ytdlp}" in
+            (''|null|*[!0-9.]*) echo "::error::unexpected yt-dlp release tag '${ytdlp}'"; exit 1 ;;
+          esac
+          tag="${base}-yt${ytdlp}"
+
+          # 0 = the tag exists, 1 = confirmed absent; anything else fails
+          # closed, same rule as the release workflow's overwrite guard.
+          tag_exists() {
+            local output attempt=1
+            while :; do
+              if output="$(docker buildx imagetools inspect "${IMAGE}:$1" 2>&1)"; then
+                return 0
+              fi
+              case "${output}" in
+                (*'not found'*|*'manifest unknown'*|*'MANIFEST_UNKNOWN'*|*'NAME_UNKNOWN'*|*'no such manifest'*|*'404'*)
+                  return 1 ;;
+              esac
+              if [ "${attempt}" -ge 3 ]; then
+                echo "::error::could not inspect ${IMAGE}:$1: ${output}"
+                exit 1
+              fi
+              attempt=$((attempt + 1))
+              sleep 5
+            done
+          }
+
+          build=false
+          if ! tag_exists "${tag}"; then
+            build=true
+            reason="no image yet for yt-dlp ${ytdlp} on ${base}"
+          elif [ "${FORCE}" = 'true' ] || { [ "${EVENT_NAME}" = 'schedule' ] && [ "$(date -u +%u)" = '1' ]; }; then
+            tag="${tag}-r$(date -u +%Y%m%d)"
+            if tag_exists "${tag}"; then
+              reason="${tag} already published today"
+            else
+              build=true
+              reason='weekly rebuild'
+            fi
+          else
+            reason="${tag} already published"
+          fi
+          echo "${reason}: build=${build} tag=${tag}"
+          {
+            printf -- 'build=%s\n' "${build}"
+            printf -- 'tag=%s\n' "${tag}"
+            printf -- 'ref=refs/tags/%s\n' "${base}"
+          } >> "${GITHUB_OUTPUT}"
+
+  refresh:
+    needs: ['plan']
+    if: ${{ needs.plan.outputs.build == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/medianest-bridge-release.yaml
+    with:
+      tag: ${{ needs.plan.outputs.tag }}
+      ref: ${{ needs.plan.outputs.ref }}
+      push: ${{ github.event_name == 'schedule' || inputs.push }}
+      channel_tag: bridge-stable
