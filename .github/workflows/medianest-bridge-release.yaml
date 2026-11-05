@@ -278,6 +278,11 @@ jobs:
       - name: Build and publish
         uses: docker/build-push-action@v7
         with:
+          # Build the checked-out tree (inputs.ref when the scheduled refresh
+          # calls this workflow). Without `context`, build-push-action uses a
+          # Git context of the triggering event's ref (main on a schedule),
+          # which would publish unreleased code under a release tag.
+          context: .
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
           # The second line is empty (and ignored) unless the scheduled
