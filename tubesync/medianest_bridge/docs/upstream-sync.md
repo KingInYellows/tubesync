@@ -10,7 +10,7 @@ a process that exists only in principle.
 
 ## Before syncing: know what "the fork delta" actually is
 
-Everything the bridge needs lives in `medianest_bridge/` plus ten
+Everything the bridge needs lives in `medianest_bridge/` plus twelve
 explicitly enumerated upstream touch points (see
 `medianest_bridge/README.md`'s "Fork delta" section for the exact
 files/lines -- not repeated here, so this doc can't drift out of sync with
@@ -109,6 +109,9 @@ check`, `manage.py makemigrations --check --dry-run`. A sync that changes
 (Step 4) as part of this gate set, not as an optional follow-up.
 
 ## What a sync does *not* need to touch
+
+`.github/workflows/medianest-bridge-refresh.yaml` (MED-623) is fork-owned
+in the same way: it only calls `medianest-bridge-release.yaml`.
 
 `.github/workflows/medianest-bridge-release.yaml` (T5) is written
 specifically to survive a sync untouched: it reads

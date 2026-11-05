@@ -34,7 +34,7 @@ signal-driven task scheduling.
 
 ## Fork delta
 
-Nine upstream files are touched at ten points (`settings.py` twice), seven of the ten minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
+Eleven upstream files are touched at twelve points (`settings.py` twice), eight of the twelve minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml`, `.github/workflows/medianest-bridge-refresh.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
 
 1. `tubesync/tubesync/settings.py` -- `INSTALLED_APPS += 'medianest_bridge'`.
 2. `tubesync/tubesync/urls.py` -- one `include('medianest_bridge.urls')` at
@@ -136,6 +136,22 @@ Nine upstream files are touched at ten points (`settings.py` twice), seven of th
    loop is only re-indented under the `try:`; no existing logic in any
    of these tasks is changed, reordered, or made conditional on the new
    call, and an image error still propagates and retries the task.
+11. `healthcheck.py` (MED-623, see `docs/adr-0001-stale-ytdlp-guard.md`)
+   -- upstream's Docker HEALTHCHECK stops the `huey-net-limited`
+   (download) consumer as soon as the bundled yt-dlp is older than the
+   newest release. The fork only warns by default:
+   `TUBESYNC_STALE_YTDLP_ACTION=pause` restores upstream's stop. Version
+   comparison is numeric (`is_older()`), so a nightly yt-dlp ahead of the
+   latest stable tag is not stale. Each run also writes
+   `/dev/shm/.healthcheck/yt-dlp-release.json` (installed, latest,
+   stale, action, paused, checkedAt), which `readiness.check_yt_dlp()`
+   reads. The `stop-queue` call itself is unchanged.
+12. `sync/apps.py` (MED-634) -- `SyncConfig.ready()` imports
+   `sync/signals.py`. Upstream connected those receivers only as a side
+   effect of importing `sync/views/sources.py` when the URLconf loads, so
+   `manage.py shell` (which skips system checks) had none: a source's
+   quality change saved there scheduled no "Checking all media" task and
+   skipped media stayed skipped. No receiver changes.
 
 `sync/tvshow_nfo.py` (Plex T2) is a new, wholly fork-owned module (like
 `medianest_bridge/` itself), not an upstream touch point -- it is not
@@ -417,6 +433,14 @@ reads are `GET`; T3 writes are `POST`.
   from the contract's `components.required` list, so an older MediaNest
   caller pinned to a pre-Plex-T3 fixture stays conformant against a
   bridge that now reports it.
+  Contract 1.2.0 (MED-623/MED-624) adds two OPTIONAL, always-sent,
+  nullable fields to every component: `reason` and `latestVersion`.
+  `ytDlp` reports `degraded` with `reason: "stale_ytdlp"` and
+  `latestVersion` when the healthcheck has seen a newer yt-dlp release;
+  `queues` reports `reason: "queue_paused"` for a paused consumer
+  (`"stale_ytdlp"` when the opt-in pause mode of the stale guard did
+  it); `workers` reports `reason: "worker_down"` and treats s6's `-1`
+  PID (a stopped service) as down.
 - `GET /meta` -- bridge version, upstream `VERSION` string (known stale
   relative to the actual checked-out commit -- see the upstream audit), and
   `upstreamCommit`.
