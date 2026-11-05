@@ -117,7 +117,9 @@ jobs:
         run: |
           # A bridge-v* tag push has no inputs and always publishes;
           # workflow_dispatch and workflow_call publish only with push: true.
-          if [ "${GITHUB_EVENT_NAME}" = 'push' ]; then
+          # A reusable call inherits its caller's event name, so a caller
+          # running on `push` is told apart by having a push input.
+          if [ "${GITHUB_EVENT_NAME}" = 'push' ] && [ -z "${PUSH_INPUT}" ]; then
             publish=true
           elif [ "${PUSH_INPUT}" = 'true' ]; then
             publish=true
