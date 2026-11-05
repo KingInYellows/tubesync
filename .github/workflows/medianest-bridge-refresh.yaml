@@ -96,6 +96,22 @@ jobs:
           esac
           tag="${base}-yt${ytdlp}"
 
+          # The image installs yt-dlp from PyPI, not from the GitHub
+          # release, so only name an image after a release PyPI already
+          # serves (PyPI drops leading zeros: 2026.11.03 is 2026.11.3).
+          # Until it does, skip; the next daily run retries.
+          pypi="$(curl -fsSL --retry 3 https://pypi.org/pypi/yt-dlp/json | jq -r '.info.version')"
+          norm() { awk -F. '{ for (i = 1; i <= NF; i++) printf "%s%d", (i > 1 ? "." : ""), $i }' <<< "$1"; }
+          if [ "$(norm "${pypi}")" != "$(norm "${ytdlp}")" ]; then
+            echo "PyPI serves yt-dlp ${pypi}, not ${ytdlp} yet: build=false"
+            {
+              printf -- 'build=false\n'
+              printf -- 'tag=%s\n' "${tag}"
+              printf -- 'ref=refs/tags/%s\n' "${base}"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
           # 0 = the tag exists, 1 = confirmed absent; anything else fails
           # closed, same rule as the release workflow's overwrite guard.
           tag_exists() {
