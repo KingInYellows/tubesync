@@ -2,9 +2,10 @@
 #
 # Canonical source: KingInYellows/medianest,
 #   docs/planning/tubesync-integration/bridge-openapi.v1.yaml
-#   @ 115f4d7 (2026-11-05, MediaNest draft PR #3082, branch
-#   claude/project-thread-y6qy9f; re-sync this header to the squash-merge
-#   SHA once it lands). Contract version 1.2.0 (MED-623/MED-624): adds the
+#   @ 22a5062f1bb4d2d260c3dd551f1fa6706b3cfe5b
+#   (2026-11-06, the squash merge of MediaNest #3082 to main; its contract
+#   file is byte-identical to the pre-merge branch copy first vendored
+#   here). Contract version 1.2.0 (MED-623/MED-624): adds the
 #   OPTIONAL, nullable ComponentStatus.reason (stale_ytdlp, queue_paused,
 #   worker_down) and ComponentStatus.latestVersion. Neither joins
 #   ComponentStatus.required; no path or response changed.
