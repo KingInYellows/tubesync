@@ -136,6 +136,11 @@ Eleven upstream files are touched at twelve points (`settings.py` twice), eight 
    loop is only re-indented under the `try:`; no existing logic in any
    of these tasks is changed, reordered, or made conditional on the new
    call, and an image error still propagates and retries the task.
+   One later fork change (MED-632, #31) does change
+   `download_source_images()`'s image list: when a source has no channel
+   avatar (a playlist), its thumbnail is also written as `poster.jpg` and
+   `season-poster.jpg`, so Plex has a show poster. With an avatar, the
+   list is upstream's.
 11. `healthcheck.py` (MED-623, see `docs/adr-0001-stale-ytdlp-guard.md`)
    -- upstream's Docker HEALTHCHECK stops the `huey-net-limited`
    (download) consumer as soon as the bundled yt-dlp is older than the

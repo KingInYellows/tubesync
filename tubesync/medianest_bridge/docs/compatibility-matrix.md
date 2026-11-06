@@ -58,11 +58,11 @@ see that section for the current, authoritative list and line counts).
 `docs/planning/tubesync-integration/bridge-openapi.v1.yaml`), vendored
 read-only into `medianest_bridge/contract/bridge-openapi.v1.yaml`. `info.version:
 "1.0.0"` inside that file at that commit; the current vendored copy is
-`"1.1.0"` (MED-589: adds the optional `POST /sources/resolve` and
-`Capabilities.resolveChannelHandle`, vendored from MediaNest
-`03aae1307`, the merge of #2783 -- see the README's "Contract" section). This is the contract version, not the release
+`"1.2.0"` (MED-623/MED-624: adds the optional, nullable
+`ComponentStatus.reason` and `latestVersion`, vendored from the merge of
+MediaNest #3082 -- see the README's "Contract" section). This is the contract version, not the release
 version: `GET /meta`'s `bridgeVersion` field (`config.py::BRIDGE_VERSION`)
-reports the bridge release (`1.1.0` for `bridge-v1.1.0`, `1.2.0` for `bridge-v1.2.0`), which can move
+reports the bridge release (`1.1.0` for `bridge-v1.1.0`, `1.2.0` for `bridge-v1.2.0` and its untagged `bridge-v1.2.1` rebuild, `1.2.2` for `bridge-v1.2.2`), which can move
 ahead of the contract for additive or internal changes. Full re-vendor history is in
 `medianest_bridge/README.md`'s "Contract" section; not repeated here to
 avoid a second place that can drift out of sync with the first.
@@ -116,3 +116,4 @@ is created by the repository owner.
 | `bridge-v1.0.1` | `049a6b230db286cf17c12e5e733fe9acb55fff4b` (#14) | `3b9d72f28dda9c931776f76e7428a72a24a57f82` | `bridge-openapi.v1.yaml` `1.0.0` | `v1.0.0-rc9` | Index-only sources skip per-item metadata and thumbnail fetches. Paired with MediaNest `v1.0.0` GA. `BRIDGE_VERSION` still read `1.0.0` in this build. |
 | `bridge-v1.1.0` | fork `main` after the release-prep PR merges | `3b9d72f28dda9c931776f76e7428a72a24a57f82` | `bridge-openapi.v1.yaml` `1.0.0` (additive `sourceDefaults` component) | `v1.0.0` (MediaNest `v1.1.0` requires this tag) | See `release-notes-bridge-v1.1.0.md`. Plex TV library NFO sidecars, date-based episode numbering, configurable source defaults, sidecar backfill command. |
 | `bridge-v1.2.0` | fork `main` after the release-prep PR merges | `3b9d72f28dda9c931776f76e7428a72a24a57f82` | `bridge-openapi.v1.yaml` `1.1.0` (additive `POST /sources/resolve`, optional `resolveChannelHandle`) | `v1.0.0` (handle URLs need MediaNest `v1.1.0`, which includes #2783; older MediaNest ignores the flag) | See `release-notes-bridge-v1.2.0.md`. Channel `@handle`/`c/`/`user/` URL resolution. |
+| `bridge-v1.2.2` | fork `main` after the release-prep PR merges | `3b9d72f28dda9c931776f76e7428a72a24a57f82` | `bridge-openapi.v1.yaml` `1.2.0` (additive, optional `ComponentStatus.reason`/`latestVersion`) | `v1.0.0` (MediaNest with #3082 shows the reasons; older MediaNest ignores them) | See `release-notes-bridge-v1.2.2.md`. A new yt-dlp release no longer pauses downloads, stopped consumers report down, self-refreshing image and `bridge-stable` tag, best-available fallback for new sources, playlist posters. `bridge-v1.2.1` was an untagged yt-dlp rebuild of `bridge-v1.2.0`. |
