@@ -86,8 +86,10 @@ first vendored in #29; the header now names the merge commit and
 
 ## After deploying
 
-- New playlist sources get `poster.jpg` when they are created. An
-  existing playlist folder gets it only when `download_source_images`
+- New playlist sources with `copy_channel_images` on (the bridge's
+  built-in profile turns it on) queue the image download when they are
+  created, and get `poster.jpg` once it runs, if the playlist has a
+  thumbnail. An existing playlist folder gets it only when `download_source_images`
   runs again for that source; a plain source save does not queue it
   (only turning `copy_channel_images` on does). To fetch the missing
   posters, run the backfill with a selector and `--apply`, after a
@@ -100,7 +102,9 @@ first vendored in #29; the header now names the merge commit and
 
   (`--all-bridge-sources` instead of `--source` covers every `acq-src-`
   source.) With `--apply` it queues the image download for any source
-  with `copy_channel_images` on and no `poster.jpg`. It also applies the
+  with `copy_channel_images` on and no `poster.jpg`, unless its safety
+  checks skip the source (for example a symlinked image file or a source
+  directory outside `DOWNLOAD_ROOT`); the output says why. It also applies the
   bridge's source-defaults profile to that source and can rename
   already-downloaded files to match it; the dry run lists both. See the
   README's `medianest_backfill_plex_sidecars` section.
