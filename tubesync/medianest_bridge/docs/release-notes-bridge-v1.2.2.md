@@ -65,15 +65,16 @@ owner. This file records what the tag would contain and what was verified.
 Contract `1.2.0`, additive only: the optional, nullable
 `ComponentStatus.reason` and `ComponentStatus.latestVersion`. Neither joins
 `required`, and no path or response changed. A MediaNest that does not know
-the fields ignores them. The vendored copy is re-synced to the squash merge
-of MediaNest #3082 to `main`. Its body is byte-identical to the branch copy
+the fields ignores them. The vendored copy is re-synced to MediaNest
+`22a5062f1bb4d2d260c3dd551f1fa6706b3cfe5b`, the squash merge of #3082 to
+`main`. Its body is byte-identical to the branch copy
 first vendored in #29; the header now names the merge commit and
 `source_sha256` is re-locked.
 
 ## Before tagging
 
-- ~~Merge MediaNest #3082 and re-sync the vendored header SHA.~~ Done in
-  the release-prep PR that this tag sits on.
+- ~~Merge MediaNest #3082 and re-sync the vendored header SHA.~~ Done
+  2026-11-06: #3082 merged as `22a5062f1`.
 - ~~Bump `BRIDGE_VERSION` to `1.2.2`.~~ Done in the same PR.
 - Tag the release-prep merge commit `bridge-v1.2.2`. That triggers
   `medianest-bridge-release.yaml` to publish

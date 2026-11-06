@@ -59,8 +59,8 @@ see that section for the current, authoritative list and line counts).
 read-only into `medianest_bridge/contract/bridge-openapi.v1.yaml`. `info.version:
 "1.0.0"` inside that file at that commit; the current vendored copy is
 `"1.2.0"` (MED-623/MED-624: adds the optional, nullable
-`ComponentStatus.reason` and `latestVersion`, vendored from the merge of
-MediaNest #3082 -- see the README's "Contract" section). This is the contract version, not the release
+`ComponentStatus.reason` and `latestVersion`, vendored from MediaNest
+`22a5062f1`, the merge of #3082 -- see the README's "Contract" section). This is the contract version, not the release
 version: `GET /meta`'s `bridgeVersion` field (`config.py::BRIDGE_VERSION`)
 reports the bridge release (`1.1.0` for `bridge-v1.1.0`, `1.2.0` for `bridge-v1.2.0` and its untagged `bridge-v1.2.1` rebuild, `1.2.2` for `bridge-v1.2.2`), which can move
 ahead of the contract for additive or internal changes. Full re-vendor history is in

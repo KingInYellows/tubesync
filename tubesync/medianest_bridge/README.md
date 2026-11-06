@@ -661,11 +661,15 @@ uuid, none of which can carry either.
 ## Contract
 
 `medianest_bridge/contract/bridge-openapi.v1.yaml` is a vendored, read-only
-copy of the canonical contract. **Current copy: contract 1.1.0 (MED-589),
-MediaNest `03aae130702e1a1cc36e9839f3d807c2bc3a28b5`, the squash merge of MediaNest #2783 to `main`
-(byte-identical to the pre-merge branch copy first vendored here; only the
-header and the fixture's sha256 changed when re-synced).** It
-adds `POST /sources/resolve`, the `ResolveSourceRequest`/`ResolvedSource`
+copy of the canonical contract. **Current copy: contract 1.2.0
+(MED-623/MED-624), MediaNest `22a5062f1bb4d2d260c3dd551f1fa6706b3cfe5b`, the
+squash merge of MediaNest #3082 to `main` (byte-identical to the pre-merge
+branch copy first vendored in #29; only the header and the fixture's sha256
+changed when re-synced).** It adds the optional, nullable
+`ComponentStatus.reason` and `ComponentStatus.latestVersion`; no path,
+response or required field changed. Before that, contract 1.1.0 (MED-589),
+MediaNest `03aae130702e1a1cc36e9839f3d807c2bc3a28b5`, the squash merge of
+MediaNest #2783 to `main`, added `POST /sources/resolve`, the `ResolveSourceRequest`/`ResolvedSource`
 schemas (both now in `contract_fixtures.json`) and the optional
 `Capabilities.resolveChannelHandle`; no existing schema changed. Before
 that (MediaNest repo,
