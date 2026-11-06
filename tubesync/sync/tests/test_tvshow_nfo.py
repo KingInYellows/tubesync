@@ -942,6 +942,66 @@ class TasksWriteTvshowNfoTestCase(TestCase):
                 download_source_images.call_local(str(self.source.pk))
         self.assert_called_for_source(mock_write)
 
+    def _written_images(self, image_urls):
+        '''
+            Runs download_source_images with each URL "downloading" a solid
+            image (red for the avatar, blue otherwise) and returns
+            {file name: centre pixel} for the .jpg files it wrote.
+        '''
+        from PIL import Image
+        from sync.tasks import download_source_images
+
+        def fake_image(url):
+            colour = (255, 0, 0) if 'avatar' in url else (0, 0, 255)
+            return Image.new('RGB', (8, 8), colour)
+
+        with (
+            temp_download_root(),
+            patch.object(
+                Source, 'get_image_url', new_callable=PropertyMock,
+                return_value=image_urls,
+            ),
+            patch('sync.tasks.get_remote_image', side_effect=fake_image),
+            patch('sync.tasks.write_tvshow_nfo'),
+        ):
+            self.source.make_directory()
+            download_source_images.call_local(str(self.source.pk))
+            written = {}
+            for path in self.source.directory_path.iterdir():
+                if path.suffix == '.jpg':
+                    with Image.open(path) as image:
+                        written[path.name] = image.convert('RGB').getpixel((4, 4))
+            return written
+
+    @staticmethod
+    def _is_red(pixel):
+        return pixel[0] > 200 and pixel[2] < 60
+
+    def test_download_source_images_uses_thumbnail_as_poster_without_avatar(self):
+        # A playlist has no avatar: its thumbnail must still give Plex a
+        # show poster instead of a placeholder.
+        written = self._written_images(
+            (None, None, 'https://example.invalid/thumb.jpg'),
+        )
+        self.assertEqual(
+            sorted(written),
+            ['poster.jpg', 'season-poster.jpg', 'thumbnail.jpg'],
+        )
+
+    def test_download_source_images_prefers_the_avatar_as_poster(self):
+        written = self._written_images((
+            'https://example.invalid/avatar.jpg',
+            'https://example.invalid/banner.jpg',
+            'https://example.invalid/thumb.jpg',
+        ))
+        self.assertEqual(sorted(written), [
+            'background.jpg', 'banner.jpg', 'poster.jpg',
+            'season-poster.jpg', 'thumbnail.jpg',
+        ])
+        self.assertTrue(self._is_red(written['poster.jpg']))
+        self.assertTrue(self._is_red(written['season-poster.jpg']))
+        self.assertFalse(self._is_red(written['thumbnail.jpg']))
+
     def test_download_media_metadata(self):
         from sync.tasks import download_media_metadata
         media = Media.objects.create(

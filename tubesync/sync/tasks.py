@@ -791,11 +791,22 @@ def download_source_images(source_id):
         f'Avatar: {avatar} '
         f'Banner: {banner} '
         f'Thumbnail: {thumbnail}')
-    images = (
-        (thumbnail, ('thumbnail.jpg',)),
-        (banner,    ('banner.jpg', 'background.jpg')),
-        (avatar,    ('poster.jpg', 'season-poster.jpg')),
-    )
+    # A playlist has no channel avatar, only its own thumbnail. Without a
+    # poster.jpg, Plex shows a placeholder for the show and repeats it on
+    # every episode in its "recently added/released" rows, so the
+    # thumbnail stands in as the poster when there is no avatar.
+    poster_names = ('poster.jpg', 'season-poster.jpg')
+    if avatar is None:
+        images = (
+            (thumbnail, ('thumbnail.jpg',) + poster_names),
+            (banner,    ('banner.jpg', 'background.jpg')),
+        )
+    else:
+        images = (
+            (thumbnail, ('thumbnail.jpg',)),
+            (banner,    ('banner.jpg', 'background.jpg')),
+            (avatar,    poster_names),
+        )
     try:
         for url, file_names in images:
             if url is None:
