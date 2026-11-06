@@ -86,9 +86,24 @@ first vendored in #29; the header now names the merge commit and
 
 ## After deploying
 
-- Existing playlist folders get `poster.jpg` on the next
-  `download_source_images` run for that source (a source save, or
-  `manage.py medianest_backfill_plex_sidecars`).
+- New playlist sources get `poster.jpg` when they are created. An
+  existing playlist folder gets it only when `download_source_images`
+  runs again for that source; a plain source save does not queue it
+  (only turning `copy_channel_images` on does). To fetch the missing
+  posters, run the backfill with a selector and `--apply`, after a
+  dry run without `--apply` to see what it would do:
+
+  ```sh
+  docker exec -u app <container> python3 /app/manage.py medianest_backfill_plex_sidecars --source <uuid>
+  docker exec -u app <container> python3 /app/manage.py medianest_backfill_plex_sidecars --source <uuid> --apply
+  ```
+
+  (`--all-bridge-sources` instead of `--source` covers every `acq-src-`
+  source.) With `--apply` it queues the image download for any source
+  with `copy_channel_images` on and no `poster.jpg`. It also applies the
+  bridge's source-defaults profile to that source and can rename
+  already-downloaded files to match it; the dry run lists both. See the
+  README's `medianest_backfill_plex_sidecars` section.
 - Existing sources keep their fallback. Change it per source, or
   through MediaNest, to get best-available downloads for them too.
 
