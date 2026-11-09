@@ -34,7 +34,7 @@ signal-driven task scheduling.
 
 ## Fork delta
 
-Eleven upstream files are touched at twelve points (`settings.py` twice), eight of the twelve minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml`, `.github/workflows/medianest-bridge-refresh.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
+Thirteen upstream files are touched at thirteen points (`settings.py` twice; point 13 spans two files), nine of the thirteen minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml`, `.github/workflows/medianest-bridge-refresh.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
 
 1. `tubesync/tubesync/settings.py` -- `INSTALLED_APPS += 'medianest_bridge'`.
 2. `tubesync/tubesync/urls.py` -- one `include('medianest_bridge.urls')` at
@@ -157,6 +157,20 @@ Eleven upstream files are touched at twelve points (`settings.py` twice), eight 
    `manage.py shell` (which skips system checks) had none: a source's
    quality change saved there scheduled no "Checking all media" task and
    skipped media stayed skipped. No receiver changes.
+
+13. `tubesync/local_settings.py.container` + `common/utils.py` (MED-636)
+   -- the SQLite `init_command` PRAGMAs moved into
+   `common.utils.sqlite_init_command()`, and
+   `TUBESYNC_SQLITE_JOURNAL_MODE` (`TRUNCATE` default, `DELETE`, `WAL`)
+   picks the journal mode. Unset, the PRAGMAs match upstream's exactly.
+   `WAL` also sets `synchronous = NORMAL` and skips the per-connection
+   `auto_vacuum = INCREMENTAL` and `incremental_vacuum(100)`, which need
+   the write lock and would make every new connection wait behind the
+   writer (`auto_vacuum` is already stored in the file); `locking_mode`
+   stays `NORMAL`.
+   An unsupported value logs a warning and keeps `TRUNCATE`. The active
+   mode is logged (as requested, not read back) at start-up. Not used when
+   `DATABASE_CONNECTION` is set.
 
 `sync/tvshow_nfo.py` (Plex T2) is a new, wholly fork-owned module (like
 `medianest_bridge/` itself), not an upstream touch point -- it is not
@@ -360,6 +374,7 @@ text never contains the bearer token.
 | `MEDIANEST_BRIDGE_STORAGE_CRITICAL_BYTES` | `1073741824` (1 GiB) | `storage` readiness component reports `unavailable` at or below this many free bytes. Defaults are round numbers, not derived from any measured workload -- an operator with a better sense of their own disk growth rate should override them. |
 | `MEDIANEST_BRIDGE_YOUTUBE_PROBE_ENABLED` | `true` | Any value other than exactly `false` (case-insensitive) is treated as `true`. Enables the `youtube` readiness component's real network probe (a `GET https://www.youtube.com/generate_204`, no auth/cookies, cached 120s). Meaningful only under the shared-egress-namespace deployment wiring (DECISIONS #29, M6b routing doc) where this process shares yt-dlp's VPN egress -- set to `false` for any deployment that does NOT use that wiring, where a probe result would describe the wrong network path; the component then honestly reports `not_configured`. See `medianest_bridge/readiness.py`'s module docstring for the full design rationale. |
 | `MEDIANEST_BRIDGE_SOURCE_DEFAULTS` | unset (built-in profile) | JSON object of `POST /sources` field overrides, keyed by contract source type (`channel`, `playlist`) plus an optional shared `"*"` block merged under both before the per-type block wins on conflict. Read fresh per call, like every other variable here. **Unset**: both types get the built-in profile -- `write_nfo`, `copy_thumbnails`, `copy_channel_images` all `true`, `index_streams` `false`, `fallback` `"n"` (next best resolution in any codec, so a video with no HD or no VP9 format still downloads), and `media_format` set to `"Season {episode_yyyy}/s{episode_yyyy}e{episode_mmddnn} - {title_full_bounded} [{key}].{ext}"` (T1's date-based Plex-TV-Shows keys; a playlist is treated as its own show using the same scheme). **`{}`** (an explicitly empty top-level JSON object): the escape hatch back to plain `Source` model defaults for both types -- distinct from "unset". Any other JSON value: only `SourceForm` fields are allowed, EXCLUDING `source_type`/`key`/`name`/`directory` (the create contract itself owns those) and `target_schedule` (one fixed timestamp is meaningless as a default for every source). Boolean fields must be JSON `true`/`false`; a `media_format` whose rendered path has a `..` segment and a `filter_text` that is not a valid regular expression (both checked on the value the source form would store, so `.{ext:.0}.` or a list-typed `filter_text` cannot slip past) are rejected. Error details name the field and error code, never the configured value. Every source type must be COVERED -- either its own key is present (any value, including an explicit `{}`, which is a per-type opt-out that deliberately ignores `"*"` too) or `"*"` is present (covering both types). A type covered by neither is a configuration error, not a silent "no overrides": an operator who configures only `channel` must not get `playlist` sources created with plain defaults and no signal anything differs for that type. An unknown field, a forbidden field, an uncovered type, or a value that fails the same field-level/`run_edit_source_checks()` validation a real create applies is a configuration error -- see the `sourceDefaults` readiness component below and `POST /sources`' own 503 in that state. Never silently falls back to model defaults on an invalid value. |
+| `TUBESYNC_SQLITE_JOURNAL_MODE` | `TRUNCATE` | **Not a `medianest_bridge` setting** -- read once at start-up by `local_settings.py.container` (fork point 13, MED-636). `TRUNCATE`, `DELETE` or `WAL`, case-insensitive; anything else logs a warning and keeps `TRUNCATE`. `WAL` lets the bridge's reads continue while TubeSync writes, which stops the "database is locked" timeouts during index crawls. Convert an existing database with TubeSync stopped; see "Switching the SQLite journal mode" under Operator commands. Ignored when `DATABASE_CONNECTION` is set. |
 | `LISTEN_HOST` | `127.0.0.1` | **Not a `medianest_bridge` setting** -- read by `gunicorn.py` to choose gunicorn's bind address. Must stay loopback (the default) for the CIDR gate's `X-Real-IP` trust to hold; see the warning behavior described just above. |
 
 None of these are registered as Django settings in `settings.py` -- the app
@@ -979,6 +994,48 @@ for the reported downloads to finish) and re-run, or set
 from `TUBESYNC_RENAME_SOURCES` before re-running. Running the backfill
 with the cascade off is recommended in any case (see the release notes'
 known limits).
+
+
+### Switching the SQLite journal mode (MED-636)
+
+WAL needs the database on a local filesystem (not NFS/SMB), because readers
+share memory through the `db.sqlite3-shm` file. Keep `db.sqlite3`,
+`db.sqlite3-wal` and `db.sqlite3-shm` together: copying only `db.sqlite3`
+while TubeSync runs can lose recent commits.
+
+Before switching:
+
+- Run one TubeSync version against the file at a time (stop, then start).
+  Every connection re-applies its journal mode, so an older image running
+  beside a WAL one would flip the file back to `TRUNCATE`.
+- A persisted `/config/tubesync/local_settings.py` replaces the image's
+  settings file at start-up and would hide this variable. Check it does
+  not exist, or port the change into it.
+- `synchronous = NORMAL` keeps the database consistent after a crash, but
+  a power loss can roll back the last few commits (SQLite's documented
+  WAL trade-off). TubeSync re-indexes from YouTube, so that is accepted.
+
+To switch on:
+
+1. Stop the container (`docker compose stop tubesync`).
+2. Back up `/config/db.sqlite3` (with TubeSync stopped, the file alone is
+   a complete copy).
+3. Convert once, from the host or a throwaway container with `sqlite3`:
+   `sqlite3 /path/to/config/db.sqlite3 'PRAGMA journal_mode=WAL;'` prints
+   `wal`. WAL is stored in the file, so this persists.
+4. Set `TUBESYNC_SQLITE_JOURNAL_MODE=WAL` in the env file and start the
+   container. The log shows `Requested SQLite journal mode: WAL`; confirm
+   the file itself with `PRAGMA journal_mode;` (prints `wal`). The
+   dashboard's database size counts only `db.sqlite3`, not `-wal`.
+
+Step 3 is belt and braces: with the env set and nothing else holding the
+file, the first connection would convert it too.
+
+To switch back (or before rolling back to an image older than
+`bridge-v1.2.3`, which forces `TRUNCATE` on every connection): stop the
+container, run `sqlite3 /path/to/config/db.sqlite3 'PRAGMA journal_mode=DELETE;'`
+(this checkpoints the WAL into the main file and removes `-wal`/`-shm`),
+unset the variable, and start the container.
 
 ## License
 

@@ -2,7 +2,12 @@ import os.path
 from django.conf import settings
 from django.test import TestCase, Client
 from .testutils import prevent_request_warnings
-from .utils import parse_database_connection_string, clean_filename
+from .utils import (
+    clean_filename,
+    parse_database_connection_string,
+    sqlite_init_command,
+    sqlite_journal_mode,
+)
 from .errors import DatabaseConnectionError
 
 
@@ -142,3 +147,139 @@ class UtilsTestCase(TestCase):
         self.assertEqual(clean_filename('a  a'), 'a  a')
         self.assertEqual(clean_filename('a\t\t\ta'), 'a   a')
         self.assertEqual(clean_filename('a\t\t\ta\t\t\t'), 'a   a')
+
+
+class SqliteJournalModeTestCase(TestCase):
+
+    def test_default_is_truncate(self):
+        for value in (None, '', '   '):
+            self.assertEqual(sqlite_journal_mode(value), ('TRUNCATE', None))
+
+    def test_supported_modes_are_normalised(self):
+        self.assertEqual(sqlite_journal_mode(' wal '), ('WAL', None))
+        self.assertEqual(sqlite_journal_mode('Delete'), ('DELETE', None))
+        self.assertEqual(sqlite_journal_mode('TRUNCATE'), ('TRUNCATE', None))
+
+    def test_unsupported_mode_falls_back(self):
+        for value in ('memory', 'off', 'persist', 'wall'):
+            mode, msg = sqlite_journal_mode(value)
+            self.assertEqual(mode, 'TRUNCATE')
+            self.assertIn(value.upper(), msg)
+
+    def test_truncate_init_command_matches_upstream(self):
+        cmd = sqlite_init_command()
+        self.assertIn('PRAGMA journal_mode = TRUNCATE;', cmd)
+        self.assertIn('PRAGMA locking_mode = NORMAL;', cmd)
+        self.assertIn('PRAGMA journal_size_limit = 67108864;', cmd)
+        self.assertNotIn('synchronous', cmd)
+        self.assertNotIn('WAL', cmd)
+
+    def test_truncate_init_command_keeps_vacuum_pragmas(self):
+        cmd = sqlite_init_command()
+        self.assertIn('PRAGMA auto_vacuum = INCREMENTAL;', cmd)
+        self.assertIn('PRAGMA incremental_vacuum(100);', cmd)
+
+    def test_wal_init_command(self):
+        cmd = sqlite_init_command('wal')
+        self.assertIn('PRAGMA journal_mode = WAL;', cmd)
+        self.assertIn('PRAGMA synchronous = NORMAL;', cmd)
+        self.assertIn('PRAGMA locking_mode = NORMAL;', cmd)
+        self.assertNotIn('EXCLUSIVE', cmd)
+        self.assertNotIn('incremental_vacuum', cmd)
+        self.assertNotIn('auto_vacuum', cmd)
+
+    def test_wal_reader_connects_while_writer_holds_lock(self):
+        import sqlite3
+        import tempfile
+        cmd = sqlite_init_command('WAL')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'db.sqlite3')
+            # Like a real TubeSync database: created under TRUNCATE with
+            # auto_vacuum = INCREMENTAL, then switched to WAL.
+            setup = sqlite3.connect(path, isolation_level=None)
+            setup.executescript(sqlite_init_command('TRUNCATE'))
+            setup.execute('CREATE TABLE t (x INTEGER)')
+            setup.execute('VACUUM')
+            self.assertEqual(setup.execute('PRAGMA auto_vacuum').fetchone()[0], 2)
+            setup.executescript(cmd)
+            setup.execute('INSERT INTO t VALUES (1)')
+            setup.close()
+            writer = sqlite3.connect(path, isolation_level=None, timeout=0.2)
+            reader = None
+            try:
+                writer.executescript(cmd)
+                writer.execute('BEGIN IMMEDIATE')
+                writer.execute('INSERT INTO t VALUES (2)')
+                reader = sqlite3.connect(path, isolation_level=None, timeout=0.2)
+                # Same order Django uses: each statement on its own.
+                for statement in cmd.split(';'):
+                    if statement.strip():
+                        reader.execute(statement)
+                count = reader.execute('SELECT COUNT(*) FROM t').fetchone()[0]
+                self.assertEqual(count, 1)
+            finally:
+                if reader is not None:
+                    reader.close()
+                writer.execute('ROLLBACK')
+                writer.close()
+
+    def test_init_command_applies_to_a_real_database(self):
+        import sqlite3
+        import tempfile
+        for mode, expected in (('TRUNCATE', 'truncate'), ('WAL', 'wal')):
+            with tempfile.TemporaryDirectory() as tmp:
+                db = sqlite3.connect(os.path.join(tmp, 'db.sqlite3'))
+                try:
+                    db.executescript(sqlite_init_command(mode))
+                    got = db.execute('PRAGMA journal_mode').fetchone()[0]
+                    self.assertEqual(got, expected)
+                    if 'WAL' == mode:
+                        sync = db.execute('PRAGMA synchronous').fetchone()[0]
+                        self.assertEqual(sync, 1)  # NORMAL
+                finally:
+                    db.close()
+
+    def _container_databases(self, env_value):
+        import runpy
+        from pathlib import Path
+        from unittest import mock
+        path = Path(settings.BASE_DIR) / 'tubesync' / 'local_settings.py.container'
+        env = {'DATABASE_CONNECTION': ''}
+        if env_value is not None:
+            env['TUBESYNC_SQLITE_JOURNAL_MODE'] = env_value
+        # The settings file also creates and tidies the yt-dlp cache
+        # directory under /config; keep that off the host filesystem.
+        with mock.patch.dict(os.environ, env, clear=False), \
+                mock.patch.object(Path, 'is_dir', return_value=True), \
+                mock.patch.object(Path, 'glob', return_value=iter(())), \
+                mock.patch.object(Path, 'mkdir') as mkdir, \
+                mock.patch.object(Path, 'rename') as rename, \
+                mock.patch.object(Path, 'rmdir'):
+            if env_value is None:
+                os.environ.pop('TUBESYNC_SQLITE_JOURNAL_MODE', None)
+            db = runpy.run_path(str(path))['DATABASES']['default']
+        mkdir.assert_not_called()
+        rename.assert_not_called()
+        return db
+
+    def test_container_settings_default_is_truncate(self):
+        db = self._container_databases(None)
+        cmd = db['OPTIONS']['init_command']
+        self.assertIn('PRAGMA journal_mode = TRUNCATE;', cmd)
+        self.assertEqual(db['OPTIONS']['timeout'], 10)
+        self.assertIn(('Requested SQLite journal mode: TRUNCATE',), db['_msgs'])
+
+    def test_container_settings_unsupported_mode_warns(self):
+        import logging
+        db = self._container_databases('memory')
+        self.assertIn('PRAGMA journal_mode = TRUNCATE;', db['OPTIONS']['init_command'])
+        warnings = [m for m in db['_msgs'] if logging.WARNING == m[0]]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('MEMORY', warnings[0][1])
+
+    def test_container_settings_wal(self):
+        db = self._container_databases('WAL')
+        cmd = db['OPTIONS']['init_command']
+        self.assertIn('PRAGMA journal_mode = WAL;', cmd)
+        self.assertIn('PRAGMA synchronous = NORMAL;', cmd)
+        self.assertIn(('Requested SQLite journal mode: WAL',), db['_msgs'])
