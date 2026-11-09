@@ -20,6 +20,7 @@ from django.utils import timezone
 from common.models import TaskHistory
 from sync.choices import MediaState, Val, YouTube_SourceType
 from sync.tasks import get_error_message, get_running_tasks, get_source_index_task
+from sync.tvshow_nfo import resolve_show_title
 
 from .error_sanitize import sanitize_error_message
 
@@ -128,6 +129,22 @@ def map_source_state(source, *, index_task=None):
     return 'active'
 
 
+def source_title(source):
+    '''
+        The channel or playlist title for a source (contract 1.3.0
+        `Source.title`), or `None` when nothing better than `source.name` is
+        known. MediaNest names every source it creates `acq-src-<key>`, so
+        the name is no display name; `resolve_show_title()` is what the
+        source's tvshow.nfo shows Plex (MED-635). It is cached for 60s and
+        never raises, falling back to the name, which is reported as `None`.
+    '''
+    title = (resolve_show_title(source) or '').strip()
+    name = str(source.name or '').strip()
+    if not title or title == name:
+        return None
+    return title
+
+
 def serialize_source(source):
     index_task = get_source_index_task(str(source.pk))
     return {
@@ -136,6 +153,7 @@ def serialize_source(source):
         'canonicalKey': source.key,
         'canonicalUrl': source.url,
         'name': source.name,
+        'title': source_title(source),
         'directory': source.directory,
         'rawState': {
             'hasFailed': source.has_failed,

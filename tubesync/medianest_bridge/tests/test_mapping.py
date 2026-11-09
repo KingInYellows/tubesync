@@ -119,6 +119,21 @@ class SerializeSourceTestCase(TestCase):
         self.assertIn('isActive', body['rawState'])
         self.assertIn('indexTaskRunning', body['rawState'])
 
+    def test_title_is_the_resolved_show_title(self):
+        source = make_source()
+        with patch('medianest_bridge.mapping.resolve_show_title', return_value='  USB Looper '):
+            body = mapping.serialize_source(source)
+        self.assertEqual(body['title'], 'USB Looper')
+
+    def test_title_is_null_when_only_the_name_is_known(self):
+        source = make_source()
+        with patch('medianest_bridge.mapping.resolve_show_title', return_value=source.name):
+            body = mapping.serialize_source(source)
+        self.assertIsNone(body['title'])
+        with patch('medianest_bridge.mapping.resolve_show_title', return_value=''):
+            body = mapping.serialize_source(source)
+        self.assertIsNone(body['title'])
+
     def test_never_crawled_last_crawl_at_is_null(self):
         source = make_source()
         body = mapping.serialize_source(source)
