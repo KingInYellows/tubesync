@@ -164,9 +164,10 @@ Thirteen upstream files are touched at thirteen points (`settings.py` twice; poi
    `TUBESYNC_SQLITE_JOURNAL_MODE` (`TRUNCATE` default, `DELETE`, `WAL`)
    picks the journal mode. Unset, the PRAGMAs match upstream's exactly.
    `WAL` also sets `synchronous = NORMAL` and skips the per-connection
-   `incremental_vacuum(100)`, which needs the write lock and would make
-   every new connection wait behind the writer; `locking_mode` stays
-   `NORMAL`.
+   `auto_vacuum = INCREMENTAL` and `incremental_vacuum(100)`, which need
+   the write lock and would make every new connection wait behind the
+   writer (`auto_vacuum` is already stored in the file); `locking_mode`
+   stays `NORMAL`.
    An unsupported value logs a warning and keeps `TRUNCATE`. The active
    mode is logged (as requested, not read back) at start-up. Not used when
    `DATABASE_CONNECTION` is set.

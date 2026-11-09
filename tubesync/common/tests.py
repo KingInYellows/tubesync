@@ -174,8 +174,10 @@ class SqliteJournalModeTestCase(TestCase):
         self.assertNotIn('synchronous', cmd)
         self.assertNotIn('WAL', cmd)
 
-    def test_truncate_init_command_keeps_incremental_vacuum(self):
-        self.assertIn('PRAGMA incremental_vacuum(100);', sqlite_init_command())
+    def test_truncate_init_command_keeps_vacuum_pragmas(self):
+        cmd = sqlite_init_command()
+        self.assertIn('PRAGMA auto_vacuum = INCREMENTAL;', cmd)
+        self.assertIn('PRAGMA incremental_vacuum(100);', cmd)
 
     def test_wal_init_command(self):
         cmd = sqlite_init_command('wal')
@@ -184,6 +186,7 @@ class SqliteJournalModeTestCase(TestCase):
         self.assertIn('PRAGMA locking_mode = NORMAL;', cmd)
         self.assertNotIn('EXCLUSIVE', cmd)
         self.assertNotIn('incremental_vacuum', cmd)
+        self.assertNotIn('auto_vacuum', cmd)
 
     def test_wal_reader_connects_while_writer_holds_lock(self):
         import sqlite3
@@ -191,9 +194,14 @@ class SqliteJournalModeTestCase(TestCase):
         cmd = sqlite_init_command('WAL')
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, 'db.sqlite3')
+            # Like a real TubeSync database: created under TRUNCATE with
+            # auto_vacuum = INCREMENTAL, then switched to WAL.
             setup = sqlite3.connect(path, isolation_level=None)
-            setup.executescript(cmd)
+            setup.executescript(sqlite_init_command('TRUNCATE'))
             setup.execute('CREATE TABLE t (x INTEGER)')
+            setup.execute('VACUUM')
+            self.assertEqual(setup.execute('PRAGMA auto_vacuum').fetchone()[0], 2)
+            setup.executescript(cmd)
             setup.execute('INSERT INTO t VALUES (1)')
             setup.close()
             writer = sqlite3.connect(path, isolation_level=None, timeout=0.2)
