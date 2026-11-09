@@ -174,12 +174,46 @@ class SqliteJournalModeTestCase(TestCase):
         self.assertNotIn('synchronous', cmd)
         self.assertNotIn('WAL', cmd)
 
+    def test_truncate_init_command_keeps_incremental_vacuum(self):
+        self.assertIn('PRAGMA incremental_vacuum(100);', sqlite_init_command())
+
     def test_wal_init_command(self):
         cmd = sqlite_init_command('wal')
         self.assertIn('PRAGMA journal_mode = WAL;', cmd)
         self.assertIn('PRAGMA synchronous = NORMAL;', cmd)
         self.assertIn('PRAGMA locking_mode = NORMAL;', cmd)
         self.assertNotIn('EXCLUSIVE', cmd)
+        self.assertNotIn('incremental_vacuum', cmd)
+
+    def test_wal_reader_connects_while_writer_holds_lock(self):
+        import sqlite3
+        import tempfile
+        cmd = sqlite_init_command('WAL')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'db.sqlite3')
+            setup = sqlite3.connect(path, isolation_level=None)
+            setup.executescript(cmd)
+            setup.execute('CREATE TABLE t (x INTEGER)')
+            setup.execute('INSERT INTO t VALUES (1)')
+            setup.close()
+            writer = sqlite3.connect(path, isolation_level=None, timeout=0.2)
+            reader = None
+            try:
+                writer.executescript(cmd)
+                writer.execute('BEGIN IMMEDIATE')
+                writer.execute('INSERT INTO t VALUES (2)')
+                reader = sqlite3.connect(path, isolation_level=None, timeout=0.2)
+                # Same order Django uses: each statement on its own.
+                for statement in cmd.split(';'):
+                    if statement.strip():
+                        reader.execute(statement)
+                count = reader.execute('SELECT COUNT(*) FROM t').fetchone()[0]
+                self.assertEqual(count, 1)
+            finally:
+                if reader is not None:
+                    reader.close()
+                writer.execute('ROLLBACK')
+                writer.close()
 
     def test_init_command_applies_to_a_real_database(self):
         import sqlite3
