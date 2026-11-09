@@ -67,6 +67,9 @@ on a WAL database, stop the container and run
   line records what was requested. Verify the file with
   `PRAGMA journal_mode;`.
 - The dashboard's database size counts only `db.sqlite3`, not
-  `db.sqlite3-wal` (capped at 64 MiB by `journal_size_limit`).
+  `db.sqlite3-wal`. `journal_size_limit` (64 MiB) is not a hard cap: it
+  trims the WAL file only after a checkpoint resets it. A long-running
+  reader that holds back checkpoints lets the WAL grow past 64 MiB while
+  writes continue, so check `ls -l /config/db.sqlite3*` for real disk use.
 - If lock bursts continue under WAL, the fallback is Postgres through
   TubeSync's `DATABASE_CONNECTION` (MED-636), which needs its own plan.
