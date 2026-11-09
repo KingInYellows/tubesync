@@ -1278,6 +1278,7 @@ class SourceDefaultsCreateTestCase(BridgeTestCase):
         self.assertTrue(source.copy_thumbnails)
         self.assertTrue(source.copy_channel_images)
         self.assertFalse(source.index_streams)
+        self.assertEqual(source.source_resolution, '4320p')
         self.assertEqual(source.fallback, Fallback.NEXT_BEST_RESOLUTION.value)
         self.assertEqual(
             source.media_format,
@@ -1285,7 +1286,7 @@ class SourceDefaultsCreateTestCase(BridgeTestCase):
         )
 
     def test_builtin_profile_downloads_sd_only_video(self):
-        # A 1080p source with the built-in profile must still pick a format
+        # A source with the built-in profile must still pick a format
         # for a video whose best stream is 480p, instead of skipping it.
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
         response = post_json(
