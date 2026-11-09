@@ -2,6 +2,7 @@
 
 This release lets TubeSync's SQLite database run in WAL mode, so the
 bridge's reads stop waiting behind TubeSync's writes during busy indexing.
+It also makes best available quality the default for new sources.
 
 Tagging and image publication are human-gated actions for the repository
 owner. This file records what the tag would contain and what was verified.
@@ -24,7 +25,24 @@ owner. This file records what the tag would contain and what was verified.
    - An unsupported value logs a warning and keeps `TRUNCATE`. Start-up
      logs `Requested SQLite journal mode: <mode>`.
    Fork touch point 13 (`local_settings.py.container` + `common/utils.py`).
-2. **`BRIDGE_VERSION` is `1.2.3`**, so `GET /meta` and MediaNest's
+2. **Best available quality by default** (#34). TubeSync has no "best"
+   resolution choice and the `Source` model default is 1080p, so new
+   sources silently capped 4K uploads.
+   - The bridge's built-in source-defaults profile now sets
+     `source_resolution` to `4320p`. With the existing fallback `n`, each
+     video downloads at the highest resolution it offers.
+   - TubeSync's own add-source form starts at `4320p` with fallback "next
+     best, any codec", so sources added in the UI match.
+   - Format matching: for a source at the highest resolution that may
+     switch codecs, fallbacks keep only the tallest formats, so 1080p AV1
+     beats 720p VP9, and 60fps/HDR preferences choose among those.
+     Lower resolutions and codec-required sources keep upstream behaviour.
+   - `medianest_backfill_plex_sidecars` applies the same profile, so
+     running it on an existing source moves that source to `4320p`. A
+     field edited while the run is in progress is left as the user set it.
+   Existing sources keep their stored resolution until edited or
+   backfilled.
+3. **`BRIDGE_VERSION` is `1.2.3`**, so `GET /meta` and MediaNest's
    Connections tab show "bridge 1.2.3".
 
 ## Contract
