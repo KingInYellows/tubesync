@@ -168,7 +168,8 @@ Thirteen upstream files are touched at thirteen points (`settings.py` twice; poi
    every new connection wait behind the writer; `locking_mode` stays
    `NORMAL`.
    An unsupported value logs a warning and keeps `TRUNCATE`. The active
-   mode is logged at start-up. Not used when `DATABASE_CONNECTION` is set.
+   mode is logged (as requested, not read back) at start-up. Not used when
+   `DATABASE_CONNECTION` is set.
 
 `sync/tvshow_nfo.py` (Plex T2) is a new, wholly fork-owned module (like
 `medianest_bridge/` itself), not an upstream touch point -- it is not
@@ -1001,6 +1002,18 @@ share memory through the `db.sqlite3-shm` file. Keep `db.sqlite3`,
 `db.sqlite3-wal` and `db.sqlite3-shm` together: copying only `db.sqlite3`
 while TubeSync runs can lose recent commits.
 
+Before switching:
+
+- Run one TubeSync version against the file at a time (stop, then start).
+  Every connection re-applies its journal mode, so an older image running
+  beside a WAL one would flip the file back to `TRUNCATE`.
+- A persisted `/config/tubesync/local_settings.py` replaces the image's
+  settings file at start-up and would hide this variable. Check it does
+  not exist, or port the change into it.
+- `synchronous = NORMAL` keeps the database consistent after a crash, but
+  a power loss can roll back the last few commits (SQLite's documented
+  WAL trade-off). TubeSync re-indexes from YouTube, so that is accepted.
+
 To switch on:
 
 1. Stop the container (`docker compose stop tubesync`).
@@ -1010,7 +1023,9 @@ To switch on:
    `sqlite3 /path/to/config/db.sqlite3 'PRAGMA journal_mode=WAL;'` prints
    `wal`. WAL is stored in the file, so this persists.
 4. Set `TUBESYNC_SQLITE_JOURNAL_MODE=WAL` in the env file and start the
-   container. The log shows `Using SQLite journal mode: WAL`.
+   container. The log shows `Requested SQLite journal mode: WAL`; confirm
+   the file itself with `PRAGMA journal_mode;` (prints `wal`). The
+   dashboard's database size counts only `db.sqlite3`, not `-wal`.
 
 Step 3 is belt and braces: with the env set and nothing else holding the
 file, the first connection would convert it too.

@@ -239,21 +239,39 @@ class SqliteJournalModeTestCase(TestCase):
         env = {'DATABASE_CONNECTION': ''}
         if env_value is not None:
             env['TUBESYNC_SQLITE_JOURNAL_MODE'] = env_value
-        with mock.patch.dict(os.environ, env, clear=False):
+        # The settings file also creates and tidies the yt-dlp cache
+        # directory under /config; keep that off the host filesystem.
+        with mock.patch.dict(os.environ, env, clear=False), \
+                mock.patch.object(Path, 'is_dir', return_value=True), \
+                mock.patch.object(Path, 'glob', return_value=iter(())), \
+                mock.patch.object(Path, 'mkdir') as mkdir, \
+                mock.patch.object(Path, 'rename') as rename, \
+                mock.patch.object(Path, 'rmdir'):
             if env_value is None:
                 os.environ.pop('TUBESYNC_SQLITE_JOURNAL_MODE', None)
-            return runpy.run_path(str(path))['DATABASES']['default']
+            db = runpy.run_path(str(path))['DATABASES']['default']
+        mkdir.assert_not_called()
+        rename.assert_not_called()
+        return db
 
     def test_container_settings_default_is_truncate(self):
         db = self._container_databases(None)
         cmd = db['OPTIONS']['init_command']
         self.assertIn('PRAGMA journal_mode = TRUNCATE;', cmd)
         self.assertEqual(db['OPTIONS']['timeout'], 10)
-        self.assertIn(('Using SQLite journal mode: TRUNCATE',), db['_msgs'])
+        self.assertIn(('Requested SQLite journal mode: TRUNCATE',), db['_msgs'])
+
+    def test_container_settings_unsupported_mode_warns(self):
+        import logging
+        db = self._container_databases('memory')
+        self.assertIn('PRAGMA journal_mode = TRUNCATE;', db['OPTIONS']['init_command'])
+        warnings = [m for m in db['_msgs'] if logging.WARNING == m[0]]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('MEMORY', warnings[0][1])
 
     def test_container_settings_wal(self):
         db = self._container_databases('WAL')
         cmd = db['OPTIONS']['init_command']
         self.assertIn('PRAGMA journal_mode = WAL;', cmd)
         self.assertIn('PRAGMA synchronous = NORMAL;', cmd)
-        self.assertIn(('Using SQLite journal mode: WAL',), db['_msgs'])
+        self.assertIn(('Requested SQLite journal mode: WAL',), db['_msgs'])

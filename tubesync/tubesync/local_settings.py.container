@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from urllib.parse import urljoin
 from common.utils import (
@@ -65,11 +66,13 @@ else:
             },
         }
     }
+    # The PRAGMA result is not checked per connection; this records the
+    # requested mode. Verify the file with `PRAGMA journal_mode;`.
     DATABASES['default']['_msgs'] = [(
-        f'Using SQLite journal mode: {SQLITE_JOURNAL_MODE}',
+        f'Requested SQLite journal mode: {SQLITE_JOURNAL_MODE}',
     )]
     if _journal_mode_msg:
-        DATABASES['default']['_msgs'].append((_journal_mode_msg,))
+        DATABASES['default']['_msgs'].append((logging.WARNING, _journal_mode_msg))
     DATABASE_CONNECTION_STR = f'sqlite at "{DATABASES["default"]["NAME"]}"'
 
     # the argument to random.expovariate(),
