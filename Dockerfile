@@ -309,7 +309,7 @@ RUN set -eu ; \
       ' "${DESTDIR}/${FFMPEG_FILE_SUMS}") ; \
     do \
         url="${FFMPEG_URL}/${url# }" ; \
-        TMPDIR="${DESTDIR}" asfald-latest -qv -- "${url}" ; \
+        TMPDIR="${DESTDIR}" asfald-latest -v -- "${url}" ; \
     done ; \
     unset -v url ; \
 \
