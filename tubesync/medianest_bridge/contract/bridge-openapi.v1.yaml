@@ -2,14 +2,22 @@
 #
 # Canonical source: KingInYellows/medianest,
 #   docs/planning/tubesync-integration/bridge-openapi.v1.yaml
-#   @ 22a5062f1bb4d2d260c3dd551f1fa6706b3cfe5b
-#   (2026-11-06, the squash merge of MediaNest #3082 to main; its contract
+#   @ 3e57252260c520ec34fa4237592d49e0f7653442
+#   (2026-11-09, the squash merge of MediaNest #3100 to main; its contract
+#   file is byte-identical to the pre-merge branch copy 133dc07 first
+#   vendored here).
+#   Contract version 1.3.0 (MED-635): adds the OPTIONAL, nullable
+#   Source.title, the channel/playlist title this bridge resolves for a
+#   source (the tvshow.nfo title). It does not join Source.required; no
+#   path or other response changed.
+#   (Previous re-vendor: 22a5062f1bb4d2d260c3dd551f1fa6706b3cfe5b,
+#   2026-11-06, the squash merge of MediaNest #3082 to main; its contract
 #   file is byte-identical to the pre-merge branch copy first vendored
-#   here). Contract version 1.2.0 (MED-623/MED-624): adds the
+#   here. Contract version 1.2.0 (MED-623/MED-624): adds the
 #   OPTIONAL, nullable ComponentStatus.reason (stale_ytdlp, queue_paused,
 #   worker_down) and ComponentStatus.latestVersion. Neither joins
-#   ComponentStatus.required; no path or response changed.
-#   (Previous re-vendor: 03aae130702e1a1cc36e9839f3d807c2bc3a28b5,
+#   ComponentStatus.required; no path or response changed.)
+#   (Earlier re-vendor: 03aae130702e1a1cc36e9839f3d807c2bc3a28b5,
 #   2026-10-19, the squash merge of MediaNest #2783, contract 1.1.0
 #   (MED-589): POST /sources/resolve, ResolveSourceRequest /
 #   ResolvedSource, OPTIONAL Capabilities.resolveChannelHandle.)
@@ -57,7 +65,7 @@
 openapi: 3.1.0
 info:
   title: MediaNest TubeSync Bridge API
-  version: "1.2.0"
+  version: "1.3.0"
   summary: >-
     Slice-1 minimal server-to-server bridge exposed by the medianest_bridge
     Django app inside the KingInYellows/tubesync fork. Consumed only by the
@@ -1119,6 +1127,15 @@ components:
           format: uri
         name:
           type: string
+        title:
+          type: [string, "null"]
+          description: >-
+            OPTIONAL (contract 1.3.0, MED-635). The channel or playlist title
+            TubeSync knows for this source (the text its tvshow.nfo gives
+            Plex), or null when it knows nothing better than `name`. Not in
+            `required`: bridges older than 1.3.0 omit it, and a consumer
+            treats a missing value as null. `name` is the injective
+            `acq-src-<key>` MediaNest derives, never a display name.
         directory:
           type: string
         rawState:

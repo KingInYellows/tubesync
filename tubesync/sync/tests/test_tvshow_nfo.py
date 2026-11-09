@@ -835,7 +835,13 @@ class ShowTitleCacheSafetyTestCase(TestCase):
             'sync.tvshow_nfo.time.monotonic',
             return_value=time.monotonic() + 61,
         ):
-            _store_show_title(self.source, 0, 'fresh')
+            # Saving a source bumps its generation (source_post_save), so
+            # store under the current one.
+            _store_show_title(
+                self.source,
+                tvshow_nfo_module._show_title_generations.get(self.source.pk, 0),
+                'fresh',
+            )
         self.assertNotIn(other.pk, _show_title_cache)
         self.assertIn(self.source.pk, _show_title_cache)
 

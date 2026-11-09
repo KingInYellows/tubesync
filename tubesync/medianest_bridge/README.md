@@ -676,13 +676,18 @@ uuid, none of which can carry either.
 ## Contract
 
 `medianest_bridge/contract/bridge-openapi.v1.yaml` is a vendored, read-only
-copy of the canonical contract. **Current copy: contract 1.2.0
-(MED-623/MED-624), MediaNest `22a5062f1bb4d2d260c3dd551f1fa6706b3cfe5b`, the
-squash merge of MediaNest #3082 to `main` (byte-identical to the pre-merge
-branch copy first vendored in #29; only the header and the fixture's sha256
-changed when re-synced).** It adds the optional, nullable
-`ComponentStatus.reason` and `ComponentStatus.latestVersion`; no path,
-response or required field changed. Before that, contract 1.1.0 (MED-589),
+copy of the canonical contract. **Current copy: contract 1.3.0 (MED-635),
+MediaNest `3e57252260c520ec34fa4237592d49e0f7653442`, the squash merge of
+MediaNest #3100 to `main` (byte-identical to the branch copy `133dc07` first
+vendored).** It adds the optional, nullable `Source.title`: the channel or
+playlist title `sync/tvshow_nfo.py::resolve_show_title()` resolves (what the
+source's `tvshow.nfo` gives Plex), or null when nothing better than `name` is
+known. MediaNest shows it as the source's display name, since `name` is the
+derived `acq-src-<key>`. No path, response or required field changed. Before
+that, contract 1.2.0 (MED-623/MED-624), MediaNest
+`22a5062f1bb4d2d260c3dd551f1fa6706b3cfe5b`, the squash merge of MediaNest
+#3082 to `main`, added the optional, nullable `ComponentStatus.reason` and
+`ComponentStatus.latestVersion`. Before that, contract 1.1.0 (MED-589),
 MediaNest `03aae130702e1a1cc36e9839f3d807c2bc3a28b5`, the squash merge of
 MediaNest #2783 to `main`, added `POST /sources/resolve`, the `ResolveSourceRequest`/`ResolvedSource`
 schemas (both now in `contract_fixtures.json`) and the optional

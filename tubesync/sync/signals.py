@@ -19,6 +19,7 @@ from .tasks import (
 )
 from .utils import delete_file
 from .filtering import filter_media
+from .tvshow_nfo import _invalidate_show_title_cache
 
 
 @receiver(pre_save, sender=Source)
@@ -110,6 +111,9 @@ def source_pre_save(sender, instance, **kwargs):
 @receiver(post_save, sender=Source)
 def source_post_save(sender, instance, created, **kwargs):
     source = instance
+    # resolve_show_title() falls back to source.name and caches it for 60s;
+    # drop that entry so a renamed source never reports its old name.
+    _invalidate_show_title_cache(source)
     # Check directory exists and create an indexing task for newly created sources
     if created:
         check_source_directory_exists(str(source.pk))
