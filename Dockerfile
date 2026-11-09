@@ -88,7 +88,8 @@ RUN --mount=type=cache,id=apt-lib-cache-${TARGETARCH},sharing=private,target=/va
       cut -d : -f 2- | \
       xargs -r -t apt-mark hold && \
     # We must allow these upgrades
-    apt-mark unhold libc6 libssl3t64 && \
+    # zlib1g: zlib1g-dev from -security must match it (Debian 13 deb13u1, 2026-11)
+    apt-mark unhold libc6 libssl3t64 zlib1g && \
     apt-get update && \
     # Include debian-backports.sources for manual use in a container
     _awk_prog='"Suites:" == $1 && /-security$/ { sub("security", "backports"); print; exit; }' && \
