@@ -854,10 +854,12 @@ class Command(BaseCommand):
         '''
         fresh = Source.objects.get(pk=source.pk)
         # Everything checked so far used `source` as this run read it; a
-        # concurrent edit to a field those checks relied on (other than
-        # the overlay's own) would make the save act on unchecked paths.
+        # concurrent edit to a field those checks relied on would make the
+        # save act on unchecked paths. The overlay's own fields count too:
+        # a user's edit to one of them since this run read the row (e.g.
+        # source_resolution) must not be silently replaced by the profile.
         drifted = sorted(
-            field for field in _PREFLIGHT_FIELDS - set(changes)
+            field for field in _PREFLIGHT_FIELDS | set(changes)
             if getattr(fresh, field) != getattr(source, field)
         )
         if drifted:

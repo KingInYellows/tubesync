@@ -19,7 +19,8 @@ from ..models import Source, Media
 from ..forms import ValidateSourceForm, ConfirmDeleteSourceForm, SourceForm
 from ..utils import validate_url
 from ..tasks import get_source_completed_tasks, get_error_message, index_source
-from ..choices import (Val, IndexSchedule, YouTube_SourceType,
+from ..choices import (Val, Fallback, IndexSchedule, SourceResolution,
+                       YouTube_SourceType,
                        youtube_long_source_types, youtube_validation_urls)
 from .. import signals # noqa
 from .. import youtube
@@ -232,6 +233,13 @@ class AddSourceView(EditSourceMixin, CreateView):
         self.prepopulated_data['media_format'] = getattr(
             settings, 'MEDIA_FORMATSTR', settings.MEDIA_FORMATSTR_DEFAULT
         )
+        # Best available quality by default (owner rule, 2026-11-09), the
+        # same as the MediaNest bridge's built-in profile: TubeSync has no
+        # "best" resolution choice, so start at the highest one (8K) and take
+        # the next best resolution in any codec when a video lacks it. The
+        # model defaults (1080p, HD-only fallback) silently cap 4K uploads.
+        self.prepopulated_data['source_resolution'] = Val(SourceResolution.VIDEO_4320P)
+        self.prepopulated_data['fallback'] = Val(Fallback.NEXT_BEST_RESOLUTION)
         source_type = request.GET.get('source_type', '')
         if source_type and source_type in YouTube_SourceType.values:
             self.prepopulated_data['source_type'] = source_type

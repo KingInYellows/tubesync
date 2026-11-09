@@ -3273,10 +3273,10 @@ class BackfillReviewFollowUp25TestCase(BackfillFollowUpMixin, TestCase):
             real_preflight = BackfillCommand._count_refused_media
 
             def edit_during_the_run(command, downloaded, media_files):
-                # A path field the built-in profile does not set (it sets
-                # source_resolution itself, so an edit there is overlaid).
+                # A field the built-in profile sets itself: the user's
+                # edit must stop the save, not be replaced by the profile.
                 Source.objects.filter(pk=source.pk).update(
-                    source_vcodec=Val(YouTube_VideoCodec.AVC1),
+                    source_resolution=Val(SourceResolution.VIDEO_720P),
                 )
                 return real_preflight(command, downloaded, media_files)
 
@@ -3287,7 +3287,7 @@ class BackfillReviewFollowUp25TestCase(BackfillFollowUpMixin, TestCase):
                     '--source', str(source.uuid), '--apply',
                 )
             self.assertIsNotNone(error)
-            self.assertIn('source_vcodec changed since this run read', output)
+            self.assertIn('source_resolution changed since this run read', output)
             self.assertIn('renamed: 0', output)
             self.assertTrue(old_path.exists())
             source.refresh_from_db()
