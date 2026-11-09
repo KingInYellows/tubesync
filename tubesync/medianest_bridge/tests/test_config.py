@@ -106,6 +106,14 @@ class SourceDefaultsConfigTestCase(BridgeTestCase):
         self.assertEqual(defaults['channel'], config._BUILTIN_SOURCE_DEFAULTS_PROFILE)
         self.assertEqual(defaults['playlist'], config._BUILTIN_SOURCE_DEFAULTS_PROFILE)
 
+    def test_builtin_profile_is_best_available_quality(self):
+        # Owner rule: every source downloads at the best quality a video
+        # offers. TubeSync has no "best" choice, so the profile caps at the
+        # highest resolution and falls back to the next best in any codec.
+        profile = config._BUILTIN_SOURCE_DEFAULTS_PROFILE
+        self.assertEqual(profile['source_resolution'], '4320p')
+        self.assertEqual(profile['fallback'], 'n')
+
     def test_empty_object_is_the_no_overrides_escape_hatch(self):
         os.environ['MEDIANEST_BRIDGE_SOURCE_DEFAULTS'] = '{}'
         self.assertEqual(config.source_defaults(), {'channel': {}, 'playlist': {}})

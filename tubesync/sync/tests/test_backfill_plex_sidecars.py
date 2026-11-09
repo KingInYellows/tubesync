@@ -3273,6 +3273,8 @@ class BackfillReviewFollowUp25TestCase(BackfillFollowUpMixin, TestCase):
             real_preflight = BackfillCommand._count_refused_media
 
             def edit_during_the_run(command, downloaded, media_files):
+                # A field the built-in profile sets itself: the user's
+                # edit must stop the save, not be replaced by the profile.
                 Source.objects.filter(pk=source.pk).update(
                     source_resolution=Val(SourceResolution.VIDEO_720P),
                 )

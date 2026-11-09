@@ -154,6 +154,15 @@ class FrontEndTestCase(TestCase):
         self.assertTrue(checked_name)
         self.assertTrue(checked_directory)
 
+    def test_add_source_defaults_to_best_available_quality(self):
+        # Owner rule: every new source downloads at the best available
+        # quality, including ones added through the web UI.
+        response = Client().get('/source-add')
+        self.assertEqual(response.status_code, 200)
+        form = response.context['form']
+        self.assertEqual(form.initial['source_resolution'], '4320p')
+        self.assertEqual(form.initial['fallback'], 'n')
+
     def test_source(self):
         #logging.disable(logging.NOTSET)
         # Sources overview page

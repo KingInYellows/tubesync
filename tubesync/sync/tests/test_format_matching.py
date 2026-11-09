@@ -1,4 +1,5 @@
 import logging
+from unittest import mock
 from django.test import TestCase
 from sync.models import Source, Media
 from sync.choices import (
@@ -990,6 +991,80 @@ class FormatMatchingTestCase(TestCase):
             match_type, format_code = self.media.get_best_video_format()
             self.assertEqual(format_code, expected_format_code)
             self.assertEqual(match_type, expected_match_type)
+
+    def test_best_available_prefers_resolution_over_codec(self):
+        # A source at the highest resolution choice (4320p, the MediaNest
+        # bridge's "best available" profile) must pick the tallest stream even
+        # when only a shorter one is in the preferred codec.
+        def fmt(fid, height, vcodec, fps=30, hdr=False):
+            return {
+                'id': fid, 'format': f'{height}P', 'format_note': '',
+                'language_code': None, 'height': height, 'vcodec': vcodec,
+                'vbr': height, 'acodec': None, 'is_60fps': fps > 50,
+                'is_hdr': hdr,
+            }
+        mixed = [
+            fmt('399', 1080, 'AV1'),
+            fmt('247', 720, 'VP9'),
+            fmt('244', 480, 'VP9'),
+        ]
+        cases = {
+            # (resolution, fallback, prefer_60fps, prefer_hdr): (match_type, code)
+            ('4320p', Val(Fallback.NEXT_BEST_RESOLUTION), False, False): (False, '399'),
+            ('4320p', Val(Fallback.NEXT_BEST_RESOLUTION), True, False): (False, '399'),
+            ('4320p', Val(Fallback.NEXT_BEST_RESOLUTION), False, True): (False, '399'),
+            ('4320p', Val(Fallback.NEXT_BEST_RESOLUTION), True, True): (False, '399'),
+            ('4320p', Val(Fallback.REQUIRE_HD), False, False): (False, '399'),
+            # Codec is required: upstream behaviour, the tallest VP9 stream
+            ('4320p', Val(Fallback.REQUIRE_CODEC), False, False): (False, '247'),
+            # Below the cap, upstream behaviour is unchanged
+            ('1080p', Val(Fallback.NEXT_BEST_RESOLUTION), False, False): (False, '399'),
+            ('1440p', Val(Fallback.NEXT_BEST_RESOLUTION), False, False): (False, '247'),
+        }
+        self.source.source_vcodec = Val(YouTube_VideoCodec.VP9)
+        for (resolution, fallback, prefer_60fps, prefer_hdr), expected in cases.items():
+            self.source.source_resolution = resolution
+            self.source.fallback = fallback
+            self.source.prefer_60fps = prefer_60fps
+            self.source.prefer_hdr = prefer_hdr
+            self.source.save()
+            with mock.patch.object(Media, 'iter_formats', lambda _self: iter(mixed)):
+                result = self.media.get_best_video_format()
+            self.assertEqual(
+                result, expected,
+                msg=f'{resolution} fallback={fallback} 60fps={prefer_60fps} hdr={prefer_hdr}',
+            )
+        # Several streams at the tallest height: the preferred codec still wins
+        both = [fmt('399', 1080, 'AV1'), fmt('248', 1080, 'VP9'), fmt('247', 720, 'VP9')]
+        self.source.source_resolution = '4320p'
+        self.source.fallback = Val(Fallback.NEXT_BEST_RESOLUTION)
+        self.source.prefer_60fps = False
+        self.source.prefer_hdr = False
+        self.source.save()
+        with mock.patch.object(Media, 'iter_formats', lambda _self: iter(both)):
+            self.assertEqual(self.media.get_best_video_format(), (False, '248'))
+        # 60fps and HDR preferences still apply among the tallest streams
+        tallest = [
+            fmt('248', 1080, 'VP9'),
+            fmt('399', 1080, 'AV1', fps=60),
+            fmt('400', 1080, 'AV1', hdr=True),
+            fmt('247', 720, 'VP9'),
+        ]
+        prefs = {
+            # (prefer_60fps, prefer_hdr): expected code
+            (True, False): '399',
+            (False, True): '400',
+            (False, False): '248',
+        }
+        for (prefer_60fps, prefer_hdr), code in prefs.items():
+            self.source.prefer_60fps = prefer_60fps
+            self.source.prefer_hdr = prefer_hdr
+            self.source.save()
+            with mock.patch.object(Media, 'iter_formats', lambda _self: iter(tallest)):
+                self.assertEqual(
+                    self.media.get_best_video_format(), (False, code),
+                    msg=f'60fps={prefer_60fps} hdr={prefer_hdr}',
+                )
 
     def test_metadata_20230629(self):
         self.source.fallback = Val(Fallback.NEXT_BEST_RESOLUTION)

@@ -7,7 +7,7 @@
 
 from django.conf import settings
 from common.utils import multi_key_sort, resolve_priority_order
-from .choices import Val, Fallback
+from .choices import Val, Fallback, SourceResolutionInteger
 
 
 english_language_codes = resolve_priority_order(
@@ -20,6 +20,10 @@ english_language_codes = resolve_priority_order(
 )
 min_height = getattr(settings, 'VIDEO_HEIGHT_CUTOFF', 360)
 fallback_hd_cutoff = getattr(settings, 'VIDEO_HEIGHT_IS_HD', 500)
+# The highest resolution a source can ask for. A source set to it means "best
+# available": the MediaNest bridge profile uses it because TubeSync has no
+# "best" choice.
+max_source_height = max(SourceResolutionInteger.values())
 
 
 def get_fallback_id(by_fmt_id, /, by_language = {}, *, exact = False, fallback_id = False):
@@ -175,6 +179,7 @@ def get_best_video_format(media):
         )
         if accept_codec:
             video_formats.append(fmt)
+    best_available_fallback = False
     # Check we matched some streams
     if not video_formats:
         # No streams match the requested resolution, see if we can fallback
@@ -196,6 +201,25 @@ def get_best_video_format(media):
             )
             if accept_height:
                 video_formats.append(fmt)
+        # A source at the highest resolution choice wants the best available
+        # quality, so resolution must win over codec, HDR and 60fps. Without
+        # this, the "codec only" steps below pick e.g. 720p VP9 over 1080p AV1.
+        # Keep only the tallest remaining formats and let the preferences
+        # choose among them. Sources that require their codec keep upstream
+        # behaviour.
+        if (video_formats and can_switch_codecs and
+                source_resolution_height >= max_source_height):
+            tallest = max(fmt['height'] for fmt in video_formats)
+            video_formats = [
+                fmt for fmt in video_formats
+                if fmt['height'] == tallest
+            ]
+            # Make the tallest height the effective target, so the
+            # resolution + 60fps/HDR steps below match these formats
+            # (matched_resolution() reads this variable). The result is
+            # still reported as a fallback, never as an exact match.
+            source_resolution_height = tallest
+            best_available_fallback = True
     if not video_formats:
         # Still no matches
         return False, False
@@ -484,6 +508,8 @@ def get_best_video_format(media):
                 # Match the highest resolution
                 exact_match, best_match = False, video_formats[0]
     # See if we found a match
+    if best_match and best_available_fallback:
+        exact_match = False
     if best_match:
         # Final check to see if the match we found was good enough
         if exact_match:
