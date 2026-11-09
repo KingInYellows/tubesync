@@ -62,7 +62,7 @@ read-only into `medianest_bridge/contract/bridge-openapi.v1.yaml`. `info.version
 `ComponentStatus.reason` and `latestVersion`, vendored from MediaNest
 `22a5062f1`, the merge of #3082 -- see the README's "Contract" section). This is the contract version, not the release
 version: `GET /meta`'s `bridgeVersion` field (`config.py::BRIDGE_VERSION`)
-reports the bridge release (`1.1.0` for `bridge-v1.1.0`, `1.2.0` for `bridge-v1.2.0` and its untagged `bridge-v1.2.1` rebuild, `1.2.2` for `bridge-v1.2.2`), which can move
+reports the bridge release (`1.1.0` for `bridge-v1.1.0`, `1.2.0` for `bridge-v1.2.0` and its untagged `bridge-v1.2.1` rebuild, `1.2.2` for `bridge-v1.2.2`, `1.2.3` for `bridge-v1.2.3`), which can move
 ahead of the contract for additive or internal changes. Full re-vendor history is in
 `medianest_bridge/README.md`'s "Contract" section; not repeated here to
 avoid a second place that can drift out of sync with the first.
@@ -117,3 +117,4 @@ is created by the repository owner.
 | `bridge-v1.1.0` | fork `main` after the release-prep PR merges | `3b9d72f28dda9c931776f76e7428a72a24a57f82` | `bridge-openapi.v1.yaml` `1.0.0` (additive `sourceDefaults` component) | `v1.0.0` (MediaNest `v1.1.0` requires this tag) | See `release-notes-bridge-v1.1.0.md`. Plex TV library NFO sidecars, date-based episode numbering, configurable source defaults, sidecar backfill command. |
 | `bridge-v1.2.0` | fork `main` after the release-prep PR merges | `3b9d72f28dda9c931776f76e7428a72a24a57f82` | `bridge-openapi.v1.yaml` `1.1.0` (additive `POST /sources/resolve`, optional `resolveChannelHandle`) | `v1.0.0` (handle URLs need MediaNest `v1.1.0`, which includes #2783; older MediaNest ignores the flag) | See `release-notes-bridge-v1.2.0.md`. Channel `@handle`/`c/`/`user/` URL resolution. |
 | `bridge-v1.2.2` | fork `main` after the release-prep PR merges | `3b9d72f28dda9c931776f76e7428a72a24a57f82` | `bridge-openapi.v1.yaml` `1.2.0` (additive, optional `ComponentStatus.reason`/`latestVersion`) | `v1.0.0` (MediaNest with #3082 shows the reasons; older MediaNest ignores them) | See `release-notes-bridge-v1.2.2.md`. A new yt-dlp release no longer pauses downloads, stopped consumers report down, self-refreshing image and `bridge-stable` tag, best-available fallback for new sources, playlist posters. `bridge-v1.2.1` was an untagged yt-dlp rebuild of `bridge-v1.2.0`. |
+| `bridge-v1.2.3` | fork `main` after the release-prep PR merges | `3b9d72f28dda9c931776f76e7428a72a24a57f82` | `bridge-openapi.v1.yaml` `1.2.0` (unchanged) | `v1.0.0` | See `release-notes-bridge-v1.2.3.md`. Opt-in SQLite WAL (`TUBESYNC_SQLITE_JOURNAL_MODE`) so bridge reads stop timing out behind TubeSync writes; new sources default to best available quality (`4320p`, fallback `n`). |
