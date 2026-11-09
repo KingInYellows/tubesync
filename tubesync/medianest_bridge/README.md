@@ -1018,8 +1018,9 @@ Before switching:
 To switch on:
 
 1. Stop the container (`docker compose stop tubesync`).
-2. Back up `/config/db.sqlite3` (with TubeSync stopped, the file alone is
-   a complete copy).
+2. Back up `/config/db.sqlite3`, together with `db.sqlite3-wal` and
+   `db.sqlite3-shm` if they exist (they can after a crash, or once the
+   file is already in WAL). Nothing else may have the database open.
 3. Convert once, from the host or a throwaway container with `sqlite3`:
    `sqlite3 /path/to/config/db.sqlite3 'PRAGMA journal_mode=WAL;'` prints
    `wal`. WAL is stored in the file, so this persists.

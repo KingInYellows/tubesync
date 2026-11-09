@@ -29,8 +29,9 @@ owner. This file records what the tag would contain and what was verified.
    resolution choice and the `Source` model default is 1080p, so new
    sources silently capped 4K uploads.
    - The bridge's built-in source-defaults profile now sets
-     `source_resolution` to `4320p`. With the existing fallback `n`, each
-     video downloads at the highest resolution it offers.
+     `source_resolution` to `4320p`, the highest choice TubeSync has. With
+     the existing fallback `n`, each video downloads at the highest
+     resolution it offers, up to 4320p.
    - TubeSync's own add-source form starts at `4320p` with fallback "next
      best, any codec", so sources added in the UI match.
    - Format matching: for a source at the highest resolution that may
@@ -63,13 +64,17 @@ Follow the README's "Switching the SQLite journal mode" runbook:
 1. Check that no persisted `/config/tubesync/local_settings.py` exists
    (it would replace the image's settings file and hide the variable),
    and that `/config` is on a local filesystem, not NFS or SMB.
-2. Stop TubeSync and back up `db.sqlite3` and the env file.
+2. Stop TubeSync (and anything else with the database open) and back up
+   the env file and `db.sqlite3`, together with `db.sqlite3-wal` and
+   `db.sqlite3-shm` if they exist.
 3. `sqlite3 db.sqlite3 'PRAGMA journal_mode=WAL;'` prints `wal`.
 4. Set `TUBESYNC_SQLITE_JOURNAL_MODE=WAL`, point the image at
    `bridge-v1.2.3` and start the container. Confirm the log line and
    `PRAGMA journal_mode;` on the file.
 
-Without the variable, `bridge-v1.2.3` behaves exactly like `bridge-v1.2.2`.
+Without the variable, `bridge-v1.2.3` opens SQLite with `TRUNCATE`, as
+`bridge-v1.2.2` does. The version string and the new-source quality
+defaults above still change.
 
 ## Upgrade and rollback
 
@@ -77,7 +82,9 @@ No migrations. Before rolling back to an image older than `bridge-v1.2.3`
 on a WAL database, stop the container and run
 `sqlite3 db.sqlite3 'PRAGMA journal_mode=DELETE;'`: older images force
 `TRUNCATE` on every connection, and switching back offline also folds the
-`-wal` file into the main file.
+`-wal` file into the main file. Also remove `TUBESYNC_SQLITE_JOURNAL_MODE`
+from the env file, so a later `bridge-v1.2.3` deploy does not switch the
+file back to WAL unplanned.
 
 ## Known limits
 
