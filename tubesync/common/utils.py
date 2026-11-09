@@ -169,6 +169,56 @@ def multi_key_sort(iterable, specs, /, use_reversed=False, *, item=False, attr=F
     return result
 
 
+SQLITE_JOURNAL_MODES = ('TRUNCATE', 'DELETE', 'WAL')
+SQLITE_DEFAULT_JOURNAL_MODE = 'TRUNCATE'
+
+
+def sqlite_journal_mode(value, /):
+    '''
+        Normalise the requested SQLite journal mode.
+        Returns (mode, message). Unknown values fall back to the
+        default mode, and message explains why; otherwise message is None.
+    '''
+    requested = str(value or '').strip().upper()
+    if not requested:
+        return (SQLITE_DEFAULT_JOURNAL_MODE, None)
+    if requested in SQLITE_JOURNAL_MODES:
+        return (requested, None)
+    return (
+        SQLITE_DEFAULT_JOURNAL_MODE,
+        f'Ignoring unsupported SQLite journal mode {requested!r}; '
+        f'using {SQLITE_DEFAULT_JOURNAL_MODE}. '
+        f'Supported: {", ".join(SQLITE_JOURNAL_MODES)}',
+    )
+
+
+def sqlite_init_command(journal_mode=SQLITE_DEFAULT_JOURNAL_MODE, /):
+    '''
+        Builds the PRAGMA statements run on every new SQLite connection.
+
+        WAL lets readers keep reading while one writer holds the lock,
+        which stops the "database is locked" bursts during busy indexing.
+        WAL is persistent in the database file once set; with WAL,
+        synchronous = NORMAL is safe and avoids an fsync per commit.
+        locking_mode must stay NORMAL: EXCLUSIVE breaks behaviour the
+        code relies on, and with WAL it would also block other readers.
+    '''
+    mode, _ = sqlite_journal_mode(journal_mode)
+    pragmas = [
+        'PRAGMA locking_mode = NORMAL;',
+        f'PRAGMA journal_mode = {mode};',
+    ]
+    if 'WAL' == mode:
+        pragmas.append('PRAGMA synchronous = NORMAL;')
+    pragmas.extend((
+        'PRAGMA journal_size_limit = 67108864;',
+        'PRAGMA legacy_alter_table = OFF;',
+        'PRAGMA auto_vacuum = INCREMENTAL;',
+        'PRAGMA incremental_vacuum(100);',
+    ))
+    return '\n'.join(pragmas)
+
+
 def parse_database_connection_string(database_connection_string):
     '''
         Parses a connection string in a URL style format, such as:
