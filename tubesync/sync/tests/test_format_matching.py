@@ -1043,6 +1043,28 @@ class FormatMatchingTestCase(TestCase):
         self.source.save()
         with mock.patch.object(Media, 'iter_formats', lambda _self: iter(both)):
             self.assertEqual(self.media.get_best_video_format(), (False, '248'))
+        # 60fps and HDR preferences still apply among the tallest streams
+        tallest = [
+            fmt('248', 1080, 'VP9'),
+            fmt('399', 1080, 'AV1', fps=60),
+            fmt('400', 1080, 'AV1', hdr=True),
+            fmt('247', 720, 'VP9'),
+        ]
+        prefs = {
+            # (prefer_60fps, prefer_hdr): expected code
+            (True, False): '399',
+            (False, True): '400',
+            (False, False): '248',
+        }
+        for (prefer_60fps, prefer_hdr), code in prefs.items():
+            self.source.prefer_60fps = prefer_60fps
+            self.source.prefer_hdr = prefer_hdr
+            self.source.save()
+            with mock.patch.object(Media, 'iter_formats', lambda _self: iter(tallest)):
+                self.assertEqual(
+                    self.media.get_best_video_format(), (False, code),
+                    msg=f'60fps={prefer_60fps} hdr={prefer_hdr}',
+                )
 
     def test_metadata_20230629(self):
         self.source.fallback = Val(Fallback.NEXT_BEST_RESOLUTION)

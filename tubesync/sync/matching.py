@@ -179,6 +179,7 @@ def get_best_video_format(media):
         )
         if accept_codec:
             video_formats.append(fmt)
+    best_available_fallback = False
     # Check we matched some streams
     if not video_formats:
         # No streams match the requested resolution, see if we can fallback
@@ -213,6 +214,12 @@ def get_best_video_format(media):
                 fmt for fmt in video_formats
                 if fmt['height'] == tallest
             ]
+            # Make the tallest height the effective target, so the
+            # resolution + 60fps/HDR steps below match these formats
+            # (matched_resolution() reads this variable). The result is
+            # still reported as a fallback, never as an exact match.
+            source_resolution_height = tallest
+            best_available_fallback = True
     if not video_formats:
         # Still no matches
         return False, False
@@ -501,6 +508,8 @@ def get_best_video_format(media):
                 # Match the highest resolution
                 exact_match, best_match = False, video_formats[0]
     # See if we found a match
+    if best_match and best_available_fallback:
+        exact_match = False
     if best_match:
         # Final check to see if the match we found was good enough
         if exact_match:
