@@ -677,8 +677,9 @@ uuid, none of which can carry either.
 
 `medianest_bridge/contract/bridge-openapi.v1.yaml` is a vendored, read-only
 copy of the canonical contract. **Current copy: contract 1.3.0 (MED-635),
-from the branch of MediaNest #3100; re-vendor from its squash merge once it
-lands.** It adds the optional, nullable `Source.title`: the channel or
+MediaNest `3e57252260c520ec34fa4237592d49e0f7653442`, the squash merge of
+MediaNest #3100 to `main` (byte-identical to the branch copy `133dc07` first
+vendored).** It adds the optional, nullable `Source.title`: the channel or
 playlist title `sync/tvshow_nfo.py::resolve_show_title()` resolves (what the
 source's `tvshow.nfo` gives Plex), or null when nothing better than `name` is
 known. MediaNest shows it as the source's display name, since `name` is the

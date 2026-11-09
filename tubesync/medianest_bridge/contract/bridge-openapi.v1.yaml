@@ -2,8 +2,10 @@
 #
 # Canonical source: KingInYellows/medianest,
 #   docs/planning/tubesync-integration/bridge-openapi.v1.yaml
-#   @ 133dc07 on the branch of MediaNest PR #3100
-#   (2026-11-09, MED-635; re-vendor from its squash merge once it lands).
+#   @ 3e57252260c520ec34fa4237592d49e0f7653442
+#   (2026-11-09, the squash merge of MediaNest #3100 to main; its contract
+#   file is byte-identical to the pre-merge branch copy 133dc07 first
+#   vendored here).
 #   Contract version 1.3.0 (MED-635): adds the OPTIONAL, nullable
 #   Source.title, the channel/playlist title this bridge resolves for a
 #   source (the tvshow.nfo title). It does not join Source.required; no
