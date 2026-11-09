@@ -1,6 +1,12 @@
+import logging
 from pathlib import Path
 from urllib.parse import urljoin
-from common.utils import getenv, parse_database_connection_string
+from common.utils import (
+    getenv,
+    parse_database_connection_string,
+    sqlite_init_command,
+    sqlite_journal_mode,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -38,6 +44,13 @@ if database_dict:
                                f'{database_dict["PORT"]}" database '
                                f'"{database_dict["NAME"]}"')
 else:
+    # TUBESYNC_SQLITE_JOURNAL_MODE = TRUNCATE (default) | DELETE | WAL
+    # WAL lets readers continue while a write is in progress.
+    # Switching an existing database to WAL (or back) is safest with
+    # TubeSync stopped; see medianest_bridge/README.md.
+    SQLITE_JOURNAL_MODE, _journal_mode_msg = sqlite_journal_mode(
+        getenv('TUBESYNC_SQLITE_JOURNAL_MODE'),
+    )
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
@@ -46,21 +59,20 @@ else:
                 "timeout": 10,
                 "transaction_mode": "IMMEDIATE",
                 # PRAGMA locking_mode = NORMAL | EXCLUSIVE
-                # PRAGMA journal_mode = DELETE | TRUNCATE | PERSIST | MEMORY | WAL | OFF
                 # DO NOT change locking_mode to EXCLUSIVE!
                 # This is a foot-gun, and invalidates a behavior the code relies on.
-                # journal_mode WAL offers increased concurrency, the default is DELETE.
-                "init_command": """
-                    PRAGMA locking_mode = NORMAL;
-                    PRAGMA journal_mode = TRUNCATE;
-                    PRAGMA journal_size_limit = 67108864;
-                    PRAGMA legacy_alter_table = OFF;
-                    PRAGMA auto_vacuum = INCREMENTAL;
-                    PRAGMA incremental_vacuum(100);
-                """,
+                # The PRAGMA statements live in common.utils.sqlite_init_command.
+                "init_command": sqlite_init_command(SQLITE_JOURNAL_MODE),
             },
         }
     }
+    # The PRAGMA result is not checked per connection; this records the
+    # requested mode. Verify the file with `PRAGMA journal_mode;`.
+    DATABASES['default']['_msgs'] = [(
+        f'Requested SQLite journal mode: {SQLITE_JOURNAL_MODE}',
+    )]
+    if _journal_mode_msg:
+        DATABASES['default']['_msgs'].append((logging.WARNING, _journal_mode_msg))
     DATABASE_CONNECTION_STR = f'sqlite at "{DATABASES["default"]["NAME"]}"'
 
     # the argument to random.expovariate(),
