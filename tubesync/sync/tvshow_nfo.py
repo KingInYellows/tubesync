@@ -72,7 +72,9 @@ def _invalidate_show_title_cache(source):
         Drops `source`'s cached resolve_show_title() entry, if any, and
         bumps its generation so a lookup already in flight does not store
         its older result. Called by `write_tvshow_nfo()` whenever it
-        recomputes the show's data from scratch. A no-op for an unsaved
+        recomputes the show's data from scratch, and on every Source save
+        (`sync.signals.source_post_save`), so a rename is seen at once.
+        A no-op for an unsaved
         source (`pk` is `None`), which `resolve_show_title()` never caches.
     '''
     if source.pk is None:

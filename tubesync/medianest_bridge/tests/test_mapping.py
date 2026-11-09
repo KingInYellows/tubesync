@@ -134,6 +134,20 @@ class SerializeSourceTestCase(TestCase):
             body = mapping.serialize_source(source)
         self.assertIsNone(body['title'])
 
+    def test_title_is_null_for_the_emoji_cleaned_name(self):
+        source = make_source()
+        source.name = 'Lo-fi Beats \U0001F3B5'
+        with patch('medianest_bridge.mapping.resolve_show_title', return_value='Lo-fi Beats'):
+            body = mapping.serialize_source(source)
+        self.assertIsNone(body['title'])
+
+    def test_title_is_null_right_after_a_rename(self):
+        source = make_source()
+        mapping.source_title(source)  # caches the name fallback
+        source.name = 'renamed-source'
+        source.save()
+        self.assertIsNone(mapping.source_title(source))
+
     def test_never_crawled_last_crawl_at_is_null(self):
         source = make_source()
         body = mapping.serialize_source(source)

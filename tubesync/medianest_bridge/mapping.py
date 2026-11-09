@@ -18,6 +18,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from common.models import TaskHistory
+from common.utils import clean_emoji
 from sync.choices import MediaState, Val, YouTube_SourceType
 from sync.tasks import get_error_message, get_running_tasks, get_source_index_task
 from sync.tvshow_nfo import resolve_show_title
@@ -137,10 +138,12 @@ def source_title(source):
         the name is no display name; `resolve_show_title()` is what the
         source's tvshow.nfo shows Plex (MED-635). It is cached for 60s and
         never raises, falling back to the name, which is reported as `None`.
+        That fallback has emoji removed, so the name is compared both as is
+        and emoji-cleaned.
     '''
     title = (resolve_show_title(source) or '').strip()
     name = str(source.name or '').strip()
-    if not title or title == name:
+    if not title or title in (name, clean_emoji(name).strip()):
         return None
     return title
 
