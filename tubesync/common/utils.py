@@ -213,15 +213,18 @@ def sqlite_init_command(journal_mode=SQLITE_DEFAULT_JOURNAL_MODE, /):
     pragmas.extend((
         'PRAGMA journal_size_limit = 67108864;',
         'PRAGMA legacy_alter_table = OFF;',
-        'PRAGMA auto_vacuum = INCREMENTAL;',
     ))
-    # incremental_vacuum needs the write lock. Under WAL that would make
-    # every new connection wait behind the current writer, which is the
-    # very wait WAL is meant to remove, so it only runs in the rollback
-    # journal modes (where readers wait for the writer anyway). Freed
-    # pages are still reused by later writes.
+    # Setting auto_vacuum on a database that already uses it, and running
+    # incremental_vacuum, both need the write lock. Under WAL that would
+    # make every new connection wait behind the current writer, which is
+    # the very wait WAL is meant to remove, so they only run in the
+    # rollback journal modes (where readers wait for the writer anyway).
+    # auto_vacuum is stored in the file, and freed pages are still reused.
     if 'WAL' != mode:
-        pragmas.append('PRAGMA incremental_vacuum(100);')
+        pragmas.extend((
+            'PRAGMA auto_vacuum = INCREMENTAL;',
+            'PRAGMA incremental_vacuum(100);',
+        ))
     return '\n'.join(pragmas)
 
 
