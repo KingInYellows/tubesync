@@ -15,9 +15,9 @@ owner. This file records what the tag would contain and what was verified.
      what the source's `tvshow.nfo` gives Plex.
    - `title` is null when nothing better than `name` is known, including
      when the resolved title is only the name with emoji removed.
-   - Saving a source now drops its cached show title, so a renamed source
-     never reports its old name. The next episode NFO written in the same
-     process also uses the new name; existing NFOs are rewritten only by
+   - Saving a source now drops its cached show title in the process that
+     saved it, so that process reports the new name at once. The next
+     episode NFO written in that process also uses the new name; existing NFOs are rewritten only by
      TubeSync's usual delayed save and rename tasks.
    - MediaNest with #3100 uses `title` as the source's name when the
      source has none of its own, and marks sources active once the bridge
@@ -61,8 +61,10 @@ back further than `bridge-v1.2.3` on a WAL database needs the
 
 ## Known limits
 
-- The title cache is per process (60 s). A rename made in the web
-  process is seen there at once; a huey worker can still use the old
-  title for episode NFOs for up to 60 s.
+- The title cache is per process (60 s). A rename is seen at once only
+  in the process that saved it. Another web worker (Gunicorn runs
+  several) can still report the old title, including an old fallback
+  name, as `title` for up to 60 s, and a huey worker can still use it for
+  episode NFOs for as long.
 - Names show in MediaNest only for sources whose local name is blank.
   A name typed in MediaNest always wins.
