@@ -17,18 +17,21 @@ chmod 0700 "${DIR}"
 # several GB and then wrote the trimmed rows to extra archive files.
 # Deleted rows leave free pages that new rows reuse, so the file stops
 # growing at about HIGH rows (~360 bytes each) instead of shrinking.
+
+# A positive decimal integer of at most 12 significant digits, so the
+# arithmetic below never overflows Bash's 64-bit integers.
 is_count() {
-    [[ "${1}" =~ ^[0-9]+$ ]] && (( 10#${1} > 0 ))
+    [[ "${1}" =~ ^0*([1-9][0-9]{0,11})$ ]]
 }
 
 HIGH="${TUBESYNC_SYSLOG_DB_HIGH_SIZE:-1000000}"
 LOW="${TUBESYNC_SYSLOG_DB_LOW_SIZE:-250000}"
 if ! is_count "${HIGH}" || (( 10#${HIGH} < 2 )); then
-    echo "hat-syslog-server: TUBESYNC_SYSLOG_DB_HIGH_SIZE must be an integer of at least 2; using 1000000" >&2
+    echo "hat-syslog-server: TUBESYNC_SYSLOG_DB_HIGH_SIZE must be an integer from 2 to 999999999999; using 1000000" >&2
     HIGH=1000000
 fi
 if ! is_count "${LOW}"; then
-    echo "hat-syslog-server: TUBESYNC_SYSLOG_DB_LOW_SIZE must be a positive integer; using 250000" >&2
+    echo "hat-syslog-server: TUBESYNC_SYSLOG_DB_LOW_SIZE must be an integer from 1 to 999999999999; using 250000" >&2
     LOW=250000
 fi
 HIGH=$(( 10#${HIGH} ))
@@ -42,6 +45,8 @@ fi
 ARCHIVE=()
 case "${TUBESYNC_SYSLOG_DB_ARCHIVE:-false}" in
     [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]) ARCHIVE=(--db-enable-archive) ;;
+    [Ff][Aa][Ll][Ss][Ee]|0|[Nn][Oo]) ;;
+    *) echo "hat-syslog-server: TUBESYNC_SYSLOG_DB_ARCHIVE must be true or false; archiving stays off" >&2 ;;
 esac
 
 exec s6-setuidgid app \
