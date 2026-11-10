@@ -16,8 +16,9 @@ owner. This file records what the tag would contain and what was verified.
    - `title` is null when nothing better than `name` is known, including
      when the resolved title is only the name with emoji removed.
    - Saving a source now drops its cached show title, so a renamed source
-     never reports its old name. This also refreshes episode NFO
-     `<showtitle>` straight after a rename instead of up to 60 s later.
+     never reports its old name. The next episode NFO written in the same
+     process also uses the new name; existing NFOs are rewritten only by
+     TubeSync's usual delayed save and rename tasks.
    - MediaNest with #3100 uses `title` as the source's name when the
      source has none of its own, and marks sources active once the bridge
      reports them active or syncing.
