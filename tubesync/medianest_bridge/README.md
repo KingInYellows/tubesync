@@ -1057,13 +1057,16 @@ unset the variable, and start the container.
 
 The row cap stops `syslog.db` growing, but SQLite reuses the space of
 deleted rows rather than returning it, so a file that grew under the old
-defaults keeps its size. To give the space back, stop the container and
-either run `sqlite3 /path/to/config/state/hat/syslog.db 'VACUUM;'` (SQLite
-can need free disk up to twice the file's current size while it
-rebuilds it; move the file aside instead when that space is short) or move `state/hat/syslog.db`
-somewhere else; the service creates a new empty one on start. Archive
-files from the old defaults (`syslog.db.1`, `syslog.db.2`, ... beside it) can be removed the
-same way.
+defaults keeps its size. The trim itself runs only when the upgraded
+server receives a new log line, so first run the new image long enough for
+that (any activity logs; `SELECT COUNT(*) FROM log;` on a read-only open
+shows at most the high size). Then stop the container and run
+`sqlite3 /path/to/config/state/hat/syslog.db 'VACUUM;'` (SQLite can need
+free disk up to twice the file's current size while it rebuilds it).
+Alternatively, with the container stopped, move `state/hat/syslog.db`
+somewhere else, which needs no free space and no prior trim; the service
+creates a new empty one on start. Archive files from the old defaults
+(`syslog.db.1`, `syslog.db.2`, ... beside it) can be removed the same way.
 
 ## License
 
