@@ -10,6 +10,42 @@ mkdir -p "${DIR}"
 chown -R app:app "${DIR}"
 chmod 0700 "${DIR}"
 
+# Retention for the log viewer database (fork point, MED-655).
+# hat-syslog-server deletes the oldest rows once the database holds more
+# than HIGH rows, keeping the newest LOW. Upstream ran with the library
+# defaults (10M / 1M) plus --db-enable-archive, which let syslog.db reach
+# several GB and then wrote the trimmed rows to extra archive files.
+# Deleted rows leave free pages that new rows reuse, so the file stops
+# growing at about HIGH rows (~360 bytes each) instead of shrinking.
+is_count() {
+    [[ "${1}" =~ ^[0-9]+$ ]] && (( 10#${1} > 0 ))
+}
+
+HIGH="${TUBESYNC_SYSLOG_DB_HIGH_SIZE:-1000000}"
+LOW="${TUBESYNC_SYSLOG_DB_LOW_SIZE:-250000}"
+if ! is_count "${HIGH}" || (( 10#${HIGH} < 2 )); then
+    echo "hat-syslog-server: TUBESYNC_SYSLOG_DB_HIGH_SIZE must be an integer of at least 2; using 1000000" >&2
+    HIGH=1000000
+fi
+if ! is_count "${LOW}"; then
+    echo "hat-syslog-server: TUBESYNC_SYSLOG_DB_LOW_SIZE must be a positive integer; using 250000" >&2
+    LOW=250000
+fi
+HIGH=$(( 10#${HIGH} ))
+LOW=$(( 10#${LOW} ))
+if (( LOW >= HIGH )); then
+    LOW=$(( HIGH / 4 ))
+    (( LOW > 0 )) || LOW=1
+    echo "hat-syslog-server: TUBESYNC_SYSLOG_DB_LOW_SIZE must be below the high size; using ${LOW}" >&2
+fi
+
+ARCHIVE=()
+case "${TUBESYNC_SYSLOG_DB_ARCHIVE:-false}" in
+    [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]) ARCHIVE=(--db-enable-archive) ;;
+esac
+
 exec s6-setuidgid app \
     hat-syslog-server --log-level 'INFO' \
-        --db-enable-archive --db-path "${DATABASE}"
+        --db-path "${DATABASE}" \
+        --db-high-size "${HIGH}" --db-low-size "${LOW}" \
+        "${ARCHIVE[@]}"

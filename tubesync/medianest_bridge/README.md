@@ -34,7 +34,7 @@ signal-driven task scheduling.
 
 ## Fork delta
 
-Thirteen upstream files are touched at thirteen points (`settings.py` twice; point 13 spans two files), nine of the thirteen minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml`, `.github/workflows/medianest-bridge-refresh.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
+Fourteen upstream files are touched at fourteen points (`settings.py` twice; point 13 spans two files), ten of the fourteen minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml`, `.github/workflows/medianest-bridge-refresh.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
 
 1. `tubesync/tubesync/settings.py` -- `INSTALLED_APPS += 'medianest_bridge'`.
 2. `tubesync/tubesync/urls.py` -- one `include('medianest_bridge.urls')` at
@@ -171,6 +171,13 @@ Thirteen upstream files are touched at thirteen points (`settings.py` twice; poi
    An unsupported value logs a warning and keeps `TRUNCATE`. The active
    mode is logged (as requested, not read back) at start-up. Not used when
    `DATABASE_CONNECTION` is set.
+14. `config/root/etc/s6-overlay/s6-rc.d/hat-syslog-server/run` (MED-655)
+   -- the log viewer's database (`/config/state/hat/syslog.db`) is capped
+   at `TUBESYNC_SYSLOG_DB_HIGH_SIZE` rows (default 1,000,000), trimmed back
+   to the newest `TUBESYNC_SYSLOG_DB_LOW_SIZE` (default 250,000), and no
+   longer writes archive files unless `TUBESYNC_SYSLOG_DB_ARCHIVE=true`.
+   Upstream ran with the library defaults (10M / 1M) and archiving on,
+   which let the file pass 1.7 GB in two months.
 
 `sync/tvshow_nfo.py` (Plex T2) is a new, wholly fork-owned module (like
 `medianest_bridge/` itself), not an upstream touch point -- it is not
@@ -375,6 +382,9 @@ text never contains the bearer token.
 | `MEDIANEST_BRIDGE_YOUTUBE_PROBE_ENABLED` | `true` | Any value other than exactly `false` (case-insensitive) is treated as `true`. Enables the `youtube` readiness component's real network probe (a `GET https://www.youtube.com/generate_204`, no auth/cookies, cached 120s). Meaningful only under the shared-egress-namespace deployment wiring (DECISIONS #29, M6b routing doc) where this process shares yt-dlp's VPN egress -- set to `false` for any deployment that does NOT use that wiring, where a probe result would describe the wrong network path; the component then honestly reports `not_configured`. See `medianest_bridge/readiness.py`'s module docstring for the full design rationale. |
 | `MEDIANEST_BRIDGE_SOURCE_DEFAULTS` | unset (built-in profile) | JSON object of `POST /sources` field overrides, keyed by contract source type (`channel`, `playlist`) plus an optional shared `"*"` block merged under both before the per-type block wins on conflict. Read fresh per call, like every other variable here. **Unset**: both types get the built-in profile -- `write_nfo`, `copy_thumbnails`, `copy_channel_images` all `true`, `index_streams` `false`, `source_resolution` `"4320p"` (TubeSync has no "best" choice, so this caps at 8K and each video downloads at the highest resolution it offers), `fallback` `"n"` (next best resolution in any codec, so a video with no HD or no VP9 format still downloads), and `media_format` set to `"Season {episode_yyyy}/s{episode_yyyy}e{episode_mmddnn} - {title_full_bounded} [{key}].{ext}"` (T1's date-based Plex-TV-Shows keys; a playlist is treated as its own show using the same scheme). **`{}`** (an explicitly empty top-level JSON object): the escape hatch back to plain `Source` model defaults for both types -- distinct from "unset". Any other JSON value: only `SourceForm` fields are allowed, EXCLUDING `source_type`/`key`/`name`/`directory` (the create contract itself owns those) and `target_schedule` (one fixed timestamp is meaningless as a default for every source). Boolean fields must be JSON `true`/`false`; a `media_format` whose rendered path has a `..` segment and a `filter_text` that is not a valid regular expression (both checked on the value the source form would store, so `.{ext:.0}.` or a list-typed `filter_text` cannot slip past) are rejected. Error details name the field and error code, never the configured value. Every source type must be COVERED -- either its own key is present (any value, including an explicit `{}`, which is a per-type opt-out that deliberately ignores `"*"` too) or `"*"` is present (covering both types). A type covered by neither is a configuration error, not a silent "no overrides": an operator who configures only `channel` must not get `playlist` sources created with plain defaults and no signal anything differs for that type. An unknown field, a forbidden field, an uncovered type, or a value that fails the same field-level/`run_edit_source_checks()` validation a real create applies is a configuration error -- see the `sourceDefaults` readiness component below and `POST /sources`' own 503 in that state. Never silently falls back to model defaults on an invalid value. |
 | `TUBESYNC_SQLITE_JOURNAL_MODE` | `TRUNCATE` | **Not a `medianest_bridge` setting** -- read once at start-up by `local_settings.py.container` (fork point 13, MED-636). `TRUNCATE`, `DELETE` or `WAL`, case-insensitive; anything else logs a warning and keeps `TRUNCATE`. `WAL` lets the bridge's reads continue while TubeSync writes, which stops the "database is locked" timeouts during index crawls. Convert an existing database with TubeSync stopped; see "Switching the SQLite journal mode" under Operator commands. Ignored when `DATABASE_CONNECTION` is set. |
+| `TUBESYNC_SYSLOG_DB_HIGH_SIZE` | `1000000` | **Not a `medianest_bridge` setting** -- read by the `hat-syslog-server` s6 service at start-up (fork point 14, MED-655). Row count at which the log viewer's `syslog.db` deletes its oldest rows (about 360 bytes a row, so the default caps the file near 360 MB). An integer of at least 2; anything else logs a warning and uses the default. |
+| `TUBESYNC_SYSLOG_DB_LOW_SIZE` | `250000` | **Not a `medianest_bridge` setting** -- rows kept after a trim (fork point 14). A positive integer below the high size; otherwise a warning and a quarter of the high size. |
+| `TUBESYNC_SYSLOG_DB_ARCHIVE` | `false` | **Not a `medianest_bridge` setting** -- `true` (or `1`, `yes`) writes trimmed rows to archive files next to `syslog.db`, as upstream did (fork point 14). |
 | `LISTEN_HOST` | `127.0.0.1` | **Not a `medianest_bridge` setting** -- read by `gunicorn.py` to choose gunicorn's bind address. Must stay loopback (the default) for the CIDR gate's `X-Real-IP` trust to hold; see the warning behavior described just above. |
 
 None of these are registered as Django settings in `settings.py` -- the app
@@ -1042,6 +1052,17 @@ To switch back (or before rolling back to an image older than
 container, run `sqlite3 /path/to/config/db.sqlite3 'PRAGMA journal_mode=DELETE;'`
 (this checkpoints the WAL into the main file and removes `-wal`/`-shm`),
 unset the variable, and start the container.
+
+### Shrinking an existing syslog.db (MED-655)
+
+The row cap stops `syslog.db` growing, but SQLite reuses the space of
+deleted rows rather than returning it, so a file that grew under the old
+defaults keeps its size. To give the space back, stop the container and
+either run `sqlite3 /path/to/config/state/hat/syslog.db 'VACUUM;'` (needs
+free disk about the size of the kept rows) or move `state/hat/syslog.db`
+somewhere else; the service creates a new empty one on start. Archive
+files from the old defaults (`syslog.db.1`, `syslog.db.2`, ... beside it) can be removed the
+same way.
 
 ## License
 
