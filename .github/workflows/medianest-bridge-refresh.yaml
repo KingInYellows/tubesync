@@ -4,8 +4,9 @@ name: MediaNest Bridge Image Refresh
 #
 # YouTube changes break old yt-dlp releases quickly, and an image only
 # picks up a new yt-dlp when it is rebuilt. This workflow rebuilds the
-# newest bridge-v<major>.<minor>.<patch> release tag (its code is not
-# changed; only yt-dlp, FFmpeg and the base layers are refreshed):
+# newest bridge-v1.<minor>.<patch> release tag, the bridge-openapi.v1
+# line (its code is not changed; only yt-dlp, FFmpeg and the base layers
+# are refreshed):
 #
 #   - daily, when a yt-dlp release exists that has no image yet:
 #       bridge-vX.Y.Z-yt<yt-dlp version>
@@ -87,9 +88,15 @@ jobs:
           IMAGE: ghcr.io/${{ steps.owner.outputs.lowercase }}/tubesync
           YTDLP_RELEASE: ${{ steps.yt-dlp.outputs.latest-release }}
         run: |
-          base="$(git tag -l 'bridge-v*' --sort=-v:refname \
-            | grep -E '^bridge-v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)"
-          test -n "${base}" || { echo '::error::no bridge-vX.Y.Z release tag found'; exit 1; }
+          # Only the bridge-v1 line (contract bridge-openapi.v1). The
+          # bridge-stable channel tag is MediaNest's template default
+          # (MED-647), so it must never jump to a release that could
+          # change the contract. A bridge-v2 line gets its own channel tag
+          # and its own BRIDGE_LINE here, never bridge-stable.
+          BRIDGE_LINE=1
+          base="$(git tag -l "bridge-v${BRIDGE_LINE}.*" --sort=-v:refname \
+            | grep -E "^bridge-v${BRIDGE_LINE}\.[0-9]+\.[0-9]+$" | head -n 1)"
+          test -n "${base}" || { echo "::error::no bridge-v${BRIDGE_LINE}.Y.Z release tag found"; exit 1; }
           ytdlp="$(jq -r '.tag.name' <<< "${YTDLP_RELEASE}")"
           case "${ytdlp}" in
             (''|null|*[!0-9.]*) echo "::error::unexpected yt-dlp release tag '${ytdlp}'"; exit 1 ;;
