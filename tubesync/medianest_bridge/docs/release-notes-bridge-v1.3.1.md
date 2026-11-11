@@ -18,6 +18,8 @@ owner. This file records what the tag would contain and what was verified.
      back to the newest `TUBESYNC_SYSLOG_DB_LOW_SIZE` (default 250,000).
    - Archive files are off unless `TUBESYNC_SYSLOG_DB_ARCHIVE=true`.
    - Invalid values log a warning at start-up and use the defaults.
+     A low size at or above the high size also warns, and uses a quarter
+     of the high size (rounded down, at least 1).
    - Fork point 14 in the README's "Fork delta"; settings in its
      environment variable table.
 2. **`bridge-stable` stays on `bridge-v1`** (MED-647). The scheduled
