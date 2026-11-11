@@ -192,6 +192,46 @@ def sqlite_journal_mode(value, /):
     )
 
 
+SQLITE_DEFAULT_TIMEOUT = 30
+SQLITE_MIN_TIMEOUT = 5
+SQLITE_MAX_TIMEOUT = 80
+
+
+def sqlite_timeout(value, /):
+    '''
+        Normalise the requested SQLite busy timeout, in seconds.
+
+        This is how long a connection waits for another connection's
+        write lock before raising "database is locked". Writes to the
+        large metadata rows can hold the lock for several seconds while
+        a crawl is busy, so the default is longer than Django's 5 s.
+        The maximum stays below the 89 s nginx and 90 s gunicorn
+        request timeouts.
+        Returns (seconds, message). Values that are not numbers fall back
+        to the default and values out of range are clamped; message
+        explains either change, otherwise message is None.
+    '''
+    requested = str(value or '').strip()
+    if not requested:
+        return (SQLITE_DEFAULT_TIMEOUT, None)
+    try:
+        seconds = int(requested)
+    except ValueError:
+        return (
+            SQLITE_DEFAULT_TIMEOUT,
+            f'Ignoring SQLite timeout {requested!r}, which is not a whole '
+            f'number of seconds; using {SQLITE_DEFAULT_TIMEOUT}.',
+        )
+    clamped = min(SQLITE_MAX_TIMEOUT, max(SQLITE_MIN_TIMEOUT, seconds))
+    if clamped != seconds:
+        return (
+            clamped,
+            f'SQLite timeout {seconds} is outside '
+            f'{SQLITE_MIN_TIMEOUT}-{SQLITE_MAX_TIMEOUT} seconds; using {clamped}.',
+        )
+    return (seconds, None)
+
+
 def sqlite_init_command(journal_mode=SQLITE_DEFAULT_JOURNAL_MODE, /):
     '''
         Builds the PRAGMA statements run on every new SQLite connection.

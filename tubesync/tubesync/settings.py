@@ -63,6 +63,12 @@ for queue_name in TaskQueue.values:
         queues[queue_name] = sqlite_tasks(queue_name, prefix='net')
     elif TaskQueue.NET.value == queue_name:
         queues[queue_name] = sqlite_tasks(queue_name, thread=True, workers=0)
+    elif TaskQueue.DB.value == queue_name and not getenv('DATABASE_CONNECTION'):
+        # SQLite allows only one writer at a time, and nearly every
+        # database-queue task writes (migrate_to_metadata rewrites large
+        # metadata rows after each index). A second worker only adds a
+        # writer waiting on the lock, so use one worker with SQLite.
+        queues[queue_name] = sqlite_tasks(queue_name, workers=1)
     else:
         queues[queue_name] = sqlite_tasks(queue_name, thread=True)
 for django_huey_queue in DJANGO_HUEY['queues'].values():
