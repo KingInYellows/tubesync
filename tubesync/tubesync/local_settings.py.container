@@ -6,6 +6,7 @@ from common.utils import (
     parse_database_connection_string,
     sqlite_init_command,
     sqlite_journal_mode,
+    sqlite_timeout,
 )
 
 
@@ -51,12 +52,17 @@ else:
     SQLITE_JOURNAL_MODE, _journal_mode_msg = sqlite_journal_mode(
         getenv('TUBESYNC_SQLITE_JOURNAL_MODE'),
     )
+    # TUBESYNC_SQLITE_TIMEOUT = seconds to wait for the write lock
+    # before "database is locked" (default 30, range 5-80).
+    SQLITE_TIMEOUT, _timeout_msg = sqlite_timeout(
+        getenv('TUBESYNC_SQLITE_TIMEOUT'),
+    )
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
             'NAME': CONFIG_BASE_DIR / 'db.sqlite3',
             "OPTIONS": {
-                "timeout": 10,
+                "timeout": SQLITE_TIMEOUT,
                 "transaction_mode": "IMMEDIATE",
                 # PRAGMA locking_mode = NORMAL | EXCLUSIVE
                 # DO NOT change locking_mode to EXCLUSIVE!
@@ -70,9 +76,13 @@ else:
     # requested mode. Verify the file with `PRAGMA journal_mode;`.
     DATABASES['default']['_msgs'] = [(
         f'Requested SQLite journal mode: {SQLITE_JOURNAL_MODE}',
+    ), (
+        f'SQLite lock timeout: {SQLITE_TIMEOUT} s',
     )]
     if _journal_mode_msg:
         DATABASES['default']['_msgs'].append((logging.WARNING, _journal_mode_msg))
+    if _timeout_msg:
+        DATABASES['default']['_msgs'].append((logging.WARNING, _timeout_msg))
     DATABASE_CONNECTION_STR = f'sqlite at "{DATABASES["default"]["NAME"]}"'
 
     # the argument to random.expovariate(),

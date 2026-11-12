@@ -7,6 +7,7 @@ from .utils import (
     parse_database_connection_string,
     sqlite_init_command,
     sqlite_journal_mode,
+    sqlite_timeout,
 )
 from .errors import DatabaseConnectionError
 
@@ -149,6 +150,51 @@ class UtilsTestCase(TestCase):
         self.assertEqual(clean_filename('a\t\t\ta\t\t\t'), 'a   a')
 
 
+class SqliteTimeoutTestCase(TestCase):
+
+    def test_default_is_30_seconds(self):
+        for value in (None, '', '   '):
+            self.assertEqual(sqlite_timeout(value), (30, None))
+
+    def test_valid_value_is_used(self):
+        self.assertEqual(sqlite_timeout(' 45 '), (45, None))
+        self.assertEqual(sqlite_timeout('5'), (5, None))
+        self.assertEqual(sqlite_timeout('80'), (80, None))
+
+    def test_out_of_range_is_clamped(self):
+        seconds, msg = sqlite_timeout('1')
+        self.assertEqual(seconds, 5)
+        self.assertIn('1', msg)
+        seconds, msg = sqlite_timeout('600')
+        self.assertEqual(seconds, 80)
+        self.assertIn('600', msg)
+
+    def test_not_a_number_falls_back(self):
+        for value in ('thirty', '2.5', '30s'):
+            seconds, msg = sqlite_timeout(value)
+            self.assertEqual(seconds, 30)
+            self.assertIn(value, msg)
+
+
+class SqliteDatabaseQueueTestCase(TestCase):
+
+    def test_database_queue_has_one_worker_with_sqlite(self):
+        import runpy
+        from pathlib import Path
+        from unittest import mock
+        for connection, workers in (('', 1), ('postgresql://u:p@h:5432/d', None)):
+            with mock.patch.dict(os.environ, {'DATABASE_CONNECTION': connection}), \
+                    mock.patch.object(Path, 'mkdir'):
+                queues = runpy.run_module('tubesync.settings')['DJANGO_HUEY']['queues']
+            consumer = queues['database']['consumer']
+            if workers is None:
+                self.assertEqual(consumer['worker_type'], 'thread')
+                self.assertEqual(consumer['workers'], 2)
+            else:
+                self.assertEqual(consumer['worker_type'], 'process')
+                self.assertEqual(consumer['workers'], workers)
+
+
 class SqliteJournalModeTestCase(TestCase):
 
     def test_default_is_truncate(self):
@@ -239,7 +285,7 @@ class SqliteJournalModeTestCase(TestCase):
                 finally:
                     db.close()
 
-    def _container_databases(self, env_value):
+    def _container_databases(self, env_value, timeout_value=None):
         import runpy
         from pathlib import Path
         from unittest import mock
@@ -247,6 +293,8 @@ class SqliteJournalModeTestCase(TestCase):
         env = {'DATABASE_CONNECTION': ''}
         if env_value is not None:
             env['TUBESYNC_SQLITE_JOURNAL_MODE'] = env_value
+        if timeout_value is not None:
+            env['TUBESYNC_SQLITE_TIMEOUT'] = timeout_value
         # The settings file also creates and tidies the yt-dlp cache
         # directory under /config; keep that off the host filesystem.
         with mock.patch.dict(os.environ, env, clear=False), \
@@ -257,6 +305,8 @@ class SqliteJournalModeTestCase(TestCase):
                 mock.patch.object(Path, 'rmdir'):
             if env_value is None:
                 os.environ.pop('TUBESYNC_SQLITE_JOURNAL_MODE', None)
+            if timeout_value is None:
+                os.environ.pop('TUBESYNC_SQLITE_TIMEOUT', None)
             db = runpy.run_path(str(path))['DATABASES']['default']
         mkdir.assert_not_called()
         rename.assert_not_called()
@@ -266,8 +316,22 @@ class SqliteJournalModeTestCase(TestCase):
         db = self._container_databases(None)
         cmd = db['OPTIONS']['init_command']
         self.assertIn('PRAGMA journal_mode = TRUNCATE;', cmd)
-        self.assertEqual(db['OPTIONS']['timeout'], 10)
+        self.assertEqual(db['OPTIONS']['timeout'], 30)
         self.assertIn(('Requested SQLite journal mode: TRUNCATE',), db['_msgs'])
+        self.assertIn(('SQLite lock timeout: 30 s',), db['_msgs'])
+
+    def test_container_settings_timeout_from_env(self):
+        db = self._container_databases(None, '45')
+        self.assertEqual(db['OPTIONS']['timeout'], 45)
+        self.assertIn(('SQLite lock timeout: 45 s',), db['_msgs'])
+
+    def test_container_settings_bad_timeout_warns(self):
+        import logging
+        db = self._container_databases(None, 'soon')
+        self.assertEqual(db['OPTIONS']['timeout'], 30)
+        warnings = [m for m in db['_msgs'] if logging.WARNING == m[0]]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('soon', warnings[0][1])
 
     def test_container_settings_unsupported_mode_warns(self):
         import logging
