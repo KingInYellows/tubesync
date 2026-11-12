@@ -48,7 +48,9 @@ changed.
 
 ## Before tagging
 
-- Tag the release-prep merge commit `bridge-v1.3.1`. That triggers
+- Tag `bridge-v1.3.1` on a `main` commit that includes #67 (MED-636),
+  such as its merge commit `bfe28e2` or any later one; the release-prep
+  merge (#56) predates the lock fix. That triggers
   `medianest-bridge-release.yaml` to publish
   `ghcr.io/kinginyellows/tubesync:bridge-v1.3.1`.
 - A tag push does not move `bridge-stable`; only the refresh does. After
