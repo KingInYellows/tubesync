@@ -41,6 +41,9 @@ _SLUGS = {
     'RATE_LIMITED': 'rate-limited',
     'INTERNAL_PROVIDER_ERROR': 'internal-provider-error',
     'REQUEST_TOO_LARGE': 'request-too-large',
+    # Contract 1.4.0 (MED-657).
+    'SOURCE_DELETING': 'source-deleting',
+    'FOLDER_NOT_FOUND': 'folder-not-found',
 }
 
 

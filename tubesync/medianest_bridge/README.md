@@ -10,10 +10,13 @@ skeleton. **T2 (read API)** added the contract's read-only source and
 media endpoints. **T3 (this slice, write API)** adds the contract's three
 write endpoints -- the first mutation surface in this app.
 
+**MED-657 (contract 1.4.0)** adds the first delete routes: remove a source,
+keeping or deleting its files, and delete the folder of a source already
+removed (see "Endpoints").
+
 Every slice deliberately implements only the endpoints the vendored
 contract actually defines: no general paginated source list, no `GET
-/media/{mediaId}`, no `/tasks` endpoint, no deletion of any kind anywhere
-in this app. The M0 contract is scoped to the vertical-slice minimum by
+/media/{mediaId}`, no `/tasks` endpoint. The M0 contract is scoped to the vertical-slice minimum by
 design; a broader surface is a documented roadmap item, to be added
 contract-first (proposed, accepted, re-vendored, then implemented) rather
 than built ahead of the contract -- the same pattern that added
@@ -34,7 +37,7 @@ signal-driven task scheduling.
 
 ## Fork delta
 
-Fourteen upstream files are touched at fourteen points (`settings.py` twice; point 13 spans two files), ten of the fourteen minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml`, `.github/workflows/medianest-bridge-refresh.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
+Fifteen upstream files are touched at fifteen points (`settings.py` twice; point 13 spans two files), ten of the fifteen minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml`, `.github/workflows/medianest-bridge-refresh.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
 
 1. `tubesync/tubesync/settings.py` -- `INSTALLED_APPS += 'medianest_bridge'`.
 2. `tubesync/tubesync/urls.py` -- one `include('medianest_bridge.urls')` at
@@ -186,6 +189,17 @@ Fourteen upstream files are touched at fourteen points (`settings.py` twice; poi
    longer writes archive files unless `TUBESYNC_SYSLOG_DB_ARCHIVE=true`.
    Upstream ran with the library defaults (10M / 1M) and archiving on,
    which let the file pass 1.7 GB in two months.
+15. `sync/views/sources.py` (MED-657) -- `DeleteSourceView.post`'s body
+   moved, unchanged, into the new `sync/source_delete.py`
+   (`prepare_source_for_deletion()`); the view now calls it, so the
+   bridge's `DELETE /sources/{uuid}` runs TubeSync's own delete instead of
+   a copy. The moved function gains one branch the view never takes:
+   `keep_files=True` turns off the hidden copy's `delete_files_on_disk`
+   and `delete_removed_media` and drops a stale `.to_be_removed` marker,
+   because `media_post_delete` otherwise deletes every downloaded video of
+   a source whose "delete files on disk" box is ticked, even when the
+   caller asked to keep files. On an upstream merge that touches
+   `DeleteSourceView.post`, carry the change into `source_delete.py`.
 
 `sync/tvshow_nfo.py` (Plex T2) is a new, wholly fork-owned module (like
 `medianest_bridge/` itself), not an upstream touch point -- it is not
@@ -449,7 +463,7 @@ path:
 ## Endpoints
 
 All under `/api/medianest/v1/`, all requiring the bearer token. T1/T2
-reads are `GET`; T3 writes are `POST`.
+reads are `GET`; T3 writes are `POST`; MED-657's are `DELETE`.
 
 **T1 (diagnostics):**
 
@@ -643,6 +657,48 @@ choices inline -- most notably, TubeSync's `MediaState.UNKNOWN` maps to
   `MEDIANEST_BRIDGE_READ_ONLY`. `GET /capabilities` reports
   `resolveChannelHandle: true`.
 
+**MED-657 (contract 1.4.0, `medianest_bridge/views_delete.py`, backed by
+`deletion.py` and `sync/source_delete.py`):** both are write routes, so
+`MEDIANEST_BRIDGE_READ_ONLY` blocks them (`403 PROVIDER_READ_ONLY`) and
+each call writes a `mutation_audit` line (the folder route logs
+`source_key=` instead of `source_uuid=`). `GET /capabilities` reports
+`deleteSource: true` and `deleteSourceFiles: true`.
+
+- `DELETE /sources/{uuid}?deleteFiles=<true|false>` (default `false`) --
+  runs TubeSync's own delete in one transaction: the source stops at once,
+  its media move to a hidden copy (no schedule, nothing downloads,
+  `filter_text` = the deleted uuid), and TubeSync's
+  `delete_all_media_for_source` task removes them afterwards. Returns `202`
+  `{"uuid", "canonicalKey", "directory", "deleteFiles", "normalizedState":
+  "deleting"}`. With `deleteFiles=false` no file is touched, whatever the
+  source's "delete files on disk" setting says. With `deleteFiles=true`
+  the task also removes the whole download folder (TubeSync's
+  `.to_be_removed` marker). A repeat call while the task runs returns the
+  same `202` and does nothing new; `deleteFiles` in the body is what the
+  first call asked for. Any `deleteFiles` value other than
+  `true`/`false`/`1`/`0` is `400 SOURCE_INVALID`.
+- While that task runs, `GET /sources/{uuid}` answers with the hidden
+  copy's data under the deleted uuid and `normalizedState: "deleting"`,
+  then `404` once it is done. `GET /sources?key=` no longer returns the
+  hidden copy, and `POST /sources` for that key is `409 SOURCE_DELETING`
+  (`retryable: true`, no `existingSourceUuid`) instead of offering the
+  dying row for adoption. This also covers a source deleted in TubeSync's
+  own UI.
+- `DELETE /folders/{sourceKey}` -- deletes the folder `acq-src-<key>`
+  (MediaNest's name for every source it creates; nothing else can be
+  named) under `video/` and `audio/` (or the download root when
+  `TUBESYNC_DIRECTORY_PREFIX` is off). The key must be 1-92 of
+  `[A-Za-z0-9_-]` (else `400`). `409 SOURCE_CONFLICT` with
+  `existingSourceUuid` while a live source uses the key or folder, `409
+  SOURCE_DELETING` while one is still being deleted, `400` for a folder
+  that is a symlink, `404 FOLDER_NOT_FOUND` when nothing is there. The
+  folder is first renamed into a `.medianest-trash/` directory next to it
+  (one atomic rename, so a Plex scan right after the `200` already sees
+  it gone) and then removed by a background thread; a later call also
+  sweeps anything an interrupted removal left there. Returns `200`
+  `{"canonicalKey", "folders": ["video/acq-src-..."]}` (paths relative to
+  the download root).
+
 Every response (success and error) echoes `X-Request-ID`. A caller-supplied
 `X-Request-ID` header is echoed verbatim when it is a valid UUID; otherwise
 the bridge generates a new UUID4. `X-Correlation-ID`, if supplied, is logged (paired with the request
@@ -695,10 +751,19 @@ uuid, none of which can carry either.
 ## Contract
 
 `medianest_bridge/contract/bridge-openapi.v1.yaml` is a vendored, read-only
-copy of the canonical contract. **Current copy: contract 1.3.0 (MED-635),
+copy of the canonical contract. **Current copy: contract 1.4.0 (MED-657),
+from MediaNest PR #3161's branch copy `2a66f4e` (byte-identical; the
+header and this line get the squash-merge SHA once #3161 merges).** It adds `DELETE /sources/{sourceUuid}?deleteFiles=<bool>`,
+`DELETE /folders/{sourceKey}`, the `SourceDeletion` and `FolderDeletion`
+schemas (both now in `contract_fixtures.json`), the `SourceKey` parameter,
+`Error.code` `SOURCE_DELETING` and `FOLDER_NOT_FOUND`,
+`Source.normalizedState` `deleting`, and the optional
+`Capabilities.deleteSourceFiles`; `listSourcesByKey` and `createSource`
+describe how a source being deleted is reported. No required field changed.
+Before that, contract 1.3.0 (MED-635),
 MediaNest `3e57252260c520ec34fa4237592d49e0f7653442`, the squash merge of
 MediaNest #3100 to `main` (byte-identical to the branch copy `133dc07` first
-vendored).** It adds the optional, nullable `Source.title`: the channel or
+vendored), added the optional, nullable `Source.title`: the channel or
 playlist title `sync/tvshow_nfo.py::resolve_show_title()` resolves (what the
 source's `tvshow.nfo` gives Plex), or null when nothing better than `name` is
 known. MediaNest shows it as the source's display name, since `name` is the

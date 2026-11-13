@@ -1,0 +1,468 @@
+'''
+    Contract 1.4.0 (MED-657, MediaNest ADR-0022):
+    DELETE /sources/{sourceUuid}?deleteFiles=<bool> and
+    DELETE /folders/{sourceKey}.
+
+    The end-to-end cases run TubeSync's own delete_all_media_for_source task
+    in-process (call_local) after the request, so they use a
+    TransactionTestCase: the task opens durable transactions, which a
+    TestCase's wrapping transaction forbids.
+'''
+import json
+import os
+import tempfile
+import uuid
+from contextlib import contextmanager
+from pathlib import Path
+from unittest.mock import patch
+
+from django.test import override_settings
+from django.utils import timezone
+
+from common.models import TaskHistory
+from sync.choices import Val, YouTube_SourceType
+from sync.models import Media, Source
+from sync.models._migrations import media_file_storage
+from sync.source_delete import prepare_source_for_deletion
+from sync.tasks import delete_all_media_for_source
+
+from .. import deletion
+from .base import BridgeTestCase, BridgeTransactionTestCase
+from .test_endpoints import assert_matches_schema
+
+KEY = 'UCabcdefghijklmnopqrstuv'
+FOLDER = f'acq-src-{KEY}'
+SOURCES_URL = '/api/medianest/v1/sources'
+CAPS_URL = '/api/medianest/v1/capabilities'
+
+
+def source_url(source_uuid):
+    return f'{SOURCES_URL}/{source_uuid}'
+
+
+def folder_url(key):
+    return f'/api/medianest/v1/folders/{key}'
+
+
+@contextmanager
+def temp_download_root():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        with (
+            override_settings(DOWNLOAD_ROOT=tmp_dir),
+            patch.object(media_file_storage, 'location', tmp_dir),
+        ):
+            yield Path(tmp_dir)
+
+
+def run_background_inline():
+    '''Folder removal normally runs in a thread; run it inline in tests.'''
+    return patch.object(
+        deletion, '_remove_in_background',
+        side_effect=lambda paths: [deletion._remove_tree(p) for p in paths],
+    )
+
+
+def make_source(**overrides):
+    defaults = dict(
+        source_type=Val(YouTube_SourceType.CHANNEL_ID),
+        key=KEY,
+        name=FOLDER,
+        directory=FOLDER,
+    )
+    defaults.update(overrides)
+    return Source.objects.create(**defaults)
+
+
+def make_downloaded_media(source, name='video1'):
+    '''A downloaded Media row with a real file (plus an .nfo) on disk.'''
+    folder = Path(source.directory_path)
+    folder.mkdir(parents=True, exist_ok=True)
+    video = folder / f'{name}.mkv'
+    video.write_bytes(b'video')
+    (folder / f'{name}.nfo').write_text('<episodedetails/>')
+    media = Media.objects.create(
+        source=source, key=name, title=name, published=timezone.now(),
+    )
+    Media.objects.filter(pk=media.pk).update(
+        downloaded=True,
+        media_file=str(video.relative_to(media_file_storage.location)),
+    )
+    return video
+
+
+def scheduled_deletes(schedule_mock):
+    return sum(
+        1 for call in schedule_mock.call_args_list
+        if call.args and call.args[0] is delete_all_media_for_source
+    )
+
+
+def run_delete_task(media_source):
+    '''What TubeSync's huey worker runs after the delete commits.'''
+    delete_all_media_for_source.call_local(
+        str(media_source.pk), str(media_source.name), str(media_source.directory_path),
+    )
+
+
+class DeleteSourceEndToEndTestCase(BridgeTransactionTestCase):
+
+    def delete(self, source_uuid, delete_files=None, **extra):
+        url = source_url(source_uuid)
+        if delete_files is not None:
+            url += f'?deleteFiles={delete_files}'
+        with patch.object(TaskHistory, 'schedule') as schedule:
+            response = self.client.delete(url, **self.auth_header(), **extra)
+        return response, schedule
+
+    def test_keep_files_survives_delete_files_on_disk(self):
+        '''
+            The MED-641 trap: media_post_delete deletes each downloaded
+            video when the source has delete_files_on_disk set, and
+            TubeSync's hidden copy inherits that flag. A keep-files delete
+            must keep every file anyway.
+        '''
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root():
+            source = make_source(delete_files_on_disk=True, delete_removed_media=True)
+            video = make_downloaded_media(source)
+            folder = video.parent
+
+            response, schedule = self.delete(source.pk, 'false')
+            self.assertEqual(response.status_code, 202)
+            body = json.loads(response.content)
+            assert_matches_schema(self, body, 'SourceDeletion')
+            self.assertEqual(body['uuid'], str(source.pk))
+            self.assertEqual(body['canonicalKey'], KEY)
+            self.assertEqual(body['directory'], FOLDER)
+            self.assertFalse(body['deleteFiles'])
+            self.assertEqual(body['normalizedState'], 'deleting')
+
+            self.assertFalse(Source.objects.filter(pk=source.pk).exists())
+            hidden = Source.objects.get(key=KEY)
+            self.assertFalse(hidden.delete_files_on_disk)
+            self.assertFalse(hidden.delete_removed_media)
+            self.assertEqual(hidden.filter_text, str(source.pk))
+            self.assertEqual(scheduled_deletes(schedule), 1)
+            # Nothing moved: TubeSync's own rename would have moved the
+            # folder into <dir>/deleted.
+            self.assertTrue(video.exists())
+            self.assertFalse((folder / 'deleted').exists())
+
+            run_delete_task(hidden)
+
+            self.assertTrue(video.exists())
+            self.assertTrue(video.with_suffix('.nfo').exists())
+            self.assertTrue(folder.is_dir())
+            self.assertFalse((folder / 'deleted').exists())
+            self.assertFalse(Source.objects.filter(key=KEY).exists())
+            self.assertFalse(Media.objects.exists())
+            response = self.client.get(source_url(source.pk), **self.auth_header())
+            self.assertEqual(response.status_code, 404)
+
+    def test_keep_files_is_the_default(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root():
+            source = make_source(delete_files_on_disk=True)
+            video = make_downloaded_media(source)
+            response, _ = self.delete(source.pk)
+            self.assertEqual(response.status_code, 202)
+            self.assertFalse(json.loads(response.content)['deleteFiles'])
+            run_delete_task(Source.objects.get(key=KEY))
+            self.assertTrue(video.exists())
+
+    def test_keep_files_drops_a_stale_marker(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root():
+            source = make_source()
+            video = make_downloaded_media(source)
+            (video.parent / '.to_be_removed').touch()
+            response, _ = self.delete(source.pk, 'false')
+            self.assertEqual(response.status_code, 202)
+            self.assertFalse(json.loads(response.content)['deleteFiles'])
+            run_delete_task(Source.objects.get(key=KEY))
+            self.assertTrue(video.exists())
+
+    def test_delete_files_removes_the_folder(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root():
+            source = make_source()
+            video = make_downloaded_media(source)
+            folder = video.parent
+            response, _ = self.delete(source.pk, 'true')
+            self.assertEqual(response.status_code, 202)
+            self.assertTrue(json.loads(response.content)['deleteFiles'])
+            self.assertTrue((folder / '.to_be_removed').is_file())
+            run_delete_task(Source.objects.get(key=KEY))
+            self.assertFalse(folder.exists())
+            self.assertFalse(Source.objects.filter(key=KEY).exists())
+
+    def test_deleting_state_until_the_task_finishes(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root():
+            source = make_source()
+            make_downloaded_media(source)
+            self.delete(source.pk, 'false')
+            hidden = Source.objects.get(key=KEY)
+
+            response = self.client.get(source_url(source.pk), **self.auth_header())
+            self.assertEqual(response.status_code, 200)
+            body = json.loads(response.content)
+            assert_matches_schema(self, body, 'Source')
+            self.assertEqual(body['uuid'], str(source.pk))
+            self.assertEqual(body['normalizedState'], 'deleting')
+            self.assertEqual(body['canonicalKey'], KEY)
+
+            # The hidden row is not a source for its key any more ...
+            response = self.client.get(f'{SOURCES_URL}?key={KEY}', **self.auth_header())
+            self.assertEqual(json.loads(response.content)['data'], [])
+            # ... nor addressable by its own uuid ...
+            response = self.client.get(source_url(hidden.pk), **self.auth_header())
+            self.assertEqual(response.status_code, 404)
+            # ... and a re-add must wait instead of adopting it.
+            response = self.client.post(
+                SOURCES_URL,
+                data=json.dumps({
+                    'sourceType': 'channel',
+                    'canonicalKey': KEY,
+                    'canonicalUrl': f'https://www.youtube.com/channel/{KEY}',
+                    'name': FOLDER,
+                    'directory': FOLDER,
+                }),
+                content_type='application/json',
+                **self.auth_header(),
+            )
+            self.assertEqual(response.status_code, 409)
+            body = json.loads(response.content)
+            assert_matches_schema(self, body, 'Error')
+            self.assertEqual(body['code'], 'SOURCE_DELETING')
+            self.assertTrue(body['retryable'])
+            self.assertNotIn('existingSourceUuid', body)
+
+            # A folder delete waits too.
+            response = self.client.delete(folder_url(KEY), **self.auth_header())
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(json.loads(response.content)['code'], 'SOURCE_DELETING')
+
+    def test_repeat_delete_is_idempotent(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root():
+            source = make_source()
+            make_downloaded_media(source)
+            first, schedule = self.delete(source.pk, 'false')
+            self.assertEqual(first.status_code, 202)
+            self.assertEqual(scheduled_deletes(schedule), 1)
+            hidden_count = Source.objects.count()
+
+            # Asking for files the second time does not change the first
+            # call's decision; the body says what is in effect.
+            second, schedule = self.delete(source.pk, 'true')
+            self.assertEqual(second.status_code, 202)
+            self.assertEqual(schedule.call_count, 0)
+            self.assertFalse(json.loads(second.content)['deleteFiles'])
+            self.assertEqual(Source.objects.count(), hidden_count)
+
+            run_delete_task(Source.objects.get(key=KEY))
+            third, _ = self.delete(source.pk, 'false')
+            self.assertEqual(third.status_code, 404)
+            self.assertEqual(json.loads(third.content)['code'], 'SOURCE_NOT_FOUND')
+
+    def test_keep_files_then_folder_delete(self):
+        '''The admin flow: remove with files kept, delete the folder later.'''
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root() as root, run_background_inline():
+            source = make_source()
+            video = make_downloaded_media(source)
+            folder = video.parent
+            self.delete(source.pk, 'false')
+            run_delete_task(Source.objects.get(key=KEY))
+            self.assertTrue(folder.is_dir())
+
+            response = self.client.delete(folder_url(KEY), **self.auth_header())
+            self.assertEqual(response.status_code, 200)
+            body = json.loads(response.content)
+            assert_matches_schema(self, body, 'FolderDeletion')
+            self.assertEqual(body['canonicalKey'], KEY)
+            self.assertEqual(body['folders'], [folder.relative_to(root).as_posix()])
+            self.assertFalse(folder.exists())
+            self.assertEqual(list((folder.parent / deletion.TRASH_DIR_NAME).iterdir()), [])
+
+            response = self.client.delete(folder_url(KEY), **self.auth_header())
+            self.assertEqual(response.status_code, 404)
+            self.assertEqual(json.loads(response.content)['code'], 'FOLDER_NOT_FOUND')
+
+    def test_ui_delete_keeps_upstream_behaviour(self):
+        '''
+            TubeSync's own delete page (keep_files=False) still lets the
+            source's delete_files_on_disk setting delete files: the fork only
+            changes what the bridge asks for.
+        '''
+        with temp_download_root():
+            source = make_source(delete_files_on_disk=True)
+            make_downloaded_media(source)
+            media_source = prepare_source_for_deletion(source, delete_files=False)
+            self.assertTrue(media_source.delete_files_on_disk)
+            self.assertFalse(media_source.delete_removed_media)
+
+
+class DeleteSourceRequestTestCase(BridgeTestCase):
+
+    def test_unknown_uuid_is_404(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        response = self.client.delete(source_url(uuid.uuid4()), **self.auth_header())
+        self.assertEqual(response.status_code, 404)
+        body = json.loads(response.content)
+        assert_matches_schema(self, body, 'Error')
+        self.assertEqual(body['code'], 'SOURCE_NOT_FOUND')
+
+    def test_malformed_uuid_is_404(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        response = self.client.delete(source_url('not-a-uuid'), **self.auth_header())
+        self.assertEqual(response.status_code, 404)
+
+    def test_bad_delete_files_value_is_400(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        source = make_source()
+        response = self.client.delete(
+            source_url(source.pk) + '?deleteFiles=maybe', **self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(json.loads(response.content)['code'], 'SOURCE_INVALID')
+        self.assertTrue(Source.objects.filter(pk=source.pk).exists())
+
+    def test_read_only_bridge_refuses(self):
+        self.enable_bridge()  # MEDIANEST_BRIDGE_READ_ONLY defaults to true
+        source = make_source()
+        response = self.client.delete(source_url(source.pk), **self.auth_header())
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(json.loads(response.content)['code'], 'PROVIDER_READ_ONLY')
+        response = self.client.delete(folder_url(KEY), **self.auth_header())
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(Source.objects.filter(pk=source.pk).exists())
+
+    def test_requires_bearer_token(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        source = make_source()
+        response = self.client.delete(source_url(source.pk))
+        self.assertEqual(response.status_code, 401)
+        self.assertTrue(Source.objects.filter(pk=source.pk).exists())
+
+    def test_audit_line_names_the_uuid(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with self.assertLogs('tubesync', level='INFO') as logs:
+            self.client.delete(source_url(uuid.uuid4()), **self.auth_header())
+        self.assertTrue(any(
+            'mutation_audit' in line and 'outcome=rejected_SOURCE_NOT_FOUND' in line
+            for line in logs.output
+        ))
+
+    def test_capabilities(self):
+        self.enable_bridge()
+        body = json.loads(self.client.get(CAPS_URL, **self.auth_header()).content)
+        assert_matches_schema(self, body, 'Capabilities')
+        self.assertTrue(body['deleteSource'])
+        self.assertTrue(body['deleteSourceFiles'])
+
+
+class DeleteFolderRequestTestCase(BridgeTestCase):
+
+    def test_live_source_is_409_with_its_uuid(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root():
+            source = make_source()
+            Path(source.directory_path).mkdir(parents=True)
+            response = self.client.delete(folder_url(KEY), **self.auth_header())
+            self.assertEqual(response.status_code, 409)
+            body = json.loads(response.content)
+            self.assertEqual(body['code'], 'SOURCE_CONFLICT')
+            self.assertEqual(body['existingSourceUuid'], str(source.pk))
+            self.assertTrue(Path(source.directory_path).is_dir())
+
+    def test_source_with_another_key_using_the_folder_is_409(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root():
+            make_source(key='PLother', name='other')
+            response = self.client.delete(folder_url(KEY), **self.auth_header())
+            self.assertEqual(response.status_code, 409)
+
+    def test_invalid_keys_are_400(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        for key in ('..', 'a.b', 'UC..x', 'x' * 93, 'a b', 'UC%00'):
+            with self.subTest(key=key):
+                response = self.client.delete(folder_url(key), **self.auth_header())
+                self.assertEqual(response.status_code, 400, key)
+                self.assertEqual(json.loads(response.content)['code'], 'SOURCE_INVALID')
+
+    def test_only_the_named_folder_goes(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root() as root, run_background_inline():
+            video_dir, audio_dir = deletion.folder_parents()
+            target = video_dir / FOLDER
+            target.mkdir(parents=True)
+            (target / 'a.mkv').write_bytes(b'x')
+            neighbour = video_dir / f'{FOLDER}x'
+            neighbour.mkdir()
+            unrelated = video_dir / KEY
+            unrelated.mkdir()
+            in_audio = audio_dir / FOLDER
+            in_audio.mkdir(parents=True)
+
+            response = self.client.delete(folder_url(KEY), **self.auth_header())
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                sorted(json.loads(response.content)['folders']),
+                sorted([
+                    target.relative_to(root).as_posix(),
+                    in_audio.relative_to(root).as_posix(),
+                ]),
+            )
+            self.assertFalse(target.exists())
+            self.assertFalse(in_audio.exists())
+            self.assertTrue(neighbour.is_dir())
+            self.assertTrue(unrelated.is_dir())
+
+    def test_symlinked_folder_is_refused(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root() as root:
+            outside = root / 'outside'
+            outside.mkdir()
+            (outside / 'keep.txt').write_text('keep')
+            video_dir = deletion.folder_parents()[0]
+            video_dir.mkdir(parents=True)
+            os.symlink(outside, video_dir / FOLDER)
+            response = self.client.delete(folder_url(KEY), **self.auth_header())
+            self.assertEqual(response.status_code, 400)
+            self.assertTrue((outside / 'keep.txt').exists())
+
+    def test_leftover_trash_is_swept(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root(), run_background_inline():
+            video_dir = deletion.folder_parents()[0]
+            leftover = video_dir / deletion.TRASH_DIR_NAME / 'acq-src-old-abc'
+            leftover.mkdir(parents=True)
+            (leftover / 'a.mkv').write_bytes(b'x')
+            (video_dir / FOLDER).mkdir()
+            response = self.client.delete(folder_url(KEY), **self.auth_header())
+            self.assertEqual(response.status_code, 200)
+            self.assertFalse(leftover.exists())
+
+    def test_without_directory_prefix_uses_the_root(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with (
+            temp_download_root() as root,
+            run_background_inline(),
+            override_settings(SOURCE_DOWNLOAD_DIRECTORY_PREFIX=False),
+        ):
+            (root / FOLDER).mkdir()
+            response = self.client.delete(folder_url(KEY), **self.auth_header())
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(json.loads(response.content)['folders'], [FOLDER])
+
+    def test_audit_line_names_the_key(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root(), self.assertLogs('tubesync', level='INFO') as logs:
+            self.client.delete(folder_url(KEY), **self.auth_header())
+        self.assertTrue(any(
+            'mutation_audit' in line and f'source_key={KEY}' in line
+            and 'outcome=rejected_FOLDER_NOT_FOUND' in line
+            for line in logs.output
+        ))

@@ -27,7 +27,7 @@ from django.http import JsonResponse
 
 from sync.models import Media, Source
 
-from . import mapping
+from . import deletion, mapping
 from .errors import error_response
 from .views import BridgeView
 
@@ -109,7 +109,11 @@ def _parse_pagination(request, request_id):
 
 
 class SourceLookupView(BridgeView):
-    '''GET /sources?key=<canonicalKey> -- listSourcesByKey (0 or 1 result).'''
+    '''
+        GET /sources?key=<canonicalKey> -- listSourcesByKey (0 or 1 result).
+        Contract 1.4.0: the hidden row a deletion leaves behind is not a
+        source for this key any more, so it is not returned.
+    '''
 
     def get(self, request, *args, **kwargs):
         request_id = request._bridge_request_id
@@ -117,19 +121,39 @@ class SourceLookupView(BridgeView):
         if not key:
             return _invalid_request(request_id, 'The "key" query parameter is required.')
         source = Source.objects.filter(key=key).first()
+        if source is not None and deletion.is_pending_deletion(source):
+            source = None
         data = [mapping.serialize_source(source)] if source else []
         return JsonResponse({'data': data})
 
 
 class SourceDetailView(BridgeView):
-    '''GET /sources/{sourceUuid} -- getSource.'''
+    '''
+        GET /sources/{sourceUuid} -- getSource. Contract 1.4.0: while a
+        deleted source's media are still being removed, its uuid answers
+        with normalizedState `deleting` (the hidden row's data under the
+        deleted uuid); 404 once TubeSync's task has finished.
+    '''
 
     def get(self, request, source_uuid, *args, **kwargs):
         request_id = request._bridge_request_id
         source, error = _get_source_or_error(source_uuid, request_id)
         if error:
-            return error
+            pending = deletion.pending_deletion_for_uuid(source_uuid)
+            if pending is None:
+                return error
+            return JsonResponse(serialize_deleting_source(source_uuid, pending))
+        if deletion.is_pending_deletion(source):
+            # The hidden row's own uuid is not a source anyone created.
+            return _source_not_found(request_id)
         return JsonResponse(mapping.serialize_source(source))
+
+
+def serialize_deleting_source(source_uuid, media_source):
+    body = mapping.serialize_source(media_source)
+    body['uuid'] = str(uuid.UUID(str(source_uuid)))
+    body['normalizedState'] = 'deleting'
+    return body
 
 
 class SourceMediaView(BridgeView):

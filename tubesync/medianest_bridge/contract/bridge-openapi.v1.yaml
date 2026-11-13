@@ -2,14 +2,20 @@
 #
 # Canonical source: KingInYellows/medianest,
 #   docs/planning/tubesync-integration/bridge-openapi.v1.yaml
-#   @ 3e57252260c520ec34fa4237592d49e0f7653442
-#   (2026-11-09, the squash merge of MediaNest #3100 to main; its contract
-#   file is byte-identical to the pre-merge branch copy 133dc07 first
-#   vendored here).
-#   Contract version 1.3.0 (MED-635): adds the OPTIONAL, nullable
-#   Source.title, the channel/playlist title this bridge resolves for a
-#   source (the tvshow.nfo title). It does not join Source.required; no
-#   path or other response changed.
+#   @ MediaNest PR #3161 branch copy 2a66f4e (MED-657; replace with the
+#   squash-merge SHA once #3161 merges -- the body below is byte-identical
+#   to that branch copy).
+#   Contract version 1.4.0 (MED-657, ADR-0022): adds DELETE
+#   /sources/{sourceUuid}?deleteFiles=<bool>, DELETE /folders/{sourceKey},
+#   the SourceDeletion and FolderDeletion schemas, the SourceKey parameter,
+#   Error.code SOURCE_DELETING and FOLDER_NOT_FOUND, Source.normalizedState
+#   `deleting`, and the OPTIONAL Capabilities.deleteSourceFiles.
+#   (Previous re-vendor: 3e57252260c520ec34fa4237592d49e0f7653442,
+#   2026-11-09, the squash merge of MediaNest #3100 to main. Contract
+#   version 1.3.0 (MED-635): adds the OPTIONAL, nullable Source.title, the
+#   channel/playlist title this bridge resolves for a source (the
+#   tvshow.nfo title). It does not join Source.required; no path or other
+#   response changed.)
 #   (Previous re-vendor: 22a5062f1bb4d2d260c3dd551f1fa6706b3cfe5b,
 #   2026-11-06, the squash merge of MediaNest #3082 to main; its contract
 #   file is byte-identical to the pre-merge branch copy first vendored
@@ -65,7 +71,7 @@
 openapi: 3.1.0
 info:
   title: MediaNest TubeSync Bridge API
-  version: "1.3.0"
+  version: "1.4.0"
   summary: >-
     Slice-1 minimal server-to-server bridge exposed by the medianest_bridge
     Django app inside the KingInYellows/tubesync fork. Consumed only by the
@@ -80,6 +86,10 @@ info:
     as deferred in docs/planning/tubesync-integration/PR-ROADMAP.md and
     ADR-0006. This is a normative contract: request/response shapes here are
     load-bearing for T1-T3 (tubesync fork) and M3-M4 (MediaNest) implementers.
+    Contract 1.4.0 (MED-657, ADR-0022) adds DELETE /sources/{sourceUuid} and
+    DELETE /folders/{sourceKey}, so MediaNest can remove a source and, for
+    admins only, its downloaded files. Both are optional, capability-gated
+    additions (Capabilities.deleteSource, Capabilities.deleteSourceFiles).
 externalDocs:
   description: ADR-0006 and the reconciled technical specification
   url: ../../../docs/adr/ADR-0006-tubesync-as-youtube-acquisition-provider.md
@@ -333,7 +343,9 @@ paths:
         POST /sources, and for re-resolving a stale
         ProviderLink.externalSourceId. Exactly one of `key` MUST be
         supplied; canonical key uniqueness bounds the result to zero or one
-        source.
+        source. Contract 1.4.0: a source that is being deleted (by
+        DELETE /sources/{sourceUuid} or in TubeSync's own UI) is not
+        returned here; GET /sources/{sourceUuid} reports it as `deleting`.
       parameters:
         - name: key
           in: query
@@ -416,6 +428,10 @@ paths:
             SOURCE_CONFLICT — a source with this canonical `key` already
             exists. The response body's `existingSourceUuid` MUST be
             adopted by the caller rather than treated as a failure.
+            Contract 1.4.0 adds SOURCE_DELETING (retryable, no
+            `existingSourceUuid`): the source with this key is still being
+            deleted. Nothing was created; the caller retries once GET
+            /sources/{sourceUuid} for the deleted uuid returns 404.
           content:
             application/json:
               schema:
@@ -452,6 +468,64 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+    delete:
+      tags: [sources]
+      operationId: deleteSource
+      summary: Remove a source from TubeSync, keeping or deleting its files
+      description: >-
+        Contract 1.4.0 (MED-657, ADR-0022). Runs TubeSync's own source
+        delete (the logic behind its UI's delete button): the source stops
+        indexing and downloading at once, its uuid answers this route and
+        GET /sources/{sourceUuid} with state `deleting`, and a TubeSync
+        background task then removes its media rows. When that task ends,
+        GET /sources/{sourceUuid} returns 404 SOURCE_NOT_FOUND.
+
+
+        With `deleteFiles=false` (the default) no file is touched, even on
+        a source whose TubeSync setting "delete files on disk" is on. The
+        folder stays until DELETE /folders/{sourceKey}. With
+        `deleteFiles=true` the background task also deletes the source's
+        whole download folder.
+
+
+        Idempotent while the deletion runs: a repeat call returns 202 with
+        the same body and does nothing new; its `deleteFiles` field reports
+        what the first call asked for, not the repeat's query. A caller
+        that wants the files gone after a keep-files delete calls DELETE
+        /folders/{sourceKey} once this uuid returns 404. A uuid that never
+        existed, or whose deletion has finished, is 404 SOURCE_NOT_FOUND.
+      parameters:
+        - $ref: "#/components/parameters/SourceUuid"
+        - name: deleteFiles
+          in: query
+          required: false
+          description: >-
+            `true` also deletes the source's download folder; `false` or
+            absent keeps every file. Any other value is 400 SOURCE_INVALID.
+          schema:
+            type: boolean
+            default: false
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "202":
+          description: Deletion accepted, or already running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SourceDeletion"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReadOnly"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
   /sources/{sourceUuid}/sync:
     post:
       tags: [sources]
@@ -486,6 +560,71 @@ paths:
           $ref: "#/components/responses/ReadOnly"
         "404":
           $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /folders/{sourceKey}:
+    delete:
+      tags: [sources]
+      operationId: deleteSourceFolder
+      summary: Delete the download folder of a source that is already gone
+      description: >-
+        Contract 1.4.0 (MED-657, ADR-0022). Deletes the folder
+        `acq-src-<sourceKey>` (the name MediaNest gives every source it
+        creates) under the bridge's download root: under the video and the
+        audio download directories when TubeSync files sources by type, or
+        at the root when it does not. Only that exact folder name is ever
+        deleted, so this route cannot reach a folder MediaNest did not
+        create.
+
+
+        Refused with 409 SOURCE_CONFLICT (with `existingSourceUuid`) while
+        any live source uses that key or folder, and with 409
+        SOURCE_DELETING (retryable) while one is still being deleted.
+        Returns 404 FOLDER_NOT_FOUND when no such folder exists, which a
+        caller treats as "nothing left on disk". The folder is moved out of
+        the library at once and its contents are removed in the
+        background, so a media server scan right after a 200 already sees
+        it gone.
+      parameters:
+        - $ref: "#/components/parameters/SourceKey"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: Folder removed from the library.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FolderDeletion"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReadOnly"
+        "404":
+          description: FOLDER_NOT_FOUND — no folder for this key exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            SOURCE_CONFLICT (a live source still uses this key or folder;
+            `existingSourceUuid` names it) or SOURCE_DELETING (a source with
+            this key is still being deleted; retry later).
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Error"
+                  - type: object
+                    properties:
+                      existingSourceUuid:
+                        type: string
+                        format: uuid
         "429":
           $ref: "#/components/responses/RateLimited"
 
@@ -541,6 +680,18 @@ components:
       schema:
         type: string
         format: uuid
+    SourceKey:
+      name: sourceKey
+      in: path
+      required: true
+      description: >-
+        A source's canonical key (a YouTube channel or playlist id). Only
+        letters, digits, `_` and `-`.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 92
+        pattern: "^[A-Za-z0-9_-]+$"
     CorrelationId:
       name: X-Correlation-ID
       in: header
@@ -706,6 +857,11 @@ components:
             # bounded body (MEDIANEST_BRIDGE_MAX_BODY_BYTES) on every request.
             - REQUEST_TOO_LARGE
             - INTERNAL_PROVIDER_ERROR
+            # Contract 1.4.0 (MED-657): a source with this key is still being
+            # deleted (409, retryable), and DELETE /folders/{sourceKey} found
+            # no folder (404).
+            - SOURCE_DELETING
+            - FOLDER_NOT_FOUND
         detail:
           type: string
         requestId:
@@ -885,6 +1041,17 @@ components:
         deleteSource:
           type: boolean
           default: false
+          description: >-
+            Contract 1.4.0: DELETE /sources/{sourceUuid} with
+            `deleteFiles=false` is supported.
+        deleteSourceFiles:
+          type: boolean
+          default: false
+          description: >-
+            OPTIONAL (contract 1.4.0, MED-657). DELETE /sources/{sourceUuid}
+            with `deleteFiles=true` and DELETE /folders/{sourceKey} are
+            supported. Bridges older than 1.4.0 omit it; a consumer treats a
+            missing value as false.
         syncSource:
           type: boolean
         readMedia:
@@ -1154,6 +1321,12 @@ components:
             mapping (native delete is rename-and-replace, not a state
             transition) and are also never emitted by the bridge in slice 1
             — a MediaNest-side timeout/lookup miss is the deleted signal.
+            Contract 1.4.0: `deleting` is emitted by GET
+            /sources/{sourceUuid} while a source deleted through DELETE
+            /sources/{sourceUuid} or TubeSync's own UI is still being
+            removed; its 404 is the deleted signal. `deleted` is still never
+            emitted. A consumer older than 1.4.0 maps `deleting` to
+            `unknown`.
           enum:
             - provisioning
             - active
@@ -1161,6 +1334,7 @@ components:
             - disabled
             - failed
             - unknown
+            - deleting
         lastCrawlAt:
           type: [string, "null"]
           format: date-time
@@ -1270,3 +1444,42 @@ components:
               type: integer
             total:
               type: integer
+
+    SourceDeletion:
+      type: object
+      description: >-
+        Contract 1.4.0 (MED-657). Response of DELETE /sources/{sourceUuid}.
+      required: [uuid, canonicalKey, directory, deleteFiles, normalizedState]
+      properties:
+        uuid:
+          type: string
+          format: uuid
+          description: The uuid the caller deleted (the path parameter).
+        canonicalKey:
+          type: string
+        directory:
+          type: string
+        deleteFiles:
+          type: boolean
+          description: >-
+            Whether this deletion also deletes the download folder, as the
+            first call asked.
+        normalizedState:
+          type: string
+          enum: [deleting]
+
+    FolderDeletion:
+      type: object
+      description: >-
+        Contract 1.4.0 (MED-657). Response of DELETE /folders/{sourceKey}.
+      required: [canonicalKey, folders]
+      properties:
+        canonicalKey:
+          type: string
+        folders:
+          type: array
+          description: >-
+            Each removed folder, relative to the bridge's download root
+            (e.g. `video/acq-src-UCabc`). Never an absolute path.
+          items:
+            type: string

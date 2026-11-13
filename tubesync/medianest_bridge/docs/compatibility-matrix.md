@@ -96,12 +96,13 @@ something asserted here.
 | `POST /sources` | T3 | Source creation/adoption. |
 | `POST /sources/{sourceUuid}/sync` | T3 | Sync-now trigger. |
 | `POST /sources/resolve` (contract 1.1.0, optional) | MED-589 (`@handle`/`c/`/`user/` URL -> `UC...` ID, one yt-dlp lookup on TubeSync's egress; `resolveChannelHandle: true`) | Channel-handle URL submission: MediaNest calls it only when `/capabilities` reports the flag. |
+| `DELETE /sources/{sourceUuid}?deleteFiles=<bool>`, `DELETE /folders/{sourceKey}` (contract 1.4.0, optional) | MED-657 (TubeSync's own delete via `sync/source_delete.py`, files kept by default; folder delete limited to `acq-src-<key>`; `deleteSource` and `deleteSourceFiles: true`) | Removing a YouTube source (MediaNest ADR-0022): MediaNest offers each action only when `/capabilities` reports its flag. |
 | `GET /sources/{sourceUuid}/media` | T2 (list), response shape ADR-0006 §4-pinned | **M6's Plex reconciliation consumes this directly, per ADR-0006 §4** -- this response shape "MUST NOT change without an ADR amendment" (contract's own words, quoted, not paraphrased). |
 
 Endpoints the contract explicitly defers (out of v1.0.0 scope, per the
-contract's own `info.description`): `PATCH`/`DELETE` sources, media
-retry/skip/enable, task listing. None of these exist anywhere in this
-fork; `GET /capabilities`' `false` flags for each are the bridge's own
+contract's own `info.description`): `PATCH` sources, media
+retry/skip/enable, task listing (`DELETE` sources arrived in contract
+1.4.0, above). None of these exist anywhere in this fork; `GET /capabilities`' `false` flags for each are the bridge's own
 truthful statement of that (see `medianest_bridge/README.md`'s
 "Endpoints" section).
 

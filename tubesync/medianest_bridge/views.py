@@ -132,6 +132,16 @@ def _log_mutation_audit(request, response, request_id, kwargs):
         code = _response_json_field(response, 'code') or str(response.status_code)
         outcome = f'rejected_{code}'
     source_uuid = kwargs.get('source_uuid') or _response_json_field(response, 'uuid')
+    source_key = kwargs.get('source_key')
+    if source_key:
+        # DELETE /folders/{sourceKey} (contract 1.4.0) names a key, not a
+        # uuid. Appended only for that route so every older audit line
+        # keeps its exact shape.
+        log.info(
+            'medianest_bridge: mutation_audit route=%s outcome=%s source_key=%s request_id=%s',
+            request.path, outcome, source_key, request_id,
+        )
+        return
     log.info(
         'medianest_bridge: mutation_audit route=%s outcome=%s source_uuid=%s request_id=%s',
         request.path, outcome, source_uuid or '-', request_id,
@@ -370,8 +380,8 @@ class CapabilitiesView(BridgeView):
             # T2: read endpoints. T3: validate/create/sync-now (both
             # channel and playlist go through the same SourceForm-based
             # validate/create logic, so both flags flip together, not
-            # independently). updateSource/disableSource/deleteSource
-            # stay false -- no such endpoints exist anywhere in this app.
+            # independently). updateSource/disableSource stay false -- no
+            # such endpoints exist anywhere in this app.
             'readSources': True,
             'validateChannelSource': True,
             'validatePlaylistSource': True,
@@ -379,7 +389,11 @@ class CapabilitiesView(BridgeView):
             'createPlaylistSource': True,
             'updateSource': False,
             'disableSource': False,
-            'deleteSource': False,
+            # Contract 1.4.0 (MED-657): DELETE /sources/{uuid} with files
+            # kept, and with files deleted plus DELETE /folders/{key}
+            # (views_delete.py).
+            'deleteSource': True,
+            'deleteSourceFiles': True,
             'syncSource': True,
             'readMedia': True,
             'retryMedia': False,

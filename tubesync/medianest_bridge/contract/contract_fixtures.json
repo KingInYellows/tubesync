@@ -2,7 +2,7 @@
   "_provenance": {
     "note": "Generated once from the vendored YAML via PyYAML (a transitive dependency of hat-syslog, not a new Pipfile dependency) and checked in so bridge tests can assert contract shape using only the stdlib json module. test_contract_conformance.py sha256-locks this file against the YAML above and, when PyYAML happens to be importable in the test environment, additionally cross-checks this fixture was derived correctly. Regenerate together with the sha256 whenever the vendored YAML is re-vendored. Includes each property's \"pattern\" (e.g. MediaItem.relativePath's anti-absolute-path regex) so conformance tests can enforce it, not just required/enum.",
     "source": "medianest_bridge/contract/bridge-openapi.v1.yaml",
-    "source_sha256": "c022d4df27b84b096a6d6614fcd51118977d8dfc5957d7122f97f45b078f405f"
+    "source_sha256": "04b75fd7011bf57dbaa0cbebc2acec64075e33c6d46e3f96b3128f910fee00bd"
   },
   "health_ready_component_names": [
     "application",
@@ -56,7 +56,9 @@
             "MEDIA_NOT_FOUND",
             "RATE_LIMITED",
             "REQUEST_TOO_LARGE",
-            "INTERNAL_PROVIDER_ERROR"
+            "INTERNAL_PROVIDER_ERROR",
+            "SOURCE_DELETING",
+            "FOLDER_NOT_FOUND"
           ],
           "pattern": null
         },
@@ -252,6 +254,11 @@
           "pattern": null
         },
         "deleteSource": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "deleteSourceFiles": {
           "type": "boolean",
           "enum": null,
           "pattern": null
@@ -561,7 +568,8 @@
             "syncing",
             "disabled",
             "failed",
-            "unknown"
+            "unknown",
+            "deleting"
           ],
           "pattern": null
         },
@@ -756,6 +764,62 @@
             "string",
             "null"
           ],
+          "enum": null,
+          "pattern": null
+        }
+      }
+    },
+    "SourceDeletion": {
+      "required": [
+        "uuid",
+        "canonicalKey",
+        "directory",
+        "deleteFiles",
+        "normalizedState"
+      ],
+      "properties": {
+        "uuid": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "canonicalKey": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "directory": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "deleteFiles": {
+          "type": "boolean",
+          "enum": null,
+          "pattern": null
+        },
+        "normalizedState": {
+          "type": "string",
+          "enum": [
+            "deleting"
+          ],
+          "pattern": null
+        }
+      }
+    },
+    "FolderDeletion": {
+      "required": [
+        "canonicalKey",
+        "folders"
+      ],
+      "properties": {
+        "canonicalKey": {
+          "type": "string",
+          "enum": null,
+          "pattern": null
+        },
+        "folders": {
+          "type": "array",
           "enum": null,
           "pattern": null
         }
