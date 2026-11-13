@@ -63,8 +63,8 @@ create outcome that its reconciler settles.
 
 ## Before tagging
 
-- Merge MediaNest #3161 first and update the vendored contract header and
-  the README's "Contract" paragraph to its squash-merge SHA.
+- Done: MediaNest #3161 merged as `89c6fc651aee`; the vendored contract
+  header and the README's "Contract" paragraph name that commit.
 - Tag `bridge-v1.4.0` on the `main` commit that includes #69 and this
   release prep. That triggers `medianest-bridge-release.yaml` to publish
   `ghcr.io/kinginyellows/tubesync:bridge-v1.4.0`.
