@@ -711,7 +711,9 @@ each call writes a `mutation_audit` line (the folder route logs
   concurrent sweep never removes a folder that may still go back; a
   `pending-` entry older than 10 minutes (a crash mid-request) is moved
   back to its folder, or to `kept-...` if the folder exists again, and
-  never deleted. Returns `200`
+  never deleted. Each call does that recovery first; while a younger
+  `pending-` entry for the key exists it answers `409 SOURCE_DELETING`
+  (retryable), never `404`. Returns `200`
   `{"canonicalKey", "folders": ["video/acq-src-..."]}` (paths relative to
   the download root).
 

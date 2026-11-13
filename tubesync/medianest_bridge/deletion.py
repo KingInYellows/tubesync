@@ -295,6 +295,19 @@ def recover_stale_pending():
             log.exception('medianest_bridge: could not recover %s', entry.name)
 
 
+def pending_moves(key):
+    '''
+        `pending-` entries for this key that are not stale yet: a request
+        still checking its claim, or one that crashed less than
+        PENDING_STALE_SECONDS ago. Either way the folder may still go back.
+    '''
+    name = folder_name(key)
+    return [
+        entry for _, entry in _pending_entries()
+        if entry.name[len(PENDING_PREFIX):-33] == name
+    ]
+
+
 def leftover_trash(*, recover=True):
     '''Entries a previous, interrupted background removal left behind.'''
     if recover:
