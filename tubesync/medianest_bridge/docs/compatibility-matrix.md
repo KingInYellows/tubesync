@@ -58,7 +58,8 @@ see that section for the current, authoritative list and line counts).
 `docs/planning/tubesync-integration/bridge-openapi.v1.yaml`), vendored
 read-only into `medianest_bridge/contract/bridge-openapi.v1.yaml`. `info.version:
 "1.0.0"` inside that file at that commit; the current vendored copy is
-`"1.3.0"` (MED-635: adds the optional, nullable `Source.title`; 1.2.0,
+`"1.4.0"` (MED-657: adds `DELETE /sources/{sourceUuid}` and `DELETE
+/folders/{sourceKey}`; 1.3.0, MED-635, added the optional, nullable `Source.title`; 1.2.0,
 MED-623/MED-624, added `ComponentStatus.reason` and `latestVersion` -- see
 the README's "Contract" section). This is the contract version, not the release
 version: `GET /meta`'s `bridgeVersion` field (`config.py::BRIDGE_VERSION`)

@@ -196,6 +196,51 @@ class DeleteSourceEndToEndTestCase(BridgeTransactionTestCase):
             self.assertFalse(folder.exists())
             self.assertFalse(Source.objects.filter(key=KEY).exists())
 
+    def test_longest_key_fits_the_temporary_rename(self):
+        # A 92-character key gives a 100-character folder name; TubeSync's
+        # `/deleted` and `[Deleting] ` affixes must not overflow the
+        # 100-character columns, and no stray folder may be left.
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        long_key = 'UC' + 'x' * 90
+        long_folder = f'acq-src-{long_key}'
+        self.assertEqual(len(long_folder), 100)
+        with temp_download_root():
+            source = make_source(key=long_key, name=long_folder, directory=long_folder)
+            video = make_downloaded_media(source)
+            folder = video.parent
+            seen = {}
+            original_delete = Source.delete
+
+            def spy(instance, *args, **kwargs):
+                if instance.pk == source.pk:
+                    seen.update(
+                        key=instance.key, name=instance.name, directory=instance.directory,
+                    )
+                return original_delete(instance, *args, **kwargs)
+
+            with patch.object(Source, 'delete', spy):
+                response, _ = self.delete(source.pk, 'false')
+            self.assertEqual(response.status_code, 202)
+            for field, value in seen.items():
+                self.assertLessEqual(len(value), 100, field)
+            self.assertTrue(seen['directory'].endswith('/deleted'))
+            self.assertTrue(seen['name'].startswith('[Deleting] '))
+            self.assertTrue(video.exists())
+            self.assertEqual(
+                sorted(p.name for p in folder.parent.iterdir()), [long_folder],
+            )
+
+    def test_clone_does_not_fetch_channel_images(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root():
+            source = make_source(copy_channel_images=True)
+            make_downloaded_media(source)
+            with patch('sync.signals.download_source_images') as download:
+                response, _ = self.delete(source.pk, 'false')
+            self.assertEqual(response.status_code, 202)
+            download.assert_not_called()
+            self.assertFalse(Source.objects.get(key=KEY).copy_channel_images)
+
     def test_deleting_state_until_the_task_finishes(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
         with temp_download_root():
@@ -322,12 +367,14 @@ class DeleteSourceRequestTestCase(BridgeTestCase):
     def test_bad_delete_files_value_is_400(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
         source = make_source()
-        response = self.client.delete(
-            source_url(source.pk) + '?deleteFiles=maybe', **self.auth_header(),
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(json.loads(response.content)['code'], 'SOURCE_INVALID')
-        self.assertTrue(Source.objects.filter(pk=source.pk).exists())
+        for value in ('maybe', ''):
+            with self.subTest(value=value):
+                response = self.client.delete(
+                    source_url(source.pk) + f'?deleteFiles={value}', **self.auth_header(),
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(json.loads(response.content)['code'], 'SOURCE_INVALID')
+                self.assertTrue(Source.objects.filter(pk=source.pk).exists())
 
     def test_read_only_bridge_refuses(self):
         self.enable_bridge()  # MEDIANEST_BRIDGE_READ_ONLY defaults to true
@@ -386,7 +433,7 @@ class DeleteFolderRequestTestCase(BridgeTestCase):
 
     def test_invalid_keys_are_400(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
-        for key in ('..', 'a.b', 'UC..x', 'x' * 93, 'a b', 'UC%00'):
+        for key in ('..', 'a.b', 'UC..x', 'x' * 93, 'a b', 'UC%00', 'UCabc%0A'):
             with self.subTest(key=key):
                 response = self.client.delete(folder_url(key), **self.auth_header())
                 self.assertEqual(response.status_code, 400, key)
@@ -437,7 +484,7 @@ class DeleteFolderRequestTestCase(BridgeTestCase):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
         with temp_download_root(), run_background_inline():
             video_dir = deletion.folder_parents()[0]
-            leftover = video_dir / deletion.TRASH_DIR_NAME / 'acq-src-old-abc'
+            leftover = video_dir / deletion.TRASH_DIR_NAME / ('acq-src-old-' + '0123456789abcdef0123456789abcdef')
             leftover.mkdir(parents=True)
             (leftover / 'a.mkv').write_bytes(b'x')
             (video_dir / FOLDER).mkdir()
@@ -452,7 +499,7 @@ class DeleteFolderRequestTestCase(BridgeTestCase):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
         with temp_download_root(), run_background_inline():
             video_dir = deletion.folder_parents()[0]
-            leftover = video_dir / deletion.TRASH_DIR_NAME / f'{FOLDER}-abc'
+            leftover = video_dir / deletion.TRASH_DIR_NAME / f'{FOLDER}-{'0123456789abcdef0123456789abcdef'}'
             leftover.mkdir(parents=True)
             (leftover / 'a.mkv').write_bytes(b'x')
             response = self.client.delete(folder_url(KEY), **self.auth_header())
@@ -483,6 +530,59 @@ class DeleteFolderRequestTestCase(BridgeTestCase):
                     self.assertEqual(body['existingSourceUuid'], str(other.pk))
                     self.assertTrue((video_dir / FOLDER / 'keep.mkv').exists())
                     other.delete()
+
+    def test_source_created_during_the_move_gets_its_folder_back(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root(), run_background_inline():
+            video_dir = deletion.folder_parents()[0]
+            target = video_dir / FOLDER
+            target.mkdir(parents=True)
+            (target / 'keep.mkv').write_bytes(b'x')
+            original_delete_folders = deletion.delete_folders
+            created = {}
+
+            def racing_delete(folders, **kwargs):
+                # A POST /sources for the same key lands between the
+                # holder check and the rename (no signals: nothing else
+                # touches the folder).
+                created['source'] = Source.objects.bulk_create([Source(
+                    source_type=Val(YouTube_SourceType.CHANNEL_ID),
+                    key=KEY, name=FOLDER, directory=FOLDER,
+                )])[0]
+                return original_delete_folders(folders, **kwargs)
+
+            with patch.object(deletion, 'delete_folders', racing_delete):
+                response = self.client.delete(folder_url(KEY), **self.auth_header())
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(json.loads(response.content)['code'], 'SOURCE_CONFLICT')
+            self.assertTrue((target / 'keep.mkv').exists())
+            self.assertEqual(
+                list((video_dir / deletion.TRASH_DIR_NAME).iterdir()), [],
+            )
+
+    def test_trash_sweep_leaves_foreign_entries(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root(), run_background_inline():
+            video_dir = deletion.folder_parents()[0]
+            foreign = video_dir / deletion.TRASH_DIR_NAME / 'someone-elses-folder'
+            foreign.mkdir(parents=True)
+            (video_dir / FOLDER).mkdir()
+            response = self.client.delete(folder_url(KEY), **self.auth_header())
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(foreign.is_dir())
+
+    def test_video_dir_symlinked_out_of_the_root_is_refused(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root(), tempfile.TemporaryDirectory() as outside:
+            outside = Path(outside)
+            (outside / FOLDER).mkdir()
+            (outside / FOLDER / 'keep.mkv').write_bytes(b'x')
+            video_dir = deletion.folder_parents()[0]
+            video_dir.parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(outside, video_dir)
+            response = self.client.delete(folder_url(KEY), **self.auth_header())
+            self.assertEqual(response.status_code, 400)
+            self.assertTrue((outside / FOLDER / 'keep.mkv').exists())
 
     def test_without_directory_prefix_uses_the_root(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')

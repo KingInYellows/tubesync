@@ -193,9 +193,14 @@ Fifteen upstream files are touched at fifteen points (`settings.py` twice; point
    moved, unchanged, into the new `sync/source_delete.py`
    (`prepare_source_for_deletion()`); the view now calls it, so the
    bridge's `DELETE /sources/{uuid}` runs TubeSync's own delete instead of
-   a copy. The moved function gains one branch the view never takes:
-   `keep_files=True` turns off the hidden copy's `delete_files_on_disk`
-   and `delete_removed_media` and drops a stale `.to_be_removed` marker,
+   a copy. The moved function gains branches the view never takes.
+   `bridge=True` renames the original with a queryset update (no
+   `source_pre_save`, so the folder is not moved into `<dir>/deleted`),
+   shortens the temporary name, key and directory to their 100-character
+   columns, and turns off the hidden copy's `copy_channel_images` so no
+   artwork is fetched into the folder. `keep_files=True` (bridge only)
+   also turns off the hidden copy's `delete_files_on_disk` and
+   `delete_removed_media` and drops a stale `.to_be_removed` marker,
    because `media_post_delete` otherwise deletes every downloaded video of
    a source whose "delete files on disk" box is ticked, even when the
    caller asked to keep files. On an upstream merge that touches
@@ -690,14 +695,17 @@ each call writes a `mutation_audit` line (the folder route logs
   `TUBESYNC_DIRECTORY_PREFIX` is off). The key must be 1-92 of
   `[A-Za-z0-9_-]` (else `400`). `409 SOURCE_CONFLICT` with
   `existingSourceUuid` while a live source uses the key or folder (also
-  compared as resolved paths, so `./acq-src-x` or a subfolder counts), `409
+  compared as resolved paths, so `./acq-src-x` or a subfolder counts, and
+  checked again after the move: a source created meanwhile gets its folder
+  back and the call answers `409`), `409
   SOURCE_DELETING` while one is still being deleted, `400` for a folder
-  that is a symlink, `404 FOLDER_NOT_FOUND` when nothing is there. The
+  that is a symlink or resolves outside the download root, `404 FOLDER_NOT_FOUND` when nothing is there. The
   folder is first renamed into a `.medianest-trash/` directory next to it
   (one atomic rename, so a Plex scan right after the `200` already sees
   it gone) and then removed by a background thread; a later call also
-  sweeps anything an interrupted removal left there, including a retry that
-  gets the `404`. Returns `200`
+  sweeps anything an interrupted removal left there (only entries named
+  like its own, `acq-src-<key>-<32 hex>`), including a retry that gets the
+  `404`. Returns `200`
   `{"canonicalKey", "folders": ["video/acq-src-..."]}` (paths relative to
   the download root).
 

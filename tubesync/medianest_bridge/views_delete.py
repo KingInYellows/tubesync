@@ -26,7 +26,7 @@ from .views_sources import SourceDetailView, _invalid_request, _source_not_found
 from .views_write import source_deleting
 
 _TRUE = frozenset({'true', '1'})
-_FALSE = frozenset({'false', '0', ''})
+_FALSE = frozenset({'false', '0'})
 
 
 def _parse_delete_files(request):
@@ -141,7 +141,25 @@ class FolderDeleteView(BridgeView):
                 retryable=False,
             )
 
-        removed = deletion.delete_folders(folders)
+        # Sources are created without any lock the folder route could share
+        # (SQLite has no row locks to take), so check again once the
+        # folders are in the trash: a source created in between gets its
+        # folder back and this call answers 409.
+        def claimed():
+            return bool(
+                deletion.sources_using_folder(source_key).exists()
+                or deletion.sources_overlapping(folders)
+            )
+
+        try:
+            removed = deletion.delete_folders(folders, claimed=claimed)
+        except deletion.FolderClaimed:
+            holders = list(deletion.sources_using_folder(source_key))
+            holders += deletion.sources_overlapping(folders)
+            refusal = _in_use(holders, request_id)
+            if refusal is not None:
+                return refusal
+            return source_deleting(request_id)
         log.info(
             'medianest_bridge: folder deleted source_key=%s folders=%s request_id=%s',
             source_key, ','.join(removed), request_id,

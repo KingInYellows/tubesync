@@ -37,6 +37,8 @@ _KEY_RE = re.compile(r'^[A-Za-z0-9_-]+$')
 # of this name next to them (same filesystem, so the move is an atomic
 # rename). The leading dot keeps media servers from scanning it.
 TRASH_DIR_NAME = '.medianest-trash'
+# The only entries the trash sweep removes: what delete_folders() put there.
+_TRASH_ENTRY_RE = re.compile(r'acq-src-[A-Za-z0-9_-]+-[0-9a-f]{32}')
 
 
 def parse_uuid(value):
@@ -114,7 +116,7 @@ def serialize_deletion(source_uuid, media_source):
 
 
 def valid_folder_key(key):
-    return bool(key) and len(key) <= MAX_KEY_LENGTH and bool(_KEY_RE.match(key))
+    return bool(key) and len(key) <= MAX_KEY_LENGTH and bool(_KEY_RE.fullmatch(key))
 
 
 def folder_name(key):
@@ -202,6 +204,9 @@ def existing_folders(key):
         resolved = candidate.resolve()
         if resolved.parent != parent.resolve():
             raise FolderRefused(f'{name} does not resolve inside its download directory')
+        if not resolved.is_relative_to(download_root()):
+            # e.g. DOWNLOAD_VIDEO_DIR is itself a symlink out of the root
+            raise FolderRefused(f'{name} does not resolve inside the download root')
         found.append(resolved)
     return found
 
@@ -250,7 +255,10 @@ def leftover_trash():
     for parent in folder_parents():
         trash = parent.resolve() / TRASH_DIR_NAME
         if trash.is_dir() and not trash.is_symlink():
-            entries.extend(e for e in trash.iterdir() if not e.is_symlink())
+            entries.extend(
+                e for e in trash.iterdir()
+                if not e.is_symlink() and _TRASH_ENTRY_RE.fullmatch(e.name)
+            )
     return entries
 
 
@@ -268,23 +276,49 @@ def sweep_leftover_trash(*, background=True):
     return len(pending)
 
 
-def delete_folders(folders, *, background=True):
+class FolderClaimed(Exception):
+    '''A source started using the folder while it was being moved away.'''
+
+
+def _restore(moves):
+    for original, target in moves:
+        if original.exists():
+            # Something already recreated it (the new source's own
+            # make_directory()); leave the moved copy in the trash for a
+            # person to look at rather than merge two trees.
+            log.warning(
+                'medianest_bridge: %s was recreated while being deleted; '
+                'its old contents stay in %s', original.name, target,
+            )
+            continue
+        os.rename(target, original)
+
+
+def delete_folders(folders, *, background=True, claimed=None):
     '''
         Moves each folder into the trash directory (an atomic rename, so the
         library no longer shows it), then removes the trash in a background
         thread, together with anything an interrupted earlier removal left
         there. Returns the folders' paths relative to the download root.
+
+        `claimed`, when given, is called after the moves: when it returns
+        true (a source was created for this folder in the meantime), the
+        folders are moved back and FolderClaimed is raised.
     '''
     removed = []
-    moved = []
+    moves = []
     for folder in folders:
         relative = _relative_to_root(folder)
         # The trash sits next to the folder, so the move never crosses a
         # filesystem boundary.
         target = _trash_dir(folder.parent) / f'{folder.name}-{uuid_module.uuid4().hex}'
         os.rename(folder, target)
-        moved.append(target)
+        moves.append((folder, target))
         removed.append(relative)
+    if claimed is not None and claimed():
+        _restore(moves)
+        raise FolderClaimed()
+    moved = [target for _, target in moves]
     pending = moved + [p for p in leftover_trash() if p not in moved]
     if pending and background:
         _remove_in_background(pending)
