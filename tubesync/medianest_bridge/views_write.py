@@ -5,7 +5,7 @@
     BridgeView.dispatch() every T1/T2 route already uses; nothing here
     adds a separate read-only check.
 
-    No deletion of any kind exists in this app, here or elsewhere.
+    Deletion (contract 1.4.0) lives in views_delete.py.
 
     Both ValidateSourceView.post and CreateSourceView.post check
     MEDIANEST_BRIDGE_SOURCE_DEFAULTS via _source_defaults_or_error()
@@ -31,7 +31,7 @@ from django.http import JsonResponse
 from common.logger import log
 from sync.models import Source
 
-from . import config, mapping
+from . import config, deletion, mapping
 from .errors import error_response
 from .request_schemas import validate_create_source_request, validate_validate_source_request
 from .source_forms import (
@@ -378,6 +378,11 @@ class CreateSourceView(SourceLookupView):
 
 
 def _conflict(request_id, existing_source):
+    if deletion.is_pending_deletion(existing_source):
+        # Contract 1.4.0: the row holding this key is what is left of a
+        # deleted source. Adopting it would bind MediaNest to a source that
+        # disappears when TubeSync's delete task finishes.
+        return source_deleting(request_id)
     return error_response(
         status=409,
         code='SOURCE_CONFLICT',
@@ -386,6 +391,20 @@ def _conflict(request_id, existing_source):
         request_id=request_id,
         retryable=False,
         extra={'existingSourceUuid': str(existing_source.pk)},
+    )
+
+
+def source_deleting(request_id):
+    return error_response(
+        status=409,
+        code='SOURCE_DELETING',
+        title='Source is being deleted',
+        detail=(
+            'A source with this key is still being deleted. Retry once '
+            'GET /sources/{sourceUuid} for the deleted uuid returns 404.'
+        ),
+        request_id=request_id,
+        retryable=True,
     )
 
 

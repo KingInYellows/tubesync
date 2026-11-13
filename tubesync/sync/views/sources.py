@@ -1,4 +1,3 @@
-import pathlib
 from django.conf import settings
 from django.http import HttpResponseNotFound, HttpResponseRedirect
 from django.views import View
@@ -14,15 +13,16 @@ from django.utils._os import safe_join
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from common.models import TaskHistory
-from common.utils import append_uri_params, mkdir_p
+from common.utils import append_uri_params
 from ..models import Source, Media
 from ..forms import ValidateSourceForm, ConfirmDeleteSourceForm, SourceForm
 from ..utils import validate_url
 from ..tasks import get_source_completed_tasks, get_error_message, index_source
-from ..choices import (Val, Fallback, IndexSchedule, SourceResolution,
+from ..choices import (Val, Fallback, SourceResolution,
                        YouTube_SourceType,
                        youtube_long_source_types, youtube_validation_urls)
 from .. import signals # noqa
+from ..source_delete import prepare_source_for_deletion
 from .. import youtube
 
 
@@ -329,41 +329,11 @@ class DeleteSourceView(DeleteView, FormMixin):
 
     def post(self, request, *args, **kwargs):
         source = self.get_object()
-        media_source = dict(
-            uuid=None,
-            index_schedule=IndexSchedule.NEVER,
-            download_media=False,
-            index_videos=False,
-            index_streams=False,
-            filter_text=str(source.pk),
-            target_schedule=source.target_schedule or timezone.now(),
-        )
-        # ruff: ignore[C401]
-        copy_fields = set(f.name for f in source._meta.fields) - set(media_source.keys())
-        for k, v in source.__dict__.items():
-            if k in copy_fields:
-                media_source[k] = v
-        media_source = Source(**media_source)
         delete_media_val = request.POST.get('delete_media', False)
         delete_media = delete_media_val is not False
-        # overload this boolean for our own use
-        media_source.delete_removed_media = delete_media
-        # adjust the directory and key on the source to be deleted
-        source.directory = source.directory + '/deleted'
-        source.key = source.key + '/deleted'
-        source.name = f'[Deleting] {source.name}'
-        source.save(update_fields={'directory', 'key', 'name'})
-        source.refresh_from_db()
-        # save the new media source now that it is not a duplicate
-        media_source.uuid = None
-        media_source.save()
-        media_source.refresh_from_db()
-        # switch the media to the new source instance
-        Media.objects.filter(source=source).update(source=media_source)
-        if delete_media:
-            directory_path = pathlib.Path(media_source.directory_path)
-            mkdir_p(directory_path)
-            (directory_path / '.to_be_removed').touch(exist_ok=True)
+        # fork delta (MED-657): the body moved to sync/source_delete.py so
+        # the MediaNest bridge runs the same delete
+        prepare_source_for_deletion(source, delete_files=delete_media)
         return super().post(request, *args, **kwargs)
 
     def get_success_url(self):

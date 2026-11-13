@@ -2,7 +2,8 @@ from django.urls import path
 
 from .views import CapabilitiesView, HealthLiveView, HealthReadyView, MetaView
 from .views_resolve import ResolveSourceView
-from .views_sources import SourceDetailView, SourceMediaView
+from .views_delete import FolderDeleteView, SourceDetailDeleteView
+from .views_sources import SourceMediaView
 from .views_write import CreateSourceView, SyncSourceView, ValidateSourceView
 
 app_name = 'medianest_bridge'
@@ -48,8 +49,10 @@ urlpatterns = [
     # SOURCE_NOT_FOUND JSON envelope (see views_sources.py's
     # _get_source_or_error), not fall through to Django's ordinary
     # URL-pattern-mismatch 404 HTML page.
+    # SourceDetailDeleteView subclasses SourceDetailView: GET is T2's
+    # getSource, DELETE is contract 1.4.0's deleteSource (MED-657).
     path('sources/<str:source_uuid>',
-         SourceDetailView.as_view(),
+         SourceDetailDeleteView.as_view(),
          name='source-detail'),
 
     path('sources/<str:source_uuid>/media',
@@ -59,5 +62,11 @@ urlpatterns = [
     path('sources/<str:source_uuid>/sync',
          SyncSourceView.as_view(),
          name='source-sync'),
+
+    # Contract 1.4.0 (MED-657). <str:...> for the same reason as above: a
+    # malformed key must reach the view and get the bridge's own JSON 400.
+    path('folders/<str:source_key>',
+         FolderDeleteView.as_view(),
+         name='folder-delete'),
 
 ]

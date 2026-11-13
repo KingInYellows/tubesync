@@ -1141,7 +1141,7 @@ class SyncSourceEndpointTestCase(BridgeTestCase):
 
 class CapabilitiesReflectsT3TestCase(BridgeTestCase):
 
-    def test_write_flags_are_true_except_update_disable_delete(self):
+    def test_write_flags_are_true_except_update_disable(self):
         self.enable_bridge()
         response = self.client.get(CAPS_URL, **self.auth_header())
         body = json.loads(response.content)
@@ -1152,7 +1152,9 @@ class CapabilitiesReflectsT3TestCase(BridgeTestCase):
         self.assertTrue(body['syncSource'])
         self.assertFalse(body['updateSource'])
         self.assertFalse(body['disableSource'])
-        self.assertFalse(body['deleteSource'])
+        # Contract 1.4.0 (MED-657): tests/test_delete_sources.py.
+        self.assertTrue(body['deleteSource'])
+        self.assertTrue(body['deleteSourceFiles'])
         # No task/retry/skip/enable/plex endpoints exist anywhere in this app.
         for flag in (
             'retryMedia', 'skipMedia', 'enableMedia', 'readTasks',
