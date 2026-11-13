@@ -97,6 +97,20 @@ def _in_use(holders, request_id):
     return None
 
 
+def _folder_move_in_flight(request_id):
+    return error_response(
+        status=409,
+        code='SOURCE_DELETING',
+        title='Folder is being deleted',
+        detail=(
+            'Another request is still deleting this folder. Retry in a few '
+            'minutes.'
+        ),
+        request_id=request_id,
+        retryable=True,
+    )
+
+
 class FolderDeleteView(BridgeView):
     '''DELETE /folders/{sourceKey} -- deleteSourceFolder.'''
 
@@ -113,6 +127,11 @@ class FolderDeleteView(BridgeView):
         # back first, so the checks below see it and a retry never answers
         # 404 (nothing left on disk) while the media is still there.
         deletion.recover_stale_pending()
+        if deletion.pending_moves(source_key):
+            # Another request moved this folder away and has not confirmed
+            # the move yet (or crashed less than ten minutes ago): the
+            # folder may still come back, so this is not a 404.
+            return _folder_move_in_flight(request_id)
 
         holders = list(deletion.sources_using_folder(source_key))
         refusal = _in_use(holders, request_id)

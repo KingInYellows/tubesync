@@ -684,6 +684,27 @@ class DeleteFolderRequestTestCase(BridgeTestCase):
             self.assertFalse((video_dir / FOLDER).exists())
             self.assertEqual(list(trash.iterdir()), [])
 
+    def test_retry_during_a_fresh_unconfirmed_move_is_retryable(self):
+        # Within ten minutes of a crash (or while another request is still
+        # checking its claim) the folder may come back: never a 404.
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root(), run_background_inline():
+            video_dir = deletion.folder_parents()[0]
+            trash = video_dir / deletion.TRASH_DIR_NAME
+            entry = trash / f'{deletion.PENDING_PREFIX}{FOLDER}-0123456789abcdef0123456789abcdef'
+            entry.mkdir(parents=True)
+            (entry / 'old.mkv').write_bytes(b'x')
+            other = trash / f'{deletion.PENDING_PREFIX}{FOLDER}x-0123456789abcdef0123456789abcdef'
+            other.mkdir()
+            response = self.client.delete(folder_url(KEY), **self.auth_header())
+            self.assertEqual(response.status_code, 409)
+            body = json.loads(response.content)
+            self.assertEqual(body['code'], 'SOURCE_DELETING')
+            self.assertTrue(body['retryable'])
+            self.assertTrue((entry / 'old.mkv').exists())
+            # another key's pending move does not block this one
+            self.assertEqual(deletion.pending_moves(KEY), [entry])
+
     def test_retry_after_crash_mid_move_still_refuses_a_claimed_folder(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
         with temp_download_root():
