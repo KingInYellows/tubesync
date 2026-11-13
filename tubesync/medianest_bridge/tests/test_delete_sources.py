@@ -667,6 +667,38 @@ class DeleteFolderRequestTestCase(BridgeTestCase):
             self.assertTrue((trash / (deletion.KEPT_PREFIX + name) / 'old.mkv').exists())
             self.assertTrue((video_dir / FOLDER / 'new.mkv').exists())
 
+    def test_retry_after_crash_mid_move_does_not_answer_404(self):
+        # The earlier request crashed after moving the folder to a
+        # `pending-` entry. The retry must not report the folder gone while
+        # its media is still on disk: it puts it back, then deletes it.
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root(), run_background_inline():
+            video_dir = deletion.folder_parents()[0]
+            trash = video_dir / deletion.TRASH_DIR_NAME
+            entry = trash / f'{deletion.PENDING_PREFIX}{FOLDER}-0123456789abcdef0123456789abcdef'
+            entry.mkdir(parents=True)
+            (entry / 'old.mkv').write_bytes(b'x')
+            with patch.object(deletion, 'PENDING_STALE_SECONDS', -1):
+                response = self.client.delete(folder_url(KEY), **self.auth_header())
+            self.assertEqual(response.status_code, 200)
+            self.assertFalse((video_dir / FOLDER).exists())
+            self.assertEqual(list(trash.iterdir()), [])
+
+    def test_retry_after_crash_mid_move_still_refuses_a_claimed_folder(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root():
+            video_dir = deletion.folder_parents()[0]
+            entry = video_dir / deletion.TRASH_DIR_NAME / (
+                f'{deletion.PENDING_PREFIX}{FOLDER}-0123456789abcdef0123456789abcdef'
+            )
+            entry.mkdir(parents=True)
+            (entry / 'old.mkv').write_bytes(b'x')
+            make_source()
+            with patch.object(deletion, 'PENDING_STALE_SECONDS', -1):
+                response = self.client.delete(folder_url(KEY), **self.auth_header())
+            self.assertEqual(response.status_code, 409)
+            self.assertTrue((video_dir / FOLDER / 'old.mkv').exists())
+
     def test_trash_sweep_leaves_foreign_entries(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
         with temp_download_root(), run_background_inline():
