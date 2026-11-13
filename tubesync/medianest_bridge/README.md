@@ -770,8 +770,7 @@ uuid, none of which can carry either.
 
 `medianest_bridge/contract/bridge-openapi.v1.yaml` is a vendored, read-only
 copy of the canonical contract. **Current copy: contract 1.4.0 (MED-657),
-from MediaNest PR #3161's branch copy `2a66f4e` (byte-identical; the
-header and this line get the squash-merge SHA once #3161 merges).** It adds `DELETE /sources/{sourceUuid}?deleteFiles=<bool>`,
+from MediaNest main `89c6fc651aee` (PR #3161, byte-identical).** It adds `DELETE /sources/{sourceUuid}?deleteFiles=<bool>`,
 `DELETE /folders/{sourceKey}`, the `SourceDeletion` and `FolderDeletion`
 schemas (both now in `contract_fixtures.json`), the `SourceKey` parameter,
 `Error.code` `SOURCE_DELETING` and `FOLDER_NOT_FOUND`,
