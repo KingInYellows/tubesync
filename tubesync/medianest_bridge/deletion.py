@@ -295,9 +295,10 @@ def recover_stale_pending():
             log.exception('medianest_bridge: could not recover %s', entry.name)
 
 
-def leftover_trash():
+def leftover_trash(*, recover=True):
     '''Entries a previous, interrupted background removal left behind.'''
-    recover_stale_pending()
+    if recover:
+        recover_stale_pending()
     entries = []
     for parent in folder_parents():
         trash = parent.resolve() / TRASH_DIR_NAME
@@ -310,12 +311,14 @@ def _sweepable(entry):
     return not entry.is_symlink() and bool(_TRASH_ENTRY_RE.fullmatch(entry.name))
 
 
-def sweep_leftover_trash(*, background=True):
+def sweep_leftover_trash(*, background=True, recover=True):
     '''
         Removes whatever an interrupted earlier removal left in the trash
-        directories. Returns the number of entries found.
+        directories. Returns the number of entries found. With
+        recover=False, stale `pending-` entries are left for the next call
+        (the caller already recovered them and decided on what it saw).
     '''
-    pending = leftover_trash()
+    pending = leftover_trash(recover=recover)
     if pending and background:
         _remove_in_background(pending)
     else:

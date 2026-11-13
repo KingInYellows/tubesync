@@ -108,6 +108,12 @@ class FolderDeleteView(BridgeView):
                 'sourceKey must be 1-92 letters, digits, "_" or "-".',
             )
 
+        # A request that crashed between moving the folder away and
+        # confirming the move left it in the trash as `pending-`: put it
+        # back first, so the checks below see it and a retry never answers
+        # 404 (nothing left on disk) while the media is still there.
+        deletion.recover_stale_pending()
+
         holders = list(deletion.sources_using_folder(source_key))
         refusal = _in_use(holders, request_id)
         if refusal is not None:
@@ -130,8 +136,10 @@ class FolderDeleteView(BridgeView):
 
         if not folders:
             # A retry after an interrupted removal: the folder is already
-            # in the trash, so finish removing it before answering.
-            deletion.sweep_leftover_trash()
+            # in the trash, so finish removing it before answering. Pending
+            # moves were recovered above; recovering one now, after the
+            # folder check, would put a folder back behind this 404.
+            deletion.sweep_leftover_trash(recover=False)
             return error_response(
                 status=404,
                 code='FOLDER_NOT_FOUND',
