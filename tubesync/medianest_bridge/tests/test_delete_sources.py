@@ -633,17 +633,39 @@ class DeleteFolderRequestTestCase(BridgeTestCase):
             self.assertEqual(response.status_code, 409)
             self.assertTrue((target / 'old.mkv').exists())
 
-    def test_stale_unconfirmed_move_is_swept(self):
+    def test_stale_unconfirmed_move_goes_back_not_away(self):
+        # A request that crashed between the move and its claim check left
+        # a `pending-` entry: it is moved back, never deleted.
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
         with temp_download_root():
             video_dir = deletion.folder_parents()[0]
             trash = video_dir / deletion.TRASH_DIR_NAME
             name = f'{FOLDER}-0123456789abcdef0123456789abcdef'
-            fresh = trash / (deletion.PENDING_PREFIX + name)
-            fresh.mkdir(parents=True)
+            entry = trash / (deletion.PENDING_PREFIX + name)
+            entry.mkdir(parents=True)
+            (entry / 'old.mkv').write_bytes(b'x')
             self.assertEqual(deletion.leftover_trash(), [])
+            self.assertTrue(entry.is_dir())  # fresh: still in flight
             with patch.object(deletion, 'PENDING_STALE_SECONDS', -1):
-                self.assertEqual(deletion.leftover_trash(), [fresh])
+                self.assertEqual(deletion.sweep_leftover_trash(background=False), 0)
+            self.assertTrue((video_dir / FOLDER / 'old.mkv').exists())
+            self.assertFalse(entry.exists())
+
+    def test_stale_unconfirmed_move_is_kept_when_the_folder_is_back(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root():
+            video_dir = deletion.folder_parents()[0]
+            trash = video_dir / deletion.TRASH_DIR_NAME
+            name = f'{FOLDER}-0123456789abcdef0123456789abcdef'
+            entry = trash / (deletion.PENDING_PREFIX + name)
+            entry.mkdir(parents=True)
+            (entry / 'old.mkv').write_bytes(b'x')
+            (video_dir / FOLDER).mkdir()
+            (video_dir / FOLDER / 'new.mkv').write_bytes(b'y')
+            with patch.object(deletion, 'PENDING_STALE_SECONDS', -1):
+                deletion.sweep_leftover_trash(background=False)
+            self.assertTrue((trash / (deletion.KEPT_PREFIX + name) / 'old.mkv').exists())
+            self.assertTrue((video_dir / FOLDER / 'new.mkv').exists())
 
     def test_trash_sweep_leaves_foreign_entries(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')

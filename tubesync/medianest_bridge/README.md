@@ -709,7 +709,9 @@ each call writes a `mutation_audit` line (the folder route logs
   like its own, `acq-src-<key>-<32 hex>`), including a retry that gets the
   `404`. A move is named `pending-...` until the claim check passes, so a
   concurrent sweep never removes a folder that may still go back; a
-  `pending-` entry older than 10 minutes (a crash) is swept too. Returns `200`
+  `pending-` entry older than 10 minutes (a crash mid-request) is moved
+  back to its folder, or to `kept-...` if the folder exists again, and
+  never deleted. Returns `200`
   `{"canonicalKey", "folders": ["video/acq-src-..."]}` (paths relative to
   the download root).
 

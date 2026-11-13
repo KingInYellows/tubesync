@@ -42,9 +42,11 @@ TRASH_DIR_NAME = '.medianest-trash'
 # once the move was confirmed.
 _TRASH_ENTRY_RE = re.compile(r'acq-src-[A-Za-z0-9_-]+-[0-9a-f]{32}')
 # A move that is not confirmed yet (the request is still checking that no
-# source claimed the folder) carries this prefix, so a concurrent sweep
-# leaves it alone and the request can still move it back. Only one left
-# behind by a crash, older than PENDING_STALE_SECONDS, is swept.
+# source claimed the folder) carries this prefix, so no sweep ever removes
+# it and the request can still move it back. One left behind by a crash,
+# older than PENDING_STALE_SECONDS, is moved back to where it came from
+# (recover_stale_pending()): the delete never finished, so MediaNest's
+# retry decides again.
 PENDING_PREFIX = 'pending-'
 PENDING_STALE_SECONDS = 600
 
@@ -257,8 +259,45 @@ def _remove_in_background(paths):
     return thread
 
 
+def _pending_entries():
+    for parent in folder_parents():
+        trash = parent.resolve() / TRASH_DIR_NAME
+        if not trash.is_dir() or trash.is_symlink():
+            continue
+        for entry in trash.iterdir():
+            name = entry.name
+            if (
+                not entry.is_symlink()
+                and name.startswith(PENDING_PREFIX)
+                and _TRASH_ENTRY_RE.fullmatch(name[len(PENDING_PREFIX):])
+            ):
+                yield trash.parent, entry
+
+
+def recover_stale_pending():
+    '''
+        Moves each stale `pending-` entry back to its original folder (or,
+        when that folder exists again, to `kept-...`). Never deletes.
+    '''
+    now = time.time()
+    for parent, entry in _pending_entries():
+        try:
+            # rename() updates ctime, so this is the time of the move
+            if now - entry.lstat().st_ctime <= PENDING_STALE_SECONDS:
+                continue
+        except OSError:
+            continue
+        # `<folder name>-<32 hex>`: drop the prefix and the suffix.
+        original = parent / entry.name[len(PENDING_PREFIX):-33]
+        try:
+            _restore([(original, entry)])
+        except OSError:
+            log.exception('medianest_bridge: could not recover %s', entry.name)
+
+
 def leftover_trash():
     '''Entries a previous, interrupted background removal left behind.'''
+    recover_stale_pending()
     entries = []
     for parent in folder_parents():
         trash = parent.resolve() / TRASH_DIR_NAME
@@ -268,19 +307,7 @@ def leftover_trash():
 
 
 def _sweepable(entry):
-    if entry.is_symlink():
-        return False
-    name = entry.name
-    if _TRASH_ENTRY_RE.fullmatch(name):
-        return True
-    if name.startswith(PENDING_PREFIX) and _TRASH_ENTRY_RE.fullmatch(name[len(PENDING_PREFIX):]):
-        try:
-            # rename() updates ctime, so this is the time of the move
-            age = time.time() - entry.lstat().st_ctime
-        except OSError:
-            return False
-        return age > PENDING_STALE_SECONDS
-    return False
+    return not entry.is_symlink() and bool(_TRASH_ENTRY_RE.fullmatch(entry.name))
 
 
 def sweep_leftover_trash(*, background=True):
