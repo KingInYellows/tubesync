@@ -88,7 +88,7 @@ back to its folder after 10 minutes, never deleted.
 
 ## Verified
 
-- Full Django suite on Python 3.13: 862 tests OK, including 35 new tests
+- Full Django suite on Python 3.13: 864 tests OK, including 37 new tests
   in `tests/test_delete_sources.py` that run TubeSync's real
   `delete_all_media_for_source` in-process: files and folder survive a
   keep-files delete on a source with "delete files on disk" on, the folder
