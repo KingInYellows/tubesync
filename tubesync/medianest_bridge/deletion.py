@@ -132,6 +132,37 @@ def sources_using_folder(key):
     )
 
 
+def _resolved_source_path(source):
+    try:
+        return Path(source.directory_path).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def sources_overlapping(folders):
+    '''
+        Every Source row (live or hidden) whose resolved download folder is
+        one of `folders`, inside one, or contains one. Source.directory is
+        stored as typed (the edit form only checks it stays inside the
+        download root), so `./acq-src-x`, `x/../acq-src-x` or a symlinked
+        path can point at the same place as `acq-src-x` without matching
+        it as a string.
+    '''
+    targets = [Path(f) for f in folders]
+    if not targets:
+        return []
+    overlapping = []
+    for source in Source.objects.all():
+        path = _resolved_source_path(source)
+        if path is None:
+            continue
+        for target in targets:
+            if path == target or target in path.parents or path in target.parents:
+                overlapping.append(source)
+                break
+    return overlapping
+
+
 def download_root():
     return Path(settings.DOWNLOAD_ROOT).resolve()
 
@@ -221,6 +252,20 @@ def leftover_trash():
         if trash.is_dir() and not trash.is_symlink():
             entries.extend(e for e in trash.iterdir() if not e.is_symlink())
     return entries
+
+
+def sweep_leftover_trash(*, background=True):
+    '''
+        Removes whatever an interrupted earlier removal left in the trash
+        directories. Returns the number of entries found.
+    '''
+    pending = leftover_trash()
+    if pending and background:
+        _remove_in_background(pending)
+    else:
+        for path in pending:
+            _remove_tree(path)
+    return len(pending)
 
 
 def delete_folders(folders, *, background=True):

@@ -445,6 +445,45 @@ class DeleteFolderRequestTestCase(BridgeTestCase):
             self.assertEqual(response.status_code, 200)
             self.assertFalse(leftover.exists())
 
+    def test_retry_after_interrupted_removal_sweeps_the_trash(self):
+        # The folder was already renamed into the trash, then the process
+        # stopped before removing it. The retry finds no folder (404) but
+        # still finishes the removal.
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root(), run_background_inline():
+            video_dir = deletion.folder_parents()[0]
+            leftover = video_dir / deletion.TRASH_DIR_NAME / f'{FOLDER}-abc'
+            leftover.mkdir(parents=True)
+            (leftover / 'a.mkv').write_bytes(b'x')
+            response = self.client.delete(folder_url(KEY), **self.auth_header())
+            self.assertEqual(response.status_code, 404)
+            self.assertEqual(json.loads(response.content)['code'], 'FOLDER_NOT_FOUND')
+            self.assertFalse(leftover.exists())
+
+    def test_source_naming_the_folder_another_way_is_409(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root():
+            video_dir = deletion.folder_parents()[0]
+            (video_dir / 'elsewhere').mkdir(parents=True)
+            for index, spelling in enumerate((
+                f'./{FOLDER}',
+                f'elsewhere/../{FOLDER}',
+                f'{FOLDER}/season1',
+            )):
+                with self.subTest(directory=spelling):
+                    other = make_source(
+                        key=f'PLother{index}', name=f'other{index}', directory=spelling,
+                    )
+                    Path(other.directory_path).mkdir(parents=True, exist_ok=True)
+                    (video_dir / FOLDER / 'keep.mkv').write_bytes(b'x')
+                    response = self.client.delete(folder_url(KEY), **self.auth_header())
+                    self.assertEqual(response.status_code, 409, spelling)
+                    body = json.loads(response.content)
+                    self.assertEqual(body['code'], 'SOURCE_CONFLICT')
+                    self.assertEqual(body['existingSourceUuid'], str(other.pk))
+                    self.assertTrue((video_dir / FOLDER / 'keep.mkv').exists())
+                    other.delete()
+
     def test_without_directory_prefix_uses_the_root(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
         with (

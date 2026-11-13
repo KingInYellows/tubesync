@@ -79,6 +79,24 @@ class SourceDetailDeleteView(SourceDetailView):
         return JsonResponse(deletion.serialize_deletion(parsed, pending), status=202)
 
 
+def _in_use(holders, request_id):
+    '''409 when any of `holders` (Source rows) still uses the folder.'''
+    live = [s for s in holders if not deletion.is_pending_deletion(s)]
+    if live:
+        return error_response(
+            status=409,
+            code='SOURCE_CONFLICT',
+            title='Folder still in use',
+            detail='A source still uses this key or folder; delete the source first.',
+            request_id=request_id,
+            retryable=False,
+            extra={'existingSourceUuid': str(live[0].pk)},
+        )
+    if holders:
+        return source_deleting(request_id)
+    return None
+
+
 class FolderDeleteView(BridgeView):
     '''DELETE /folders/{sourceKey} -- deleteSourceFolder.'''
 
@@ -91,19 +109,9 @@ class FolderDeleteView(BridgeView):
             )
 
         holders = list(deletion.sources_using_folder(source_key))
-        live = [s for s in holders if not deletion.is_pending_deletion(s)]
-        if live:
-            return error_response(
-                status=409,
-                code='SOURCE_CONFLICT',
-                title='Folder still in use',
-                detail='A source still uses this key or folder; delete the source first.',
-                request_id=request_id,
-                retryable=False,
-                extra={'existingSourceUuid': str(live[0].pk)},
-            )
-        if holders:
-            return source_deleting(request_id)
+        refusal = _in_use(holders, request_id)
+        if refusal is not None:
+            return refusal
 
         try:
             folders = deletion.existing_folders(source_key)
@@ -113,7 +121,17 @@ class FolderDeleteView(BridgeView):
                 source_key, request_id, refused,
             )
             return _invalid_request(request_id, f'Refusing to delete this folder: {refused}.')
+
+        # A source can name the same folder in another spelling
+        # (`./acq-src-x`, `y/../acq-src-x`): compare resolved paths too.
+        refusal = _in_use(deletion.sources_overlapping(folders), request_id)
+        if refusal is not None:
+            return refusal
+
         if not folders:
+            # A retry after an interrupted removal: the folder is already
+            # in the trash, so finish removing it before answering.
+            deletion.sweep_leftover_trash()
             return error_response(
                 status=404,
                 code='FOLDER_NOT_FOUND',

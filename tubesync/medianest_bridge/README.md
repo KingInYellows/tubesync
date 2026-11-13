@@ -689,13 +689,15 @@ each call writes a `mutation_audit` line (the folder route logs
   named) under `video/` and `audio/` (or the download root when
   `TUBESYNC_DIRECTORY_PREFIX` is off). The key must be 1-92 of
   `[A-Za-z0-9_-]` (else `400`). `409 SOURCE_CONFLICT` with
-  `existingSourceUuid` while a live source uses the key or folder, `409
+  `existingSourceUuid` while a live source uses the key or folder (also
+  compared as resolved paths, so `./acq-src-x` or a subfolder counts), `409
   SOURCE_DELETING` while one is still being deleted, `400` for a folder
   that is a symlink, `404 FOLDER_NOT_FOUND` when nothing is there. The
   folder is first renamed into a `.medianest-trash/` directory next to it
   (one atomic rename, so a Plex scan right after the `200` already sees
   it gone) and then removed by a background thread; a later call also
-  sweeps anything an interrupted removal left there. Returns `200`
+  sweeps anything an interrupted removal left there, including a retry that
+  gets the `404`. Returns `200`
   `{"canonicalKey", "folders": ["video/acq-src-..."]}` (paths relative to
   the download root).
 
