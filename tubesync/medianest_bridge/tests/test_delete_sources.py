@@ -560,6 +560,56 @@ class DeleteFolderRequestTestCase(BridgeTestCase):
                 list((video_dir / deletion.TRASH_DIR_NAME).iterdir()), [],
             )
 
+    def test_recreated_folder_keeps_the_old_contents_out_of_sweeps(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root(), run_background_inline():
+            video_dir = deletion.folder_parents()[0]
+            target = video_dir / FOLDER
+            target.mkdir(parents=True)
+            (target / 'old.mkv').write_bytes(b'x')
+            original_delete_folders = deletion.delete_folders
+
+            def claimed_and_recreated(folders, **kwargs):
+                def claimed():
+                    # The new source already wrote into its fresh folder.
+                    target.mkdir()
+                    (target / 'new.mkv').write_bytes(b'y')
+                    return True
+                return original_delete_folders(folders, claimed=claimed)
+
+            with patch.object(deletion, 'delete_folders', claimed_and_recreated):
+                response = self.client.delete(folder_url(KEY), **self.auth_header())
+            self.assertEqual(response.status_code, 409)
+            trash = video_dir / deletion.TRASH_DIR_NAME
+            kept = list(trash.iterdir())
+            self.assertEqual(len(kept), 1)
+            self.assertTrue(kept[0].name.startswith(deletion.KEPT_PREFIX))
+            self.assertEqual(deletion.leftover_trash(), [])
+            deletion.sweep_leftover_trash(background=False)
+            self.assertTrue((kept[0] / 'old.mkv').exists())
+            self.assertTrue((target / 'new.mkv').exists())
+
+    def test_empty_recreated_folder_is_replaced_by_the_old_one(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root(), run_background_inline():
+            video_dir = deletion.folder_parents()[0]
+            target = video_dir / FOLDER
+            target.mkdir(parents=True)
+            (target / 'old.mkv').write_bytes(b'x')
+            original_delete_folders = deletion.delete_folders
+
+            def claimed_and_recreated(folders, **kwargs):
+                def claimed():
+                    target.mkdir()  # check_source_directory_exists()
+                    return True
+                return original_delete_folders(folders, claimed=claimed)
+
+            with patch.object(deletion, 'delete_folders', claimed_and_recreated):
+                response = self.client.delete(folder_url(KEY), **self.auth_header())
+            self.assertEqual(response.status_code, 409)
+            self.assertTrue((target / 'old.mkv').exists())
+            self.assertEqual(list((video_dir / deletion.TRASH_DIR_NAME).iterdir()), [])
+
     def test_trash_sweep_leaves_foreign_entries(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
         with temp_download_root(), run_background_inline():

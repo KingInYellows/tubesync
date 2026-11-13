@@ -280,18 +280,31 @@ class FolderClaimed(Exception):
     '''A source started using the folder while it was being moved away.'''
 
 
+# Prefix for a moved copy that could not go back; _TRASH_ENTRY_RE does not
+# match it, so no sweep ever removes it.
+KEPT_PREFIX = 'kept-'
+
+
 def _restore(moves):
     for original, target in moves:
         if original.exists():
-            # Something already recreated it (the new source's own
-            # make_directory()); leave the moved copy in the trash for a
-            # person to look at rather than merge two trees.
-            log.warning(
-                'medianest_bridge: %s was recreated while being deleted; '
-                'its old contents stay in %s', original.name, target,
-            )
+            try:
+                # The new source's check_source_directory_exists() made an
+                # empty folder: drop it so the old one can go back.
+                original.rmdir()
+            except OSError:
+                pass
+        if not original.exists():
+            os.rename(target, original)
             continue
-        os.rename(target, original)
+        # Recreated and already holds files: keep the old contents out of
+        # every sweep for a person to merge, rather than merge two trees.
+        kept = target.with_name(KEPT_PREFIX + target.name)
+        os.rename(target, kept)
+        log.warning(
+            'medianest_bridge: %s was recreated while being deleted; '
+            'its old contents are kept in %s', original.name, kept,
+        )
 
 
 def delete_folders(folders, *, background=True, claimed=None):

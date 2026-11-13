@@ -697,7 +697,9 @@ each call writes a `mutation_audit` line (the folder route logs
   `existingSourceUuid` while a live source uses the key or folder (also
   compared as resolved paths, so `./acq-src-x` or a subfolder counts, and
   checked again after the move: a source created meanwhile gets its folder
-  back and the call answers `409`), `409
+  back and the call answers `409`; if the new source already wrote into a
+  recreated folder, the old contents stay in `.medianest-trash/kept-...`,
+  which no sweep removes), `409
   SOURCE_DELETING` while one is still being deleted, `400` for a folder
   that is a symlink or resolves outside the download root, `404 FOLDER_NOT_FOUND` when nothing is there. The
   folder is first renamed into a `.medianest-trash/` directory next to it
