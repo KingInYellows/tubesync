@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import threading
+import time
 import uuid as uuid_module
 from pathlib import Path
 
@@ -37,8 +38,15 @@ _KEY_RE = re.compile(r'^[A-Za-z0-9_-]+$')
 # of this name next to them (same filesystem, so the move is an atomic
 # rename). The leading dot keeps media servers from scanning it.
 TRASH_DIR_NAME = '.medianest-trash'
-# The only entries the trash sweep removes: what delete_folders() put there.
+# The only entries the trash sweep removes: what delete_folders() put there
+# once the move was confirmed.
 _TRASH_ENTRY_RE = re.compile(r'acq-src-[A-Za-z0-9_-]+-[0-9a-f]{32}')
+# A move that is not confirmed yet (the request is still checking that no
+# source claimed the folder) carries this prefix, so a concurrent sweep
+# leaves it alone and the request can still move it back. Only one left
+# behind by a crash, older than PENDING_STALE_SECONDS, is swept.
+PENDING_PREFIX = 'pending-'
+PENDING_STALE_SECONDS = 600
 
 
 def parse_uuid(value):
@@ -255,11 +263,24 @@ def leftover_trash():
     for parent in folder_parents():
         trash = parent.resolve() / TRASH_DIR_NAME
         if trash.is_dir() and not trash.is_symlink():
-            entries.extend(
-                e for e in trash.iterdir()
-                if not e.is_symlink() and _TRASH_ENTRY_RE.fullmatch(e.name)
-            )
+            entries.extend(e for e in trash.iterdir() if _sweepable(e))
     return entries
+
+
+def _sweepable(entry):
+    if entry.is_symlink():
+        return False
+    name = entry.name
+    if _TRASH_ENTRY_RE.fullmatch(name):
+        return True
+    if name.startswith(PENDING_PREFIX) and _TRASH_ENTRY_RE.fullmatch(name[len(PENDING_PREFIX):]):
+        try:
+            # rename() updates ctime, so this is the time of the move
+            age = time.time() - entry.lstat().st_ctime
+        except OSError:
+            return False
+        return age > PENDING_STALE_SECONDS
+    return False
 
 
 def sweep_leftover_trash(*, background=True):
@@ -299,7 +320,7 @@ def _restore(moves):
             continue
         # Recreated and already holds files: keep the old contents out of
         # every sweep for a person to merge, rather than merge two trees.
-        kept = target.with_name(KEPT_PREFIX + target.name)
+        kept = target.with_name(KEPT_PREFIX + target.name[len(PENDING_PREFIX):])
         os.rename(target, kept)
         log.warning(
             'medianest_bridge: %s was recreated while being deleted; '
@@ -324,14 +345,19 @@ def delete_folders(folders, *, background=True, claimed=None):
         relative = _relative_to_root(folder)
         # The trash sits next to the folder, so the move never crosses a
         # filesystem boundary.
-        target = _trash_dir(folder.parent) / f'{folder.name}-{uuid_module.uuid4().hex}'
+        name = f'{folder.name}-{uuid_module.uuid4().hex}'
+        target = _trash_dir(folder.parent) / (PENDING_PREFIX + name)
         os.rename(folder, target)
         moves.append((folder, target))
         removed.append(relative)
     if claimed is not None and claimed():
         _restore(moves)
         raise FolderClaimed()
-    moved = [target for _, target in moves]
+    moved = []
+    for _, target in moves:
+        confirmed = target.with_name(target.name[len(PENDING_PREFIX):])
+        os.rename(target, confirmed)
+        moved.append(confirmed)
     pending = moved + [p for p in leftover_trash() if p not in moved]
     if pending and background:
         _remove_in_background(pending)

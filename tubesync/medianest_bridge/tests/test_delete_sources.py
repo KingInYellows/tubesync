@@ -610,6 +610,41 @@ class DeleteFolderRequestTestCase(BridgeTestCase):
             self.assertTrue((target / 'old.mkv').exists())
             self.assertEqual(list((video_dir / deletion.TRASH_DIR_NAME).iterdir()), [])
 
+    def test_sweep_leaves_an_unconfirmed_move_alone(self):
+        # A concurrent request's sweep runs while this one is still
+        # checking for a claim: the moved folder must survive it and go
+        # back when a source claimed it.
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root(), run_background_inline():
+            video_dir = deletion.folder_parents()[0]
+            target = video_dir / FOLDER
+            target.mkdir(parents=True)
+            (target / 'old.mkv').write_bytes(b'x')
+            original_delete_folders = deletion.delete_folders
+
+            def claimed_during_sweep(folders, **kwargs):
+                def claimed():
+                    deletion.sweep_leftover_trash(background=False)
+                    return True
+                return original_delete_folders(folders, claimed=claimed)
+
+            with patch.object(deletion, 'delete_folders', claimed_during_sweep):
+                response = self.client.delete(folder_url(KEY), **self.auth_header())
+            self.assertEqual(response.status_code, 409)
+            self.assertTrue((target / 'old.mkv').exists())
+
+    def test_stale_unconfirmed_move_is_swept(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root():
+            video_dir = deletion.folder_parents()[0]
+            trash = video_dir / deletion.TRASH_DIR_NAME
+            name = f'{FOLDER}-0123456789abcdef0123456789abcdef'
+            fresh = trash / (deletion.PENDING_PREFIX + name)
+            fresh.mkdir(parents=True)
+            self.assertEqual(deletion.leftover_trash(), [])
+            with patch.object(deletion, 'PENDING_STALE_SECONDS', -1):
+                self.assertEqual(deletion.leftover_trash(), [fresh])
+
     def test_trash_sweep_leaves_foreign_entries(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
         with temp_download_root(), run_background_inline():
