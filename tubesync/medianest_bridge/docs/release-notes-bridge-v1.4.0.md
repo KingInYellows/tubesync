@@ -84,7 +84,9 @@ same key that answers `404`, or can be removed by hand. The sweep only
 touches entries named like its own (`acq-src-<key>-<32 hex>`); a move
 stays `pending-...` until its claim check passes, so a concurrent sweep
 cannot remove a folder that may still go back; one left by a crash is moved
-back to its folder after 10 minutes, never deleted.
+back to its folder after 10 minutes, never deleted. The next folder
+delete call does that first, so a retry after such a crash deletes the
+folder rather than answering `404` with the media still on disk.
 
 ## Verified
 
