@@ -2,7 +2,7 @@
   "_provenance": {
     "note": "Generated once from the vendored YAML via PyYAML (a transitive dependency of hat-syslog, not a new Pipfile dependency) and checked in so bridge tests can assert contract shape using only the stdlib json module. test_contract_conformance.py sha256-locks this file against the YAML above and, when PyYAML happens to be importable in the test environment, additionally cross-checks this fixture was derived correctly. Regenerate together with the sha256 whenever the vendored YAML is re-vendored. Includes each property's \"pattern\" (e.g. MediaItem.relativePath's anti-absolute-path regex) so conformance tests can enforce it, not just required/enum.",
     "source": "medianest_bridge/contract/bridge-openapi.v1.yaml",
-    "source_sha256": "04b75fd7011bf57dbaa0cbebc2acec64075e33c6d46e3f96b3128f910fee00bd"
+    "source_sha256": "78678da18c688bb94fc33e72da0699c04efdf32ddf7f06a1a5dd65606ae26867"
   },
   "health_ready_component_names": [
     "application",

@@ -2,9 +2,8 @@
 #
 # Canonical source: KingInYellows/medianest,
 #   docs/planning/tubesync-integration/bridge-openapi.v1.yaml
-#   @ MediaNest PR #3161 branch copy 2a66f4e (MED-657; replace with the
-#   squash-merge SHA once #3161 merges -- the body below is byte-identical
-#   to that branch copy).
+#   @ 89c6fc651aee (MediaNest main, PR #3161 squash merge, MED-657;
+#   the body below is byte-identical to that commit's copy).
 #   Contract version 1.4.0 (MED-657, ADR-0022): adds DELETE
 #   /sources/{sourceUuid}?deleteFiles=<bool>, DELETE /folders/{sourceKey},
 #   the SourceDeletion and FolderDeletion schemas, the SourceKey parameter,
