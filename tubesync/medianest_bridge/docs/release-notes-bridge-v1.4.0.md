@@ -86,11 +86,12 @@ stays `pending-...` until its claim check passes, so a concurrent sweep
 cannot remove a folder that may still go back; one left by a crash is moved
 back to its folder after 10 minutes, never deleted. The next folder
 delete call does that first, so a retry after such a crash deletes the
-folder rather than answering `404` with the media still on disk.
+folder rather than answering `404` with the media still on disk; before
+those 10 minutes are up it answers `409 SOURCE_DELETING` (retryable).
 
 ## Verified
 
-- Full Django suite on Python 3.13: 864 tests OK, including 37 new tests
+- Full Django suite on Python 3.13: 865 tests OK, including 38 new tests
   in `tests/test_delete_sources.py` that run TubeSync's real
   `delete_all_media_for_source` in-process: files and folder survive a
   keep-files delete on a source with "delete files on disk" on, the folder
