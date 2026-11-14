@@ -2,10 +2,11 @@ import uuid
 from datetime import timedelta
 from itertools import islice
 
-from django.db import connection, models, transaction
+from django.db import connection, models
 from django.utils import timezone
 
 from ..json_encoder import JSONEncoder
+from ..transactions import read_atomic
 # from common.json_encoder import JSONEncoder
 from ..utils import is_empty_iterator
 #from common.utils import is_empty_iterator
@@ -79,7 +80,10 @@ def thqs_from_huey_ids(self, /, huey_task_ids):
                 log.warning(f"Skipping malformed Huey task ID: {tid}")
                 continue
 
-    with transaction.atomic():
+    # read_atomic(): the temporary tables live in SQLite's per-connection
+    # temp database, so this block only reads the main database and must
+    # not take its write lock (MED-636).
+    with read_atomic():
         with connection.cursor() as cursor:
             # Stage 1: Store and normalize input IDs
             cursor.execute(f"CREATE TEMPORARY TABLE {input_tmp} (tid VARCHAR(40) PRIMARY KEY)")

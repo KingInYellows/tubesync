@@ -347,3 +347,65 @@ class SqliteJournalModeTestCase(TestCase):
         self.assertIn('PRAGMA journal_mode = WAL;', cmd)
         self.assertIn('PRAGMA synchronous = NORMAL;', cmd)
         self.assertIn(('Requested SQLite journal mode: WAL',), db['_msgs'])
+
+
+class ReadAtomicTestCase(TestCase):
+
+    def _connection(self):
+        from django.db import connections
+        return connections['default']
+
+    def test_sqlite_outside_atomic_takes_no_transaction(self):
+        from contextlib import nullcontext
+        from unittest import mock
+        from .transactions import read_atomic
+        conn = self._connection()
+        with mock.patch.object(conn, 'vendor', 'sqlite'), \
+                mock.patch.object(conn, 'in_atomic_block', False):
+            self.assertIsInstance(read_atomic(), nullcontext)
+
+    def test_sqlite_inside_atomic_uses_savepoint(self):
+        from django.db.transaction import Atomic
+        from unittest import mock
+        from .transactions import read_atomic
+        conn = self._connection()
+        with mock.patch.object(conn, 'vendor', 'sqlite'), \
+                mock.patch.object(conn, 'in_atomic_block', True):
+            self.assertIsInstance(read_atomic(), Atomic)
+
+    def test_other_databases_use_atomic(self):
+        from django.db.transaction import Atomic
+        from unittest import mock
+        from .transactions import read_atomic
+        conn = self._connection()
+        for in_block in (False, True):
+            with mock.patch.object(conn, 'vendor', 'postgresql'), \
+                    mock.patch.object(conn, 'in_atomic_block', in_block):
+                self.assertIsInstance(read_atomic(), Atomic)
+
+    def test_wal_autocommit_read_does_not_wait_for_writer(self):
+        # What read_atomic() relies on: under WAL, a read outside BEGIN
+        # IMMEDIATE returns while another connection holds the write lock,
+        # and the same read inside BEGIN IMMEDIATE times out.
+        import sqlite3
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'db.sqlite3')
+            setup = sqlite3.connect(path, isolation_level=None)
+            setup.executescript(sqlite_init_command('WAL'))
+            setup.execute('CREATE TABLE t (x INTEGER)')
+            setup.execute('INSERT INTO t VALUES (1)')
+            setup.close()
+            writer = sqlite3.connect(path, isolation_level=None, timeout=0.2)
+            reader = sqlite3.connect(path, isolation_level=None, timeout=0.2)
+            try:
+                writer.execute('BEGIN IMMEDIATE')
+                writer.execute('INSERT INTO t VALUES (2)')
+                count = reader.execute('SELECT COUNT(*) FROM t').fetchone()[0]
+                self.assertEqual(count, 1)
+                with self.assertRaises(sqlite3.OperationalError):
+                    reader.execute('BEGIN IMMEDIATE')
+            finally:
+                writer.execute('ROLLBACK')
+                writer.close()
+                reader.close()

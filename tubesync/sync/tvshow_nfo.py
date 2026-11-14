@@ -22,10 +22,10 @@ from xml.etree import ElementTree
 
 from django import db
 from django.core.exceptions import ObjectDoesNotExist
-from django.db import transaction
 from django.db.models import F
 
 from common.logger import log
+from common.transactions import read_atomic
 from common.utils import clean_emoji
 
 from .models._private import _nfo_element
@@ -302,9 +302,11 @@ def resolve_show_title(source):
         the caller. `Media.nfoxml` is invoked from `write_nfo_file`
         (`sync/models/media__tasks.py`), which upstream only guards against
         `PermissionError`, and `download_media_file` calls it after the
-        video has already downloaded. The queries run in a savepoint, so a
-        database error does not leave an enclosing transaction (such as
-        `rename_media`'s) unusable on PostgreSQL. A fallback produced by
+        video has already downloaded. The queries run in `read_atomic()`: a
+        savepoint inside an enclosing transaction, so a database error does
+        not leave it (such as `rename_media`'s) unusable on PostgreSQL, but
+        plain autocommit reads on SQLite outside one, so the bridge's
+        GET /sources/:id does not take the write lock (MED-636). A fallback produced by
         an error is deliberately not cached, so the next call retries the
         real lookup rather than pinning the fallback for the TTL.
     '''
@@ -320,7 +322,7 @@ def resolve_show_title(source):
     try:
         title = _preserved_show_title(source)
         if title is None:
-            with transaction.atomic():
+            with read_atomic():
                 cached = _cached_channel_metadata(source)
                 data_title = _resolve_show_title_from_data(source, cached)
             title = _display_title(source, data_title)
@@ -520,7 +522,7 @@ def _tvshow_nfo_content_to_write(source, assume_directory_exists=False):
     if not assume_directory_exists and not directory.is_dir():
         return None
     nfo_path = directory / 'tvshow.nfo'
-    with transaction.atomic():
+    with read_atomic():
         content = build_tvshow_nfo(source)
     # is_file(), not exists(): reading a FIFO would block.
     if nfo_path.is_file() and nfo_path.read_bytes() == content.encode('utf-8'):
