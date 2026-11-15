@@ -121,7 +121,9 @@ SOURCE_DOWNLOAD_DIRECTORY_PREFIX_STR = getenv('TUBESYNC_DIRECTORY_PREFIX', True)
 SOURCE_DOWNLOAD_DIRECTORY_PREFIX = ( 'true' == SOURCE_DOWNLOAD_DIRECTORY_PREFIX_STR.strip().lower() )
 
 
-SHRINK_NEW_MEDIA_METADATA_STR = getenv('TUBESYNC_SHRINK_NEW', False)
+# Fork default (MED-663): store trimmed metadata. Set to false for upstream's
+# full yt-dlp JSON, which grows the database by hundreds of KB per video.
+SHRINK_NEW_MEDIA_METADATA_STR = getenv('TUBESYNC_SHRINK_NEW', True)
 SHRINK_NEW_MEDIA_METADATA = ( 'true' == SHRINK_NEW_MEDIA_METADATA_STR.strip().lower() )
 SHRINK_OLD_MEDIA_METADATA_STR = getenv('TUBESYNC_SHRINK_OLD', False)
 SHRINK_OLD_MEDIA_METADATA = ( 'true' == SHRINK_OLD_MEDIA_METADATA_STR.strip().lower() )

@@ -188,6 +188,10 @@ def refresh_formats(self):
     if getattr(settings, 'SHRINK_NEW_MEDIA_METADATA', False):
         response = filter_response(metadata, True)
 
+    # Collect every change and save it with one ingest: each separate
+    # save_to_metadata call re-reads and re-ingests all formats (MED-663).
+    updates = dict()
+
     # save the new list of thumbnails
     thumbnails = self.get_metadata_first_value(
         'thumbnails',
@@ -195,7 +199,7 @@ def refresh_formats(self):
         arg_dict=response,
     )
     field = self.get_metadata_field('thumbnails')
-    self.save_to_metadata(field, thumbnails)
+    updates[field] = thumbnails
     fmt_dict['t'] = 'thumbnails'
     fmt_dict['s'] = ' and '
 
@@ -209,20 +213,21 @@ def refresh_formats(self):
         pass
     else:
         field = self.get_metadata_field('thumbnail')
-        self.save_to_metadata(field, thumbnail)
+        updates[field] = thumbnail
         fmt_dict['j'] = ', and '
         fmt_dict['s'] = '; '
         fmt_dict['t'] = 'thumbnail' + fmt_dict['j'] + fmt_dict['t']
         fmt_dict['j'] = ', '
 
     field = self.get_metadata_field('formats')
-    self.save_to_metadata(field, response.get(field, []))
-    self.save_to_metadata(refreshed_key, response.get('epoch', formats_seconds))
+    updates[field] = response.get(field, [])
+    updates[refreshed_key] = response.get('epoch', formats_seconds)
     if data.get('availability', 'public') != response.get('availability', 'public'):
-        self.save_to_metadata('availability', response.get('availability', 'public'))
+        updates['availability'] = response.get('availability', 'public')
         fmt_dict['a'] = 'availability'
         fmt_dict['j'] = ', and ' if 'thumbnails' == fmt_dict['t'] else ', '
         fmt_dict['s'] = '; '
+    self.save_dict_to_metadata(updates)
     return (True, False, 'updated formats{s}{a}{j}{t}'.format(**{k:fmt_dict[k] for k in 'sajt'}))
 
 
