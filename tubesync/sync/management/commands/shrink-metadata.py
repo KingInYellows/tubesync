@@ -42,14 +42,28 @@ class Command(BaseCommand):
         stats = dict(rows=0, formats=0, before=0, after=0)
         metadata_updates = list()
         format_updates = list()
-        for md in Metadata.objects.filter(uuid__in=uuids):
+        # select_for_update locks the rows on PostgreSQL / MySQL, so a
+        # refresh cannot commit between this read and the bulk_update and
+        # then be overwritten with the older snapshot. SQLite ignores it;
+        # there the IMMEDIATE transaction already holds the write lock.
+        # Lock metadata before formats, the same order ingest_metadata
+        # writes them, so the two cannot deadlock.
+        metadata_rows = list(
+            Metadata.objects.select_for_update().filter(uuid__in=uuids).order_by('uuid')
+        )
+        formats_by_md = dict()
+        for mdf in MetadataFormat.objects.select_for_update().filter(
+            metadata_id__in=uuids,
+        ).order_by('metadata_id', 'number'):
+            formats_by_md.setdefault(mdf.metadata_id, list()).append(mdf)
+        for md in metadata_rows:
             new_value = json_normalise(filter_response(md.value, True))
             stats['before'] += _size(md.value)
             stats['after'] += _size(new_value)
             if new_value != md.value:
                 md.value = new_value
                 metadata_updates.append(md)
-            for mdf in md.format.all():
+            for mdf in formats_by_md.get(md.uuid, ()):
                 new_format = json_normalise(shrink_formats([mdf.value])[0])
                 stats['before'] += _size(mdf.value)
                 stats['after'] += _size(new_format)
