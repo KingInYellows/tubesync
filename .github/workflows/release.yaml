@@ -77,6 +77,9 @@ jobs:
         - registry: ${{ needs.info.outputs.REGISTRY }}
           username: ${{ github.repository_owner }}
           password: ${{ 'meeb' == github.repository_owner && secrets.REGISTRY_ACCESS_TOKEN || secrets.GITHUB_TOKEN }}
+      # Authenticates the Dockerfile's GitHub API lookups (MED-668).
+      build-secrets: |
+        github_token: ${{ toJSON(secrets.GITHUB_TOKEN) }}
     with:
       cache: false
       # cache-mode: max
