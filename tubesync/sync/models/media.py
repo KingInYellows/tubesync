@@ -793,13 +793,27 @@ class Media(models.Model):
 
 
     def save_to_metadata(self, key, value, /):
+        self.save_dict_to_metadata({key: value})
+
+
+    def save_dict_to_metadata(self, updates, /):
+        '''
+            Sets several metadata keys with one load and one ingest.
+
+            Each `save_to_metadata` call loads every stored format and
+            ingests the whole dict again, so callers changing more than
+            one key should use this instead (MED-663).
+        '''
+        assert isinstance(updates, dict), type(updates)
+        if not updates:
+            return
         data = self.loaded_metadata
         using_new_metadata = self.get_metadata_first_value(
             ('migrated', '_using_table',),
             False,
             arg_dict=data,
         )
-        data[key] = value
+        data.update(updates)
         self.ingest_metadata(data)
         if not using_new_metadata:
             epoch = self.get_metadata_first_value('epoch', arg_dict=data)
@@ -808,7 +822,7 @@ class Media(models.Model):
             self.metadata = self.metadata_dumps(arg_dict=migrated)
             self.save()
         from common.logger import log
-        log.debug(f'Saved to metadata: {self.key} / {self.uuid}: {key=}: {value}')
+        log.debug(f'Saved to metadata: {self.key} / {self.uuid}: keys={sorted(updates)}')
 
 
     @property

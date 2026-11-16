@@ -1,5 +1,6 @@
 import os
 
+from django.conf import settings
 from common.logger import log
 from common.utils import remove_enclosed
 from sync.utils import filter_response
@@ -235,8 +236,14 @@ def yt_dlp_postprocessor_hook(event):
         from .models import Media
         try:
             media = Media.objects.get(pk=status.media_uuid)
-            media.new_metadata.value['requested_formats'] = event['info_dict'].get('requested_formats')
-            media.new_metadata.value['requested_subtitles'] = event['info_dict'].get('requested_subtitles')
+            requested = dict(
+                requested_formats=event['info_dict'].get('requested_formats'),
+                requested_subtitles=event['info_dict'].get('requested_subtitles'),
+            )
+            if getattr(settings, 'SHRINK_NEW_MEDIA_METADATA', False):
+                # Drop expiring URLs and fragments here too (MED-663).
+                requested = filter_response(requested, True)
+            media.new_metadata.value.update(requested)
             media.new_metadata.save()
         except Media.DoesNotExist:
             pass

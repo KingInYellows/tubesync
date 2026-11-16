@@ -175,7 +175,12 @@ def _drop_url_keys(arg_dict, key, filter_func):
 
     assert isinstance(arg_dict, dict)
     if key in arg_dict.keys():
-        list_of_dictionaries(arg_dict[key], _del_url_keys)
+        value = arg_dict[key]
+        if isinstance(value, dict):
+            # requested_subtitles maps each language to one dict, not a list
+            _del_url_keys(value)
+        else:
+            list_of_dictionaries(value, _del_url_keys)
 
 
 def filter_response(arg_dict, copy_arg=False):
