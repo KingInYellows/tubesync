@@ -26,6 +26,7 @@ from django.utils import timezone
 
 from sync.choices import Val, YouTube_SourceType
 from sync.models import Media, Metadata, MetadataFormat, Source
+from sync.utils import filter_response
 
 
 TESTDATA = Path(__file__).resolve().parent.parent / 'testdata'
@@ -173,3 +174,23 @@ class MetadataStorageTestCase(TestCase):
         out = StringIO()
         call_command('shrink-metadata', '--pause', '0', stdout=out)
         self.assertIn('changed 0 metadata rows and 0 format rows', out.getvalue())
+
+
+class RequestedSubtitlesFilterTestCase(TestCase):
+
+    def test_dict_valued_language_entry_loses_expiring_url(self):
+        # yt-dlp's requested_subtitles maps a language to a single dict,
+        # which the Merger hook stores (MED-663 review finding).
+        data = dict(requested_subtitles=dict(
+            en=dict(ext='vtt', name='English',
+                    url='https://www.youtube.com/api/timedtext?v=x&expire=1700000000'),
+            de=dict(ext='vtt', url='https://example.com/subs/de.vtt'),
+        ))
+        result = filter_response(data, True)
+        self.assertNotIn('url', result['requested_subtitles']['en'])
+        self.assertEqual(result['requested_subtitles']['en']['ext'], 'vtt')
+        # a URL that does not expire is kept
+        self.assertEqual(
+            result['requested_subtitles']['de']['url'],
+            'https://example.com/subs/de.vtt',
+        )
