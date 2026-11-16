@@ -206,9 +206,11 @@ ARG TARGETARCH
 # MED-668). An optional `github_token` BuildKit secret is exposed to this one
 # RUN as GITHUB_API_KEY, which asfald sends as a bearer token. Secret mounts are
 # never written into a layer or the build cache; without the secret the build
-# behaves exactly as before (anonymous calls).
+# behaves exactly as before (anonymous calls). An empty secret is dropped, so
+# asfald never sends a blank bearer token.
 RUN --mount=type=secret,id=github_token,env=GITHUB_API_KEY,required=false \
     set -eu ; \
+    test -n "${GITHUB_API_KEY:-}" || unset -v GITHUB_API_KEY ; \
 \
     decide_arch() { \
         case "${TARGETARCH}" in \
@@ -303,6 +305,7 @@ ADD "${FFMPEG_URL}/${FFMPEG_FILE_SUMS}" "${DESTDIR}/"
 # tailwindcss-download stage (MED-668).
 RUN --mount=type=secret,id=github_token,env=GITHUB_API_KEY,required=false \
     set -eu ; \
+    test -n "${GITHUB_API_KEY:-}" || unset -v GITHUB_API_KEY ; \
 \
     decide_arch() { \
         case "${TARGETARCH}" in \

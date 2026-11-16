@@ -67,6 +67,14 @@ jobs:
 
   scripts:
     runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    env:
+      # The install scripts run `asfald-latest --get-hash`, which looks up
+      # release digests through the GitHub REST API. Authenticate it so a
+      # shared runner IP's anonymous 60-calls-an-hour quota can't fail CI
+      # (MED-668). asfald reads GITHUB_API_KEY; it is not GITHUB_TOKEN.
+      GITHUB_API_KEY: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v7
       - name: Make directories
