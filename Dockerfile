@@ -201,7 +201,16 @@ ARG DESTDIR="/downloaded"
 ARG TAILWINDCSS_URL="https://github.com/tailwindlabs/tailwindcss/releases/latest/download"
 
 ARG TARGETARCH
-RUN set -eu ; \
+# asfald-latest looks up release digests through the GitHub REST API, which
+# allows only 60 anonymous calls an hour per IP (shared CI runner IPs run out;
+# MED-668). An optional `github_token` BuildKit secret is exposed to this one
+# RUN as GITHUB_API_KEY, which asfald sends as a bearer token. Secret mounts are
+# never written into a layer or the build cache; without the secret the build
+# behaves exactly as before (anonymous calls). An empty secret is dropped, so
+# asfald never sends a blank bearer token.
+RUN --mount=type=secret,id=github_token,env=GITHUB_API_KEY,required=false \
+    set -eu ; \
+    test -n "${GITHUB_API_KEY:-}" || unset -v GITHUB_API_KEY ; \
 \
     decide_arch() { \
         case "${TARGETARCH}" in \
@@ -292,7 +301,11 @@ ARG FFMPEG_URL="https://github.com/yt-dlp/FFmpeg-Builds/releases/download/autobu
 ARG DESTDIR="/downloaded"
 ARG TARGETARCH
 ADD "${FFMPEG_URL}/${FFMPEG_FILE_SUMS}" "${DESTDIR}/"
-RUN set -eu ; \
+# Optional `github_token` secret for asfald-latest's GitHub API calls; see the
+# tailwindcss-download stage (MED-668).
+RUN --mount=type=secret,id=github_token,env=GITHUB_API_KEY,required=false \
+    set -eu ; \
+    test -n "${GITHUB_API_KEY:-}" || unset -v GITHUB_API_KEY ; \
 \
     decide_arch() { \
         case "${TARGETARCH}" in \

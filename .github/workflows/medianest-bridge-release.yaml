@@ -315,3 +315,12 @@ jobs:
             YTDLP_DATE=${{ fromJSON(needs.info.outputs.ytdlp-latest-release).tag.name }}
             YTDLP_EJS_VERSION=${{ fromJSON(needs.info.outputs.ejs-latest-release).tag.name }}
             MEDIANEST_BRIDGE_UPSTREAM_SHA=${{ needs.info.outputs.upstream-sha }}
+          # The Dockerfile's asfald-latest downloads look up release digests
+          # through the GitHub REST API; anonymously that is 60 calls an hour
+          # per runner IP, which shared runners exhaust (MED-668). The job's
+          # own read-only token raises it to the per-repository limit. It is a
+          # BuildKit secret: mounted only for those RUN steps, never stored in
+          # an image layer or the build cache. The scheduled refresh workflow
+          # builds through this job, so it is covered too.
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}

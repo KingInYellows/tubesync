@@ -67,6 +67,14 @@ jobs:
 
   scripts:
     runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    env:
+      # The install scripts run `asfald-latest --get-hash`, which looks up
+      # release digests through the GitHub REST API. Authenticate it so a
+      # shared runner IP's anonymous 60-calls-an-hour quota can't fail CI
+      # (MED-668). asfald reads GITHUB_API_KEY; it is not GITHUB_TOKEN.
+      GITHUB_API_KEY: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v7
       - name: Make directories
@@ -192,6 +200,10 @@ jobs:
             YTDLP_DATE=${{ fromJSON(needs.info.outputs.ytdlp-latest-release).tag.name }}
             YTDLP_EJS_VERSION=${{ fromJSON(needs.info.outputs.ejs-latest-release).tag.name }}
           cache-from: type=gha,scope=buildkit-linux-amd64
+          # Authenticates the Dockerfile's GitHub API lookups (MED-668); see
+          # the `github_token` secret mounts in the Dockerfile.
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
           load: true
           platforms: linux/amd64
           push: false
@@ -222,6 +234,9 @@ jobs:
         - registry: ${{ needs.info.outputs.REGISTRY }}
           username: ${{ github.repository_owner }}
           password: ${{ 'meeb' == github.repository_owner && secrets.REGISTRY_ACCESS_TOKEN || secrets.GITHUB_TOKEN }}
+      # Authenticates the Dockerfile's GitHub API lookups (MED-668).
+      build-secrets: |
+        github_token: ${{ toJSON(secrets.GITHUB_TOKEN) }}
     with:
       cache: true
       cache-mode: max
