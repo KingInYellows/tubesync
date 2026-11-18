@@ -7,7 +7,7 @@
 '''
 import logging
 import uuid
-from unittest import mock
+from unittest import mock, skipUnless
 
 from django import db
 from django.test import TransactionTestCase, override_settings
@@ -93,6 +93,16 @@ class HistoricalTaskLockTestCase(TransactionTestCase):
         ):
             self._signal(FakeTask())
 
+    def test_locked_wording_from_other_databases_still_raises(self):
+        # MySQL reports a locked account as "Account is locked."
+        locked = db.OperationalError('Account is locked.')
+        with (
+            mock.patch.object(TaskHistory.objects, 'get_or_create', side_effect=locked),
+            mock.patch.object(db.connections['default'], 'vendor', 'mysql'),
+            self.assertRaises(db.OperationalError),
+        ):
+            self._signal(FakeTask())
+
     def test_locked_error_inside_a_transaction_still_raises(self):
         locked = db.OperationalError('database is locked')
         with (
@@ -122,24 +132,48 @@ class FsTasksHoldNoOuterTransactionTestCase(TransactionTestCase):
             make_media(source, key=f'rename{n}', downloaded=True)
 
         states = list()
-        real_qs_gen = sync_tasks.qs_gen
+        outer_blocks = list()
 
-        def recording_qs_gen(*args, **kwargs):
-            for item in real_qs_gen(*args, **kwargs):
-                states.append(db.connection.in_atomic_block)
-                yield item
+        def recording_rename(*args, **kwargs):
+            # A per-item transaction nested in an outer one would be a
+            # savepoint; on its own it is the outermost block.
+            states.append((
+                db.connection.in_atomic_block,
+                list(db.connection.savepoint_ids),
+            ))
+            # One transaction around the whole loop would show up here as
+            # the same outermost block on every call.
+            outer_blocks.append(db.connection.atomic_blocks[0])
 
-        with (
-            mock.patch.object(sync_tasks, 'qs_gen', recording_qs_gen),
-            mock.patch('sync.models.Media.rename_files') as rename_files,
-        ):
+        with mock.patch('sync.models.Media.rename_files', recording_rename):
             sync_tasks.rename_all_media_for_source.call_local(str(source.pk))
 
-        self.assertEqual(rename_files.call_count, 3)
-        self.assertTrue(states)
-        # between items no transaction (and so no write lock) is held
-        self.assertFalse(any(states))
+        self.assertEqual(states, [(True, [])] * 3)
+        self.assertEqual(len({id(block) for block in outer_blocks}), 3)
 
+    @override_settings(RENAME_ALL_SOURCES=True)
+    def test_rename_all_media_for_source_passes_over_items_that_stop_qualifying(self):
+        source = make_source(key='UC_rename_skip', directory='rename_skip')
+        media_list = [
+            make_media(source, key=f'rskip{n}', downloaded=True)
+            for n in range(3)
+        ]
+        keys = sorted(m.pk for m in media_list)
+
+        renamed = list()
+
+        def recording_rename(instance, *args, **kwargs):
+            renamed.append(instance.pk)
+            if 1 == len(renamed):
+                # a user acts on the second item while the task runs
+                sync_tasks.Media.objects.filter(pk=keys[1]).update(downloaded=False)
+
+        with mock.patch('sync.models.Media.rename_files', recording_rename):
+            sync_tasks.rename_all_media_for_source.call_local(str(source.pk))
+
+        self.assertEqual(renamed, [keys[0], keys[2]])
+
+    @skipUnless('sqlite' == db.connection.vendor, 'the back-off sleep is SQLite only')
     def test_save_media_sleeps_outside_a_transaction(self):
         source = make_source(key='UC_save', directory='save')
         media = make_media(source, key='save1')
