@@ -362,6 +362,15 @@ def on_interrupted(signal_name, task_obj, exception_obj=None, /, *, huey=None):
 
 storage_key_prefix = 'task_history:'
 
+def is_sqlite_locked_error(exc):
+    '''
+        True for SQLite's "database is locked" / "database table is locked"
+        errors, which mean the lock wait ran out, not that anything is wrong
+        with the data or the query.
+    '''
+    return 'is locked' in str(exc).lower()
+
+
 def historical_task(signal_name, task_obj, exception_obj=None, /, *, huey=None):
     signal_time = time.monotonic()
     signal_dt = datetime.datetime.now(datetime.timezone.utc)
@@ -369,6 +378,8 @@ def historical_task(signal_name, task_obj, exception_obj=None, /, *, huey=None):
     assert hasattr(huey, 'get') and callable(huey.get)
     assert hasattr(huey, 'put') and callable(huey.put)
 
+    from django import db
+    from common.logger import log
     from common.models import TaskHistory
     add_to_elapsed_signals = frozenset((
         signals.SIGNAL_TIMEOUT,
@@ -413,65 +424,81 @@ def historical_task(signal_name, task_obj, exception_obj=None, /, *, huey=None):
         huey.get(key=storage_key)
     else:
         huey.put(key=storage_key, data=history)
-    # created never used
-    # ruff: ignore[RUF059]
-    th, created = TaskHistory.objects.get_or_create(
-        task_id=str(task_obj.id),
-        name=f"{task_obj.__module__}.{task_obj.name}",
-        queue=huey.name,
-    )
-    th.priority = task_obj.priority
-    th.task_params = list((
-        list(task_obj.args),
-        repr(task_obj.kwargs),
-    ))
-    if signal_name == signals.SIGNAL_EXECUTING:
-        th.attempts += 1
-        th.start_at = signal_dt
-    elif exception_obj is not None:
-        th.failed_at = signal_dt
-        th.last_error = str(exception_obj)
-    elif signal_name == signals.SIGNAL_ENQUEUED:
-        scheduled_at = huey.scheduled_at_from_task(task_obj)
-        if scheduled_at:
-            th.scheduled_at = scheduled_at
-        if not th.verbose_name:
-            try:
-                from django.core.exceptions import ValidationError
-                from sync.models import Media, Source
-            # ruff: ignore[S110]
-            except:
-                pass
-            else:
+    # The TaskHistory row is bookkeeping for the dashboard and the bridge.
+    # A busy SQLite database must not turn it into an error on the task: a
+    # signal is sent on the worker's own thread, and huey logs anything
+    # this raises as an unhandled exception (MED-695). Log a warning and
+    # let the next signal for this task write the row instead.
+    try:
+        # created never used
+        # ruff: ignore[RUF059]
+        th, created = TaskHistory.objects.get_or_create(
+            task_id=str(task_obj.id),
+            name=f"{task_obj.__module__}.{task_obj.name}",
+            queue=huey.name,
+        )
+        th.priority = task_obj.priority
+        th.task_params = list((
+            list(task_obj.args),
+            repr(task_obj.kwargs),
+        ))
+        if signal_name == signals.SIGNAL_EXECUTING:
+            th.attempts += 1
+            th.start_at = signal_dt
+        elif exception_obj is not None:
+            th.failed_at = signal_dt
+            th.last_error = str(exception_obj)
+        elif signal_name == signals.SIGNAL_ENQUEUED:
+            scheduled_at = huey.scheduled_at_from_task(task_obj)
+            if scheduled_at:
+                th.scheduled_at = scheduled_at
+            if not th.verbose_name:
                 try:
-                    key = task_obj.args[0]
-                    instance_uuid_str = str(key)
-                    instance_uuid = uuid.UUID(instance_uuid_str)
-                except IndexError:
-                    key = None
-                except RuntimeError:
-                    instance_uuid_str = None
-                except ValueError:
-                    instance_uuid = None
+                    from django.core.exceptions import ValidationError
+                    from sync.models import Media, Source
+                # ruff: ignore[S110]
+                except:
+                    pass
                 else:
-                    for model in (Source, Media,):
-                        try:
-                            model_instance = model.objects.get(pk=instance_uuid)
-                        except (model.DoesNotExist, ValidationError,):
-                            pass
-                        else:
-                            if hasattr(model_instance, 'key'):
-                                th.verbose_name = f'{th.name} with: {model_instance.key}'
-                                if hasattr(model_instance, 'name'):
-                                    th.verbose_name += f' / {model_instance.name}'
-                            break
-    elif signal_name == signals.SIGNAL_SCHEDULED:
-        scheduled_at = huey.scheduled_at_from_task(task_obj)
-        if scheduled_at:
-            th.scheduled_at = scheduled_at
-    th.end_at = signal_dt
-    th.elapsed = history['elapsed']
-    th.save()
+                    try:
+                        key = task_obj.args[0]
+                        instance_uuid_str = str(key)
+                        instance_uuid = uuid.UUID(instance_uuid_str)
+                    except IndexError:
+                        key = None
+                    except RuntimeError:
+                        instance_uuid_str = None
+                    except ValueError:
+                        instance_uuid = None
+                    else:
+                        for model in (Source, Media,):
+                            try:
+                                model_instance = model.objects.get(pk=instance_uuid)
+                            except (model.DoesNotExist, ValidationError,):
+                                pass
+                            else:
+                                if hasattr(model_instance, 'key'):
+                                    th.verbose_name = f'{th.name} with: {model_instance.key}'
+                                    if hasattr(model_instance, 'name'):
+                                        th.verbose_name += f' / {model_instance.name}'
+                                break
+        elif signal_name == signals.SIGNAL_SCHEDULED:
+            scheduled_at = huey.scheduled_at_from_task(task_obj)
+            if scheduled_at:
+                th.scheduled_at = scheduled_at
+        th.end_at = signal_dt
+        th.elapsed = history['elapsed']
+        th.save()
+    except db.OperationalError as exc:
+        # Inside a caller's transaction the error has already marked it
+        # for rollback, so the caller has to see it.
+        if not is_sqlite_locked_error(exc) or db.connection.in_atomic_block:
+            raise
+        log.warning(
+            'Skipped task history update for %s (%s) on %s: %s',
+            task_obj.id, signal_name, huey.name, exc,
+        )
+
 
 # Registration of shared signal handlers
 
