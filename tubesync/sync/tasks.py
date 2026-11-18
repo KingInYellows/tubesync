@@ -238,9 +238,7 @@ def cleanup_completed_tasks():
     TaskHistory.objects.filter(end_at__lt=delta).delete()
 
 
-def save_model(instance):
-    with atomic(durable=False):
-        instance.save()
+def sqlite_backoff():
     if 'sqlite' != db_vendor:
         return
 
@@ -248,6 +246,12 @@ def save_model(instance):
     # "database is locked" errors
     arg = getattr(settings, 'SQLITE_DELAY_FLOAT', 1.5)
     time.sleep(random.expovariate(arg))
+
+
+def save_model(instance):
+    with atomic(durable=False):
+        instance.save()
+    sqlite_backoff()
 
 
 def update_model(instance, **kwargs):
@@ -875,17 +879,18 @@ def rename_media(media_id):
 
 @db_task(delay=60, priority=80, retries=5, retry_delay=60, queue=Val(TaskQueue.FS))
 def save_media(media_id):
-    # No outer transaction (MED-695). TubeSync opens SQLite transactions
-    # with BEGIN IMMEDIATE, so wrapping the whole task held the write lock
-    # through the lookup and through save_model()'s back-off sleep. During
-    # the save_all_media_for_source burst that queued every other writer,
-    # including huey's task-history bookkeeping, behind it. save_model()
-    # opens its own transaction around the save itself.
-    try:
-        media = Media.objects.get(pk=media_id)
-    except Media.DoesNotExist as e:
-        raise CancelExecution(_('no such media'), retry=False) from e
-    else:
+    # The lookup and the save share one short transaction, so no other
+    # writer can commit between them and have its change (a user's skip,
+    # say) overwritten by this full-row save. The SQLite back-off sleep
+    # runs after the commit (MED-695): with the sleep inside, TubeSync's
+    # BEGIN IMMEDIATE held the write lock for nothing, and during the
+    # save_all_media_for_source burst every other writer, including huey's
+    # task-history bookkeeping, queued behind it.
+    with atomic(durable=True):
+        try:
+            media = Media.objects.get(pk=media_id)
+        except Media.DoesNotExist as e:
+            raise CancelExecution(_('no such media'), retry=False) from e
         migrating_lock = huey_lock_task(
             f'index_media:{media.uuid}',
             queue=Val(TaskQueue.FS),
@@ -896,7 +901,8 @@ def save_media(media_id):
             f'media:{media.uuid}',
             queue=Val(TaskQueue.DB),
         ):
-            save_model(media)
+            media.save()
+    sqlite_backoff()
 
 
 @db_task(delay=60, priority=50, retries=6, retry_delay=3600, queue=Val(TaskQueue.LIMIT))

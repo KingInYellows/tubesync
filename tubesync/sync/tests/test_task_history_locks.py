@@ -153,3 +153,30 @@ class FsTasksHoldNoOuterTransactionTestCase(TransactionTestCase):
             sync_tasks.save_media.call_local(str(media.pk))
 
         self.assertEqual(states, [False])
+
+    def test_save_media_looks_up_and_saves_in_one_transaction(self):
+        '''
+            No other writer may commit between the lookup and the full-row
+            save, or the save would overwrite its change.
+        '''
+        source = make_source(key='UC_save_tx', directory='save_tx')
+        media = make_media(source, key='save2')
+
+        seen = list()
+        real_get = sync_tasks.Media.objects.get
+
+        def recording_get(*args, **kwargs):
+            seen.append(('get', db.connection.in_atomic_block))
+            return real_get(*args, **kwargs)
+
+        def recording_save(instance, *args, **kwargs):
+            seen.append(('save', db.connection.in_atomic_block))
+
+        with (
+            mock.patch.object(sync_tasks.Media.objects, 'get', recording_get),
+            mock.patch('sync.models.Media.save', recording_save),
+            mock.patch.object(sync_tasks.time, 'sleep'),
+        ):
+            sync_tasks.save_media.call_local(str(media.pk))
+
+        self.assertEqual(seen, [('get', True), ('save', True)])
