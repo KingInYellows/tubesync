@@ -238,9 +238,7 @@ def cleanup_completed_tasks():
     TaskHistory.objects.filter(end_at__lt=delta).delete()
 
 
-def save_model(instance):
-    with atomic(durable=False):
-        instance.save()
+def sqlite_backoff():
     if 'sqlite' != db_vendor:
         return
 
@@ -248,6 +246,12 @@ def save_model(instance):
     # "database is locked" errors
     arg = getattr(settings, 'SQLITE_DELAY_FLOAT', 1.5)
     time.sleep(random.expovariate(arg))
+
+
+def save_model(instance):
+    with atomic(durable=False):
+        instance.save()
+    sqlite_backoff()
 
 
 def update_model(instance, **kwargs):
@@ -874,13 +878,19 @@ def rename_media(media_id):
 
 
 @db_task(delay=60, priority=80, retries=5, retry_delay=60, queue=Val(TaskQueue.FS))
-@atomic(durable=True)
 def save_media(media_id):
-    try:
-        media = Media.objects.get(pk=media_id)
-    except Media.DoesNotExist as e:
-        raise CancelExecution(_('no such media'), retry=False) from e
-    else:
+    # The lookup and the save share one short transaction, so no other
+    # writer can commit between them and have its change (a user's skip,
+    # say) overwritten by this full-row save. The SQLite back-off sleep
+    # runs after the commit (MED-695): with the sleep inside, TubeSync's
+    # BEGIN IMMEDIATE held the write lock for nothing, and during the
+    # save_all_media_for_source burst every other writer, including huey's
+    # task-history bookkeeping, queued behind it.
+    with atomic(durable=True):
+        try:
+            media = Media.objects.get(pk=media_id)
+        except Media.DoesNotExist as e:
+            raise CancelExecution(_('no such media'), retry=False) from e
         migrating_lock = huey_lock_task(
             f'index_media:{media.uuid}',
             queue=Val(TaskQueue.FS),
@@ -891,7 +901,8 @@ def save_media(media_id):
             f'media:{media.uuid}',
             queue=Val(TaskQueue.DB),
         ):
-            save_model(media)
+            media.save()
+    sqlite_backoff()
 
 
 @db_task(delay=60, priority=50, retries=6, retry_delay=3600, queue=Val(TaskQueue.LIMIT))
@@ -1374,8 +1385,14 @@ def refresh_formats(media_id):
 
 
 @db_task(delay=300, priority=80, retries=5, retry_delay=600, queue=Val(TaskQueue.FS))
-@atomic(durable=True)
 def rename_all_media_for_source(source_id):
+    # No outer transaction (MED-695). TubeSync opens SQLite transactions
+    # with BEGIN IMMEDIATE, so a durable atomic() around this task held the
+    # database write lock while it walked every downloaded item of the
+    # source and touched its files. That is longer than the SQLite lock
+    # wait, so the save_media burst queued just before it and huey's
+    # task-history writes failed with "database is locked" during the
+    # nightly crawl. Each item still gets its own short transaction below.
     try:
         source = Source.objects.get(pk=source_id)
     except Source.DoesNotExist as e:
