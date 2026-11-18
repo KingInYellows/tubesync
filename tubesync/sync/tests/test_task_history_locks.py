@@ -132,6 +132,7 @@ class FsTasksHoldNoOuterTransactionTestCase(TransactionTestCase):
             make_media(source, key=f'rename{n}', downloaded=True)
 
         states = list()
+        outer_blocks = list()
 
         def recording_rename(*args, **kwargs):
             # A per-item transaction nested in an outer one would be a
@@ -140,11 +141,15 @@ class FsTasksHoldNoOuterTransactionTestCase(TransactionTestCase):
                 db.connection.in_atomic_block,
                 list(db.connection.savepoint_ids),
             ))
+            # One transaction around the whole loop would show up here as
+            # the same outermost block on every call.
+            outer_blocks.append(db.connection.atomic_blocks[0])
 
         with mock.patch('sync.models.Media.rename_files', recording_rename):
             sync_tasks.rename_all_media_for_source.call_local(str(source.pk))
 
         self.assertEqual(states, [(True, [])] * 3)
+        self.assertEqual(len({id(block) for block in outer_blocks}), 3)
 
     @override_settings(RENAME_ALL_SOURCES=True)
     def test_rename_all_media_for_source_passes_over_items_that_stop_qualifying(self):
