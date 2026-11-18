@@ -1415,24 +1415,33 @@ def rename_all_media_for_source(source_id):
         source=source,
         downloaded=True,
     )
-    for media in qs_gen(mqs):
+    # Without the outer transaction the matching rows can change while
+    # this runs (a user skips an item, say). Take the keys up front, then
+    # re-read each item inside its own transaction: offset paging would
+    # shift and miss items, and an item that no longer qualifies is
+    # simply passed over instead of failing the whole task.
+    media_keys = list(mqs.order_by('pk').values_list('pk', flat=True))
+    for media_key in media_keys:
         try:
             with (
                 huey_lock_task(
-                    f'index_media:{media.uuid}',
+                    f'index_media:{media_key}',
                     queue=Val(TaskQueue.FS),
                 ),
                 huey_lock_task(
-                    f'media:{media.uuid}',
+                    f'media:{media_key}',
                     queue=Val(TaskQueue.DB),
                 ),
                 atomic(durable=False),
             ):
+                media = mqs.filter(pk=media_key).first()
+                if media is None:
+                    continue
                 media.rename_files()
         except TaskLockedException:
             # good luck to you in the queue!
             rename_media(
-                str(media.pk),
+                str(media_key),
                 delay=rename_media.settings.get('delay'),
             )
             continue

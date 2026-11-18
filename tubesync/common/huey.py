@@ -428,7 +428,10 @@ def historical_task(signal_name, task_obj, exception_obj=None, /, *, huey=None):
     # A busy SQLite database must not turn it into an error on the task: a
     # signal is sent on the worker's own thread, and huey logs anything
     # this raises as an unhandled exception (MED-695). Log a warning and
-    # let the next signal for this task write the row instead.
+    # skip this update. A skipped update is not replayed: a later signal
+    # writes only its own fields, so a skipped EXECUTING leaves attempts and
+    # start_at behind, and a skipped final signal (COMPLETE, ERROR) can
+    # leave the row looking like a running task.
     try:
         # created never used
         # ruff: ignore[RUF059]
@@ -492,7 +495,13 @@ def historical_task(signal_name, task_obj, exception_obj=None, /, *, huey=None):
     except db.OperationalError as exc:
         # Inside a caller's transaction the error has already marked it
         # for rollback, so the caller has to see it.
-        if not is_sqlite_locked_error(exc) or db.connection.in_atomic_block:
+        # Other databases report unrelated errors with the same words
+        # (MySQL: "Account is locked"), so only SQLite is let through.
+        if (
+            'sqlite' != db.connection.vendor or
+            not is_sqlite_locked_error(exc) or
+            db.connection.in_atomic_block
+        ):
             raise
         log.warning(
             'Skipped task history update for %s (%s) on %s: %s',
