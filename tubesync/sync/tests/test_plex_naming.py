@@ -364,6 +364,72 @@ class PlexNamingCommandTestCase(TestCase):
             output = run('--source', source.key, '--artist-titles', '--apply')
             self.assertIn('renamed/rewrote 1, busy 0, failed 0', output)
 
+    NEW_STEM = 's2017e091101 - Hans Zimmer - no fancy stuff title [vid1]'
+
+    def test_rerun_records_a_video_moved_before_its_path_was_saved(self):
+        with temp_download_root():
+            source, media, old_path = self._live_music()
+            run('--source', source.key, '--artist-titles')  # preview only
+            Source.objects.filter(pk=source.pk).update(
+                media_format=artist_media_format(BRIDGE_FORMAT),
+            )
+            # an earlier run moved the video, then the save failed
+            season = old_path.parent
+            new_video = season / (self.NEW_STEM + '.mkv')
+            old_path.rename(new_video)
+            old_sub = season / (old_path.stem + '.en.vtt')
+            old_sub.write_text('subs', encoding='utf-8')
+            output = run('--source', source.key, '--artist-titles', '--apply')
+            self.assertIn('recorded already-moved video vid1', output)
+            self.assertIn('renamed/rewrote 1, busy 0, failed 0', output)
+            media.refresh_from_db()
+            self.assertEqual(Path(media.media_file.path), new_video)
+            self.assertFalse(old_sub.exists())
+            self.assertEqual(
+                (season / (self.NEW_STEM + '.en.vtt')).read_text(encoding='utf-8'), 'subs',
+            )
+            self.assertTrue((season / (self.NEW_STEM + '.nfo')).exists())
+
+    def test_rerun_moves_sidecars_left_by_a_failed_sidecar_move(self):
+        with temp_download_root():
+            source, media, old_path = self._live_music()
+            season = old_path.parent
+            old_sub = season / (old_path.stem + '.en.vtt')
+            old_sub.write_text('subs', encoding='utf-8')
+            real_replace = Path.replace
+
+            def failing_replace(path, target):
+                if path.name.endswith('.en.vtt'):
+                    raise OSError('sidecar move failed')
+                return real_replace(path, target)
+
+            with patch.object(Path, 'replace', failing_replace):
+                with self.assertRaises(CommandError):
+                    run('--source', source.key, '--artist-titles', '--apply')
+            self.assertTrue(old_sub.exists())
+            # the recovery leaves partial downloads alone
+            partial = season / (old_path.stem + '.f137.mp4.part')
+            partial.write_bytes(b'x')
+            output = run('--source', source.key, '--artist-titles', '--apply')
+            self.assertIn('renamed/rewrote 1, busy 0, failed 0', output)
+            self.assertFalse(old_sub.exists())
+            self.assertTrue((season / (self.NEW_STEM + '.en.vtt')).exists())
+            self.assertTrue(partial.exists())
+
+    def test_leftover_sidecar_never_overwrites(self):
+        with temp_download_root():
+            source, media, old_path = self._live_music()
+            run('--source', source.key, '--artist-titles', '--apply')
+            season = old_path.parent
+            stale = season / (old_path.stem + '.en.vtt')
+            stale.write_text('old', encoding='utf-8')
+            current = season / (self.NEW_STEM + '.en.vtt')
+            current.write_text('new', encoding='utf-8')
+            with self.assertRaises(CommandError):
+                run('--source', source.key, '--artist-titles', '--apply')
+            self.assertEqual(current.read_text(encoding='utf-8'), 'new')
+            self.assertTrue(stale.exists())
+
     def test_swallowed_nfo_permission_error_counts_as_failed(self):
         with temp_download_root():
             source, media, old_path = self._live_music()

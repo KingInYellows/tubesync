@@ -57,6 +57,10 @@ _ARTIST_SWAPS = {
 }
 
 
+# yt-dlp files of a download still in progress
+_PARTIAL_SUFFIXES = ('.part', '.ytdl', '.temp')
+
+
 def _escape_literal(text):
     return text.replace('{', '{{').replace('}', '}}')
 
@@ -276,6 +280,10 @@ class Command(BaseCommand):
                     if media is None or not media.media_file:
                         continue
                     expected = Path(media.filepath)
+                    if self._record_moved_video(media, expected):
+                        self.stdout.write(
+                            f'  recorded already-moved video {media.key}: {expected}',
+                        )
                     occupied = self._occupied_targets(media, expected)
                     if occupied:
                         failed += 1
@@ -290,6 +298,14 @@ class Command(BaseCommand):
                         self.stdout.write(
                             f'  NOT RENAMED {media.key}: {media.media_file.path} '
                             f'(target {expected} exists, or the file is missing)',
+                        )
+                        continue
+                    blocked = self._adopt_leftover_sidecars(media)
+                    if blocked:
+                        failed += 1
+                        self.stdout.write(
+                            f'  NOT MOVED {media.key}: already exists: '
+                            + ', '.join(str(p) for p in blocked),
                         )
                         continue
                     if media.source.write_nfo and media.write_nfo_file() is None:
@@ -311,6 +327,57 @@ class Command(BaseCommand):
             f'  renamed/rewrote {done}, busy {skipped}, failed {failed}',
         )
         return skipped + failed
+
+    @staticmethod
+    def _record_moved_video(media, expected):
+        '''
+            Recovery for an earlier run that moved the video but did not
+            save the new media_file (rename_files() moves first, saves
+            after): when the recorded file is gone and the expected one
+            exists, record the expected one. True when it did.
+        '''
+        current = Path(media.media_file.path)
+        if current == expected or current.exists() or not expected.is_file():
+            return False
+        media.media_file.name = str(
+            expected.relative_to(media.media_file.storage.location),
+        )
+        media.save(update_fields=('media_file',))
+        return True
+
+    @staticmethod
+    def _adopt_leftover_sidecars(media):
+        '''
+            Recovery for an earlier run that saved the new video path but
+            failed part way through the sidecar moves: files anywhere in
+            the source folder carrying this media's `[key]` and not the
+            video's stem are moved to the video's stem (same suffix).
+            Only for formats whose file stem ends with `[key]`. Partial
+            downloads are left alone. Returns the targets that already
+            exist (nothing is overwritten); empty when all moved.
+        '''
+        video = Path(media.media_file.path)
+        marker = f'[{media.key}]'
+        new_dir, new_stem = directory_and_stem(video)
+        if not new_stem.endswith(marker) or not video.is_file():
+            return []
+        blocked = []
+        top = Path(media.source.directory_path)
+        for path in sorted(top.rglob('*' + glob_quote(marker) + '*')):
+            if not path.is_file() or path.samefile(video):
+                continue
+            name = path.name
+            if name.endswith(_PARTIAL_SUFFIXES):
+                continue
+            suffix = name[name.index(marker) + len(marker):]
+            target = new_dir / (new_stem + suffix)
+            if target == path:
+                continue
+            if target.exists() or target.is_symlink():
+                blocked.append(target)
+                continue
+            path.rename(target)
+        return blocked
 
     @staticmethod
     def _occupied_targets(media, expected):

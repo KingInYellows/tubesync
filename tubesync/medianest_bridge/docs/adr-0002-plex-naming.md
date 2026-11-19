@@ -51,6 +51,9 @@ change. Neither do the download location, mounts or `/data` paths.
    media in its own short transaction, under the same huey locks as
    `rename_all_media_for_source` (MED-695: no lock held across the run).
    Busy media are skipped and make the command exit non-zero; run it again.
+   A re-run also finishes an interrupted rename: it records a video that
+   was moved but not saved, and moves sidecars still named after the old
+   file (never overwriting; partial downloads are left alone).
 
 ## Runbook (dockerdownload, after the image with this change is deployed)
 
