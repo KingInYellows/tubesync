@@ -2,10 +2,6 @@
     MED-702: applies the Plex naming changes to files already on disk,
     without downloading anything.
 
-      --season-posters   every `Season NN/` folder gets a `SeasonNN.jpg`
-                         copy of the show's season-poster.jpg (the name
-                         Plex's local media assets read). Missing ones
-                         only; nothing is replaced.
       --show-title TEXT  writes the source's tvshow.nfo with this <title>
                          as a hand-owned file (no TubeSync checksum), which
                          TubeSync then leaves alone and every episode NFO's
@@ -17,9 +13,8 @@
                          names and episode NFO <title>s start with the
                          artist (sync/plex_naming.py).
 
-    --show-title and --artist-titles take exactly one --source. When
-    either changes anything, every downloaded media of that source is then
-    renamed to its new name and its NFO rewritten, one media at a time:
+    Both act on the one --source. When either changes anything, every
+    downloaded media of that source is then renamed to its new name and its NFO rewritten, one media at a time:
     each in its own short transaction under the same huey locks as
     rename_all_media_for_source, so no database lock is held across the
     run (MED-695). Media busy elsewhere are skipped and reported; re-run
@@ -45,9 +40,7 @@ from huey.exceptions import TaskLockedException
 from sync.choices import Val, TaskQueue
 from sync.models import Media, Source
 from sync.models.media import _format_field_names
-from sync.plex_naming import (
-    ARTIST_TITLE_FIELDS, ensure_media_season_poster, write_season_posters,
-)
+from sync.plex_naming import ARTIST_TITLE_FIELDS
 from sync.tvshow_nfo import (
     _invalidate_show_title_cache, build_tvshow_nfo, resolve_show_title,
 )
@@ -107,18 +100,16 @@ def hand_owned_tvshow_nfo(source, title):
 class Command(BaseCommand):
 
     help = (
-        'MED-702: Plex season posters, artist-first episode titles and a '
-        'show title override, applied to files already downloaded. '
+        'MED-702: artist-first episode titles and a show title override, '
+        'applied to files already downloaded. '
         'Dry-run unless --apply.'
     )
 
     def add_arguments(self, parser):
         parser.add_argument(
-            '--source', action='append', default=[],
-            help='Source key, uuid, name or directory (repeatable). '
-                 'Default for --season-posters: every source.',
+            '--source', required=True,
+            help='Source key, uuid, name or directory',
         )
-        parser.add_argument('--season-posters', action='store_true')
         parser.add_argument('--show-title', default=None)
         parser.add_argument('--artist-titles', action='store_true')
         parser.add_argument('--apply', action='store_true')
@@ -127,23 +118,18 @@ class Command(BaseCommand):
             help='How many old -> new paths to print per source (default 5)',
         )
 
-    def _sources(self, wanted):
-        if not wanted:
-            return list(Source.objects.order_by('name'))
-        found = []
-        for value in wanted:
-            q = Q(key=value) | Q(name=value) | Q(directory=value)
-            try:
-                q |= Q(pk=uuid.UUID(value))
-            except ValueError:
-                pass
-            matches = list(Source.objects.filter(q))
-            if len(matches) != 1:
-                raise CommandError(
-                    f'--source {value!r} matches {len(matches)} sources',
-                )
-            found.append(matches[0])
-        return found
+    def _source(self, value):
+        q = Q(key=value) | Q(name=value) | Q(directory=value)
+        try:
+            q |= Q(pk=uuid.UUID(value))
+        except ValueError:
+            pass
+        matches = list(Source.objects.filter(q))
+        if len(matches) != 1:
+            raise CommandError(
+                f'--source {value!r} matches {len(matches)} sources',
+            )
+        return matches[0]
 
     def handle(self, *args, **options):
         apply_changes = options['apply']
@@ -152,36 +138,17 @@ class Command(BaseCommand):
             show_title = show_title.strip()
             if not show_title:
                 raise CommandError('--show-title must not be empty')
-        per_source = show_title is not None or options['artist_titles']
-        if not (per_source or options['season_posters']):
+        if show_title is None and not options['artist_titles']:
             raise CommandError(
-                'Nothing to do: give --season-posters, --show-title '
-                'and/or --artist-titles',
+                'Nothing to do: give --show-title and/or --artist-titles',
             )
-        sources = self._sources(options['source'])
-        if per_source and len(sources) != 1:
-            raise CommandError(
-                '--show-title and --artist-titles need exactly one --source',
-            )
+        source = self._source(options['source'])
         mode = 'APPLY' if apply_changes else 'DRY-RUN'
-        self.stdout.write(f'[{mode}] {len(sources)} source(s)')
-        problems = 0
-        if per_source:
-            problems += self._naming(
-                sources[0], show_title, options['artist_titles'],
-                apply_changes, options['examples'],
-            )
-        if options['season_posters']:
-            for source in sources:
-                written = write_season_posters(
-                    source.directory_path, apply_changes=apply_changes,
-                )
-                verb = 'wrote' if apply_changes else 'would write'
-                self.stdout.write(
-                    f'{source.name}: {verb} {len(written)} season poster(s)',
-                )
-                for path in written:
-                    self.stdout.write(f'  {path}')
+        self.stdout.write(f'[{mode}]')
+        problems = self._naming(
+            source, show_title, options['artist_titles'],
+            apply_changes, options['examples'],
+        )
         if problems:
             raise CommandError(
                 f'{problems} media skipped or failed; see above, then re-run',
@@ -248,7 +215,7 @@ class Command(BaseCommand):
         '''
             rename_all_media_for_source's per-item loop, plus an NFO
             rewrite for media whose path did not change (rename_files only
-            rewrites the NFO after a move) and the season poster check.
+            rewrites the NFO after a move).
         '''
         mqs = Media.objects.filter(source_id=source.pk, downloaded=True)
         keys = list(mqs.order_by('pk').values_list('pk', flat=True))
@@ -277,7 +244,6 @@ class Command(BaseCommand):
                         )
                         continue
                     media.write_nfo_file()
-                ensure_media_season_poster(media)
                 done += 1
             except TaskLockedException:
                 skipped += 1

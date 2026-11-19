@@ -1,6 +1,5 @@
 '''
-    MED-702: Plex season posters, artist-first episode titles and the
-    show title override (sync/plex_naming.py, medianest_plex_naming).
+    MED-702: artist-first episode titles and the show title override (sync/plex_naming.py, medianest_plex_naming).
 
     All filesystem writes go to a temporary DOWNLOAD_ROOT, never the real
     downloads folder.
@@ -28,10 +27,7 @@ from sync.management.commands.medianest_plex_naming import (
 )
 from sync.models import Media, Source
 from sync.models._migrations import media_file_storage
-from sync.plex_naming import (
-    artist_title, ensure_season_poster, season_poster_name,
-    write_season_posters,
-)
+from sync.plex_naming import artist_title
 from sync.tvshow_nfo import (
     _clear_show_title_cache, resolve_show_title, write_tvshow_nfo,
 )
@@ -146,59 +142,6 @@ class ArtistTitleTestCase(SimpleTestCase):
         self.assertIsNone(artist_media_format('{title}_{key}.{ext}'))
 
 
-class SeasonPosterTestCase(SimpleTestCase):
-
-    def test_documented_plex_name(self):
-        self.assertEqual(season_poster_name(2026), 'Season2026.jpg')
-        self.assertEqual(season_poster_name(1), 'Season01.jpg')
-
-    def test_copies_season_poster_into_each_season_folder_once(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            show = Path(tmp) / 'acq-src-PLx'
-            (show / 'Season 2025').mkdir(parents=True)
-            (show / 'Season 2026').mkdir()
-            (show / 'extras').mkdir()
-            (show / 'poster.jpg').write_bytes(b'show-poster')
-            (show / 'season-poster.jpg').write_bytes(b'season-art')
-            # a hand-placed season poster is never replaced
-            (show / 'Season 2025' / 'Season2025.jpg').write_bytes(b'by-hand')
-
-            dry = write_season_posters(show, apply_changes=False)
-            self.assertEqual(dry, [show / 'Season 2026' / 'Season2026.jpg'])
-            self.assertFalse((show / 'Season 2026' / 'Season2026.jpg').exists())
-
-            written = write_season_posters(show)
-            self.assertEqual(written, dry)
-            self.assertEqual(
-                (show / 'Season 2026' / 'Season2026.jpg').read_bytes(), b'season-art',
-            )
-            self.assertEqual(
-                (show / 'Season 2025' / 'Season2025.jpg').read_bytes(), b'by-hand',
-            )
-            self.assertEqual(list((show / 'extras').iterdir()), [])
-            # show-level files untouched
-            self.assertEqual((show / 'poster.jpg').read_bytes(), b'show-poster')
-            self.assertEqual(write_season_posters(show), [])
-
-    def test_falls_back_to_poster_and_skips_without_any_image(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            show = Path(tmp)
-            (show / 'Season 2026').mkdir()
-            self.assertIsNone(ensure_season_poster(show, show / 'Season 2026'))
-            (show / 'poster.jpg').write_bytes(b'show-poster')
-            target = ensure_season_poster(show, show / 'Season 2026')
-            self.assertEqual(target.read_bytes(), b'show-poster')
-
-    def test_never_follows_a_symlink_at_the_target(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            show = Path(tmp)
-            (show / 'Season 2026').mkdir()
-            (show / 'season-poster.jpg').write_bytes(b'season-art')
-            (show / 'Season 2026' / 'Season2026.jpg').symlink_to(show / 'elsewhere.jpg')
-            self.assertIsNone(ensure_season_poster(show, show / 'Season 2026'))
-            self.assertFalse((show / 'elsewhere.jpg').exists())
-
-
 class ArtistTitleMediaTestCase(TestCase):
 
     def setUp(self):
@@ -266,7 +209,7 @@ class PlexNamingCommandTestCase(TestCase):
             nfo_before = (source.directory_path / 'tvshow.nfo').read_bytes()
             output = run(
                 '--source', source.key, '--artist-titles',
-                '--show-title', 'Live Sessions', '--season-posters',
+                '--show-title', 'Live Sessions',
             )
             self.assertIn('[DRY-RUN]', output)
             self.assertIn(str(old_path), output)
@@ -280,9 +223,6 @@ class PlexNamingCommandTestCase(TestCase):
             self.assertEqual(
                 (source.directory_path / 'tvshow.nfo').read_bytes(), nfo_before,
             )
-            self.assertFalse(
-                (old_path.parent / 'Season2017.jpg').exists(),
-            )
 
     def test_apply_renames_rewrites_nfos_and_keeps_the_show_title(self):
         with temp_download_root():
@@ -290,7 +230,7 @@ class PlexNamingCommandTestCase(TestCase):
             with patch('sync.signals.save_all_media_for_source') as cascade:
                 run(
                     '--source', source.key, '--artist-titles',
-                    '--show-title', 'Live Sessions', '--season-posters', '--apply',
+                    '--show-title', 'Live Sessions', '--apply',
                 )
             cascade.assert_not_called()
             source.refresh_from_db()
@@ -308,7 +248,7 @@ class PlexNamingCommandTestCase(TestCase):
             self.assertEqual(nfo.find('title').text, 'Hans Zimmer - no fancy stuff title')
             self.assertEqual(nfo.find('showtitle').text, 'Live Sessions')
             self.assertFalse(old_path.with_suffix('.nfo').exists())
-            self.assertEqual((season / 'Season2017.jpg').read_bytes(), b'season-art')
+            self.assertFalse((season / 'Season2017.jpg').exists())
             # the show folder (Kometa's match key) and its poster stay put
             self.assertEqual(source.directory, 'acq-src-PLabcdefghijklmnopqrstuv')
             self.assertEqual(
@@ -331,6 +271,23 @@ class PlexNamingCommandTestCase(TestCase):
             output = run('--source', source.key, '--artist-titles', '--apply')
             self.assertIn('renamed/rewrote 1, busy 0, failed 0', output)
             self.assertTrue(new_video.exists())
+
+    def test_artist_titles_alone_keep_the_automatic_show_title(self):
+        with temp_download_root():
+            source, media, old_path = self._live_music()
+            tvshow = source.directory_path / 'tvshow.nfo'
+            tvshow_before = tvshow.read_bytes()
+            show_title = resolve_show_title(source)
+            run('--source', source.key, '--artist-titles', '--apply')
+            media.refresh_from_db()
+            nfo = ElementTree.fromstring(
+                Path(media.media_file.path).with_suffix('.nfo').read_text(encoding='utf-8'),
+            )
+            self.assertEqual(nfo.find('title').text, 'Hans Zimmer - no fancy stuff title')
+            self.assertEqual(nfo.find('showtitle').text, show_title)
+            # still TubeSync's own file, unchanged
+            self.assertEqual(tvshow.read_bytes(), tvshow_before)
+            self.assertIn(b'checksum="sha256:', tvshow_before)
 
     def test_show_title_alone_rewrites_nfos_without_renaming(self):
         with temp_download_root():
@@ -356,14 +313,13 @@ class PlexNamingCommandTestCase(TestCase):
                     run('--source', source.key, '--artist-titles', '--apply')
             self.assertTrue(old_path.exists())
 
-    def test_per_source_options_need_one_source(self):
+    def test_needs_an_action_and_one_matching_source(self):
         with temp_download_root():
-            make_source()
-            make_source(key='PLother', name='other', directory='other')
+            source = make_source()
             with self.assertRaises(CommandError):
-                run('--artist-titles')
+                run('--artist-titles', '--source', 'nope')
             with self.assertRaises(CommandError):
-                run()
+                run('--source', source.key)
 
     def test_hand_owned_nfo_built_when_missing(self):
         with temp_download_root():
