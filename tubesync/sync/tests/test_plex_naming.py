@@ -430,6 +430,30 @@ class PlexNamingCommandTestCase(TestCase):
             self.assertEqual(current.read_text(encoding='utf-8'), 'new')
             self.assertTrue(stale.exists())
 
+    def test_refuses_to_carry_another_medias_files(self):
+        with temp_download_root():
+            fmt = '{title_full}.{ext}'
+            source = make_source(media_format=fmt)
+            source.make_directory()
+            song = Media.objects.create(
+                key='vid1', source=source,
+                metadata=metadata_with(title='Song', artists=['Hans Zimmer']),
+            )
+            song_path = download_dummy_file(song)
+            live = Media.objects.create(
+                key='vid2', source=source,
+                metadata=metadata_with(title='Song.live', artists=[]),
+            )
+            live_path = download_dummy_file(live)
+            self.assertEqual(song_path.name, 'Song.mkv')
+            self.assertEqual(live_path.name, 'Song.live.mkv')
+            with self.assertRaises(CommandError):
+                run('--source', source.key, '--artist-titles', '--apply')
+            self.assertTrue(song_path.exists())
+            self.assertTrue(live_path.exists())
+            live.refresh_from_db()
+            self.assertEqual(Path(live.media_file.path), live_path)
+
     def test_swallowed_nfo_permission_error_counts_as_failed(self):
         with temp_download_root():
             source, media, old_path = self._live_music()

@@ -285,10 +285,12 @@ class Command(BaseCommand):
                             f'  recorded already-moved video {media.key}: {expected}',
                         )
                     occupied = self._occupied_targets(media, expected)
+                    occupied += self._other_media_in_move_set(media, expected)
                     if occupied:
                         failed += 1
                         self.stdout.write(
-                            f'  NOT RENAMED {media.key}: already exists: '
+                            f'  NOT RENAMED {media.key}: already exists or '
+                            'belongs to another media: '
                             + ', '.join(str(p) for p in occupied),
                         )
                         continue
@@ -378,6 +380,42 @@ class Command(BaseCommand):
                 continue
             path.rename(target)
         return blocked
+
+    @staticmethod
+    def _other_media_in_move_set(media, expected):
+        '''
+            Paths rename_files() would carry along that belong to another
+            media: it moves every file starting with the old stem, so with
+            a format like `{title_full}.{ext}` the video "Song.live.mp4"
+            (or its "Song.live.nfo") of another media goes with "Song.mp4".
+            Those are returned so the move is refused instead.
+        '''
+        current = Path(media.media_file.path)
+        if current == expected or not current.exists():
+            return []
+        old_dir, old_stem = directory_and_stem(current)
+        candidates = [
+            path for path in old_dir.glob(glob_quote(old_stem) + '*')
+            if path != current
+        ]
+        if not candidates:
+            return []
+        others = []
+        for other in Media.objects.filter(
+            source_id=media.source_id, downloaded=True,
+        ).exclude(pk=media.pk).only('media_file'):
+            if other.media_file:
+                other_path = Path(other.media_file.path)
+                if other_path.parent == old_dir:
+                    others.append(other_path)
+        claimed = []
+        for path in candidates:
+            for video in others:
+                _, stem = directory_and_stem(video)
+                if path == video or path.name.startswith(stem + '.'):
+                    claimed.append(path)
+                    break
+        return claimed
 
     @staticmethod
     def _occupied_targets(media, expected):
