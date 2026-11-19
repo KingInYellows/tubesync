@@ -53,7 +53,8 @@ change. Neither do the download location, mounts or `/data` paths.
    Busy media are skipped and make the command exit non-zero; run it again.
    A re-run also finishes an interrupted rename: it records a video that
    was moved but not saved, and moves sidecars still named after the old
-   file (never overwriting; partial downloads are left alone).
+   file (never overwriting; partial downloads are left alone). Both need
+   the file stem to end with `[{key}]`, as the bridge formats do.
 
 ## Runbook (dockerdownload, after the image with this change is deployed)
 
