@@ -390,6 +390,31 @@ class PlexNamingCommandTestCase(TestCase):
             )
             self.assertTrue((season / (self.NEW_STEM + '.nfo')).exists())
 
+    def test_missing_video_never_adopts_a_file_without_its_key(self):
+        with temp_download_root():
+            fmt = '{title_full}.{ext}'
+            source = make_source(media_format=fmt)
+            source.make_directory()
+            song = Media.objects.create(
+                key='vid1', source=source,
+                metadata=metadata_with(title='Song', artists=['Artist']),
+            )
+            song_path = download_dummy_file(song)
+            # another media already owns the name this one would move to
+            other = Media.objects.create(
+                key='vid2', source=source,
+                metadata=metadata_with(title='Artist - Song', artists=[]),
+            )
+            other_path = download_dummy_file(other)
+            self.assertEqual(other_path.name, 'Artist - Song.mkv')
+            song_path.unlink()
+            with self.assertRaises(CommandError):
+                run('--source', source.key, '--artist-titles', '--apply')
+            song.refresh_from_db()
+            self.assertEqual(Path(song.media_file.path), song_path)
+            other.refresh_from_db()
+            self.assertEqual(Path(other.media_file.path), other_path)
+
     def test_rerun_moves_sidecars_left_by_a_failed_sidecar_move(self):
         with temp_download_root():
             source, media, old_path = self._live_music()

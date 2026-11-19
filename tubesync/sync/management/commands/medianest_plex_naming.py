@@ -336,11 +336,23 @@ class Command(BaseCommand):
             Recovery for an earlier run that moved the video but did not
             save the new media_file (rename_files() moves first, saves
             after): when the recorded file is gone and the expected one
-            exists, record the expected one. True when it did.
+            exists, is named with this media's `[key]` and is recorded by
+            no other media, record it. True when it did. Otherwise the
+            media is refused later as an occupied target.
         '''
         current = Path(media.media_file.path)
         if current == expected or current.exists() or not expected.is_file():
             return False
+        # evidence the file is this media's: its name carries this media's
+        # [key], and no other media records it
+        _, expected_stem = directory_and_stem(expected)
+        if not expected_stem.endswith(f'[{media.key}]'):
+            return False
+        for other in Media.objects.filter(
+            source_id=media.source_id,
+        ).exclude(pk=media.pk).only('media_file'):
+            if other.media_file and Path(other.media_file.path) == expected:
+                return False
         media.media_file.name = str(
             expected.relative_to(media.media_file.storage.location),
         )
