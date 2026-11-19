@@ -27,7 +27,7 @@ from sync.management.commands.medianest_plex_naming import (
 )
 from sync.models import Media, Source
 from sync.models._migrations import media_file_storage
-from sync.plex_naming import artist_title
+from sync.plex_naming import artist_title, metadata_artists
 from sync.tvshow_nfo import (
     _clear_show_title_cache, resolve_show_title, write_tvshow_nfo,
 )
@@ -123,6 +123,13 @@ class ArtistTitleTestCase(SimpleTestCase):
              'Most Spectacular Covers in The Voice History'),
             ('Nutshell', ['Alice In Chains', 'Layne Staley'],
              'Alice In Chains, Layne Staley - Nutshell'),
+            # the artist must start the title as a whole name
+            ('My Heart Will Go On - Live', ['Heart'],
+             'Heart - My Heart Will Go On - Live'),
+            ('Heartbreak Hotel', ['Heart'], 'Heart - Heartbreak Hotel'),
+            # any credited artist may come first in a collaboration
+            ('Lisa Gerrard & Hans Zimmer | Now We Are Free', ['Hans Zimmer', 'Lisa Gerrard'],
+             'Lisa Gerrard & Hans Zimmer - Now We Are Free'),
         )
         for title, artists, expected in cases:
             with self.subTest(title=title):
@@ -139,6 +146,12 @@ class ArtistTitleTestCase(SimpleTestCase):
         )
         swapped = artist_media_format(BRIDGE_FORMAT)
         self.assertEqual(artist_media_format(swapped), swapped)
+        # escaped literals stay, conversions and specs are kept
+        self.assertEqual(
+            artist_media_format('{{title_full}}/{title_full!s:.100} [{key}].{ext}'),
+            '{{title_full}}/{artist_title!s:.100} [{key}].{ext}',
+        )
+        self.assertIsNone(artist_media_format('{{title_full}} [{key}].{ext}'))
         self.assertIsNone(artist_media_format('{title}_{key}.{ext}'))
 
 
@@ -181,6 +194,15 @@ class ArtistTitleMediaTestCase(TestCase):
             self.assertEqual(nfo.find('season').text, '2017')
             self.assertEqual(nfo.find('episode').text, '91101')
 
+
+    def test_singular_artist_used_when_the_list_is_empty(self):
+        with temp_download_root():
+            source = make_source()
+            media = Media.objects.create(
+                key='vid1', source=source,
+                metadata=metadata_with(artists=[], artist='Hans Zimmer, Lisa Gerrard'),
+            )
+            self.assertEqual(metadata_artists(media), ['Hans Zimmer', 'Lisa Gerrard'])
 
 class PlexNamingCommandTestCase(TestCase):
 

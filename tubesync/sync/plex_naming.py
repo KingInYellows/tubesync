@@ -33,12 +33,27 @@ def _split_title(title):
     return left, right
 
 
+def _starts_with_name(text, names):
+    '''
+        True when `text` begins with one of `names` as a whole name
+        ("Hans Zimmer & Lisa Gerrard" for "Lisa Gerrard" is False, for
+        "Hans Zimmer" True; "My Heart Will Go On" for "Heart" is False).
+    '''
+    folded = text.casefold()
+    for name in names:
+        name = name.casefold()
+        if folded.startswith(name) and (
+            len(folded) == len(name) or not folded[len(name)].isalnum()
+        ):
+            return True
+    return False
+
+
 def artist_title(title, artists=()):
     '''
         "Artist - Title" for an episode title:
-          - with an artist from the video's metadata (`artists`, first
-            name used to match): a title that already names that artist
-            first is kept, with its separator made " - " ("Hans Zimmer |
+          - with artists from the video's metadata: a title that already
+            starts with one of them (as a whole name) is kept, with its separator made " - " ("Hans Zimmer |
             Live in Cologne" -> "Hans Zimmer - Live in Cologne"); any other
             title is prefixed ("Live in Cologne" -> "Hans Zimmer - Live in
             Cologne");
@@ -51,10 +66,9 @@ def artist_title(title, artists=()):
     names = [str(a).strip() for a in (artists or ()) if str(a or '').strip()]
     left, right = _split_title(title)
     if names:
-        first = names[0].casefold()
-        if left is not None and first in left.casefold():
+        if left is not None and _starts_with_name(left, names):
             return f'{left} - {right}'
-        if title.casefold().startswith(first):
+        if _starts_with_name(title, names):
             return title
         artist = ', '.join(names)
         return f'{artist} - {title}' if title else artist
@@ -69,9 +83,13 @@ def metadata_artists(media):
         else `artist` (a comma-joined string). Empty when YouTube has no
         music credit for the video.
     '''
-    value = media.get_metadata_first_value(('artists', 'artist'))
-    if isinstance(value, (list, tuple)):
-        return [str(v).strip() for v in value if str(v or '').strip()]
-    if isinstance(value, str) and value.strip():
-        return [part.strip() for part in value.split(',') if part.strip()]
+    for key in ('artists', 'artist'):
+        value = media.get_metadata_first_value(key)
+        names = []
+        if isinstance(value, (list, tuple)):
+            names = [str(v).strip() for v in value if str(v or '').strip()]
+        elif isinstance(value, str):
+            names = [part.strip() for part in value.split(',') if part.strip()]
+        if names:
+            return names
     return []

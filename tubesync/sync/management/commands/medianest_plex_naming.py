@@ -26,6 +26,7 @@
     --apply writes. Run it as the app user (`docker exec -u app ...`).
 '''
 import copy
+import string
 import uuid
 from pathlib import Path
 from xml.etree import ElementTree
@@ -50,24 +51,46 @@ from sync.tvshow_nfo import (
 from sync.utils import write_text_file
 
 
-_ARTIST_SWAPS = (
-    ('{title_full_bounded}', '{artist_title_bounded}'),
-    ('{title_full}', '{artist_title}'),
-)
+_ARTIST_SWAPS = {
+    'title_full_bounded': 'artist_title_bounded',
+    'title_full': 'artist_title',
+}
+
+
+def _escape_literal(text):
+    return text.replace('{', '{{').replace('}', '}}')
 
 
 def artist_media_format(media_format):
     '''
-        `media_format` with its full-title key swapped for the matching
-        artist-title key, or None when it has neither (nothing to swap).
-        Unchanged when it already uses an artist-title key.
+        `media_format` with its full-title fields swapped for the matching
+        artist-title fields, or None when it has neither (nothing to swap).
+        Only real replacement fields are swapped: escaped `{{title_full}}`
+        text stays, and a conversion or format spec is kept. Unchanged when
+        it already uses an artist-title key.
     '''
     if _format_field_names(media_format) & ARTIST_TITLE_FIELDS:
         return media_format
-    for old, new in _ARTIST_SWAPS:
-        if old in media_format:
-            return media_format.replace(old, new)
-    return None
+    try:
+        parts = list(string.Formatter().parse(media_format))
+    except ValueError:
+        return None
+    out = []
+    swapped = False
+    for literal, field, spec, conversion in parts:
+        out.append(_escape_literal(literal))
+        if field is None:
+            continue
+        if field in _ARTIST_SWAPS:
+            field = _ARTIST_SWAPS[field]
+            swapped = True
+        out.append(
+            '{' + field
+            + (f'!{conversion}' if conversion else '')
+            + (f':{spec}' if spec else '')
+            + '}'
+        )
+    return ''.join(out) if swapped else None
 
 
 def hand_owned_tvshow_nfo(source, title):
