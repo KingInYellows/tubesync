@@ -269,7 +269,14 @@ class Command(BaseCommand):
                             f'(target {expected} exists, or the file is missing)',
                         )
                         continue
-                    media.write_nfo_file()
+                    if media.source.write_nfo and media.write_nfo_file() is None:
+                        # write_nfo_file() logs and swallows PermissionError
+                        failed += 1
+                        self.stdout.write(
+                            f'  NFO NOT WRITTEN {media.key}: {media.nfopath} '
+                            '(permission denied; see the log)',
+                        )
+                        continue
                 done += 1
             except TaskLockedException:
                 skipped += 1

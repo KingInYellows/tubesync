@@ -342,6 +342,17 @@ class PlexNamingCommandTestCase(TestCase):
             output = run('--source', source.key, '--artist-titles', '--apply')
             self.assertIn('renamed/rewrote 1, busy 0, failed 0', output)
 
+    def test_swallowed_nfo_permission_error_counts_as_failed(self):
+        with temp_download_root():
+            source, media, old_path = self._live_music()
+            self.assertTrue(source.write_nfo)
+            # write_nfo_file() logs a PermissionError and returns None
+            with patch.object(Media, 'write_nfo_file', return_value=None):
+                with self.assertRaises(CommandError):
+                    run('--source', source.key, '--artist-titles', '--apply')
+            output = run('--source', source.key, '--artist-titles', '--apply')
+            self.assertIn('renamed/rewrote 1, busy 0, failed 0', output)
+
     def test_preview_reads_metadata_with_shrinking_off(self):
         seen = []
         real = Media.loaded_metadata.fget
