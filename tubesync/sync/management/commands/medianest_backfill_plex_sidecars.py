@@ -206,7 +206,9 @@ _UNCLEANED_FIELDS = frozenset({'uploader', 'playlist_title'})
 # media_format fields whose value is media text that can be exactly "." or
 # ".." (clean_filename() keeps dots), so a directory segment made only of
 # them (and dots) can climb out of the source directory.
-_DOT_FIELDS = _UNCLEANED_FIELDS | {'title_full', 'title_full_bounded'}
+_DOT_FIELDS = _UNCLEANED_FIELDS | {
+    'title_full', 'title_full_bounded', 'artist_title', 'artist_title_bounded',
+}
 
 # media_format fields that always render some text without dots.
 _NEVER_EMPTY_FIELDS = frozenset((

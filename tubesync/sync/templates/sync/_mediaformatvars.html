@@ -89,6 +89,16 @@
       <td>My Video</td>
     </tr>
     <tr>
+      <td>{artist_title}</td>
+      <td>Media title starting with the artist, from the video's music credit or an "Artist - Title" / "Artist | Title" title; the episode NFO title uses it too</td>
+      <td>Hans Zimmer - Live in Cologne</td>
+    </tr>
+    <tr>
+      <td>{artist_title_bounded}</td>
+      <td>{artist_title}, cut to at most 150 bytes</td>
+      <td>Hans Zimmer - Live in Cologne</td>
+    </tr>
+    <tr>
       <td>{episode_yyyy}</td>
       <td>Episode year in YYYY, from the stable metadata publish date (UTC); can differ from {yyyy}, which uses the upload date</td>
       <td>2021</td>

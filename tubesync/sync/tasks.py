@@ -41,6 +41,7 @@ from common.utils import (  django_queryset_generator as qs_gen,
 from .choices import Val, IndexSchedule, TaskQueue
 from .models import Source, Media, MediaServer, Metadata
 from .tvshow_nfo import write_tvshow_nfo
+from .plex_naming import ensure_media_season_poster, write_season_posters
 from .utils import get_remote_image, resize_image_to_height, filter_response
 from .youtube import YouTubeError
 
@@ -826,6 +827,9 @@ def download_source_images(source_id):
             i = image_file = None
 
         log.info(f'Thumbnail downloaded for source with ID: {source_id} / {source}')
+        # Season folders get a SeasonYYYY.jpg copy of season-poster.jpg,
+        # the name Plex reads (MED-702). Only missing ones are written.
+        write_season_posters(source.directory_path)
     finally:
         # get_image_url above also populates the channel/playlist Metadata
         # cache resolve_show_title()/resolve_show_plot() prefer (F6) --
@@ -1275,6 +1279,9 @@ def download_media_file(media_id, override=False, *, task=None):
             media.rename_files()
             media.copy_thumbnail()
             media.write_nfo_file()
+            # A first video of a new year opens a new Season YYYY folder:
+            # give it the poster Plex reads (MED-702). Never raises.
+            ensure_media_season_poster(media)
             # Try to download a better format later, if the settings allow this
             if getattr(settings, 'VIDEO_HEIGHT_UPGRADE', False):
                 upgrade_media(
@@ -1445,6 +1452,10 @@ def rename_all_media_for_source(source_id):
                 delay=rename_media.settings.get('delay'),
             )
             continue
+    # Outside any transaction: a filesystem-only pass that fills in the
+    # SeasonYYYY.jpg poster of every season folder still missing one,
+    # including folders this rename just created (MED-702).
+    write_season_posters(source.directory_path)
 
 
 @db_task(delay=600, priority=70, retries=15, backoff_class=DjangoBackgroundTasksBackoff, task_base=AttemptsTask, queue=Val(TaskQueue.FS))
