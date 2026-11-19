@@ -88,6 +88,7 @@ def download_dummy_file(media):
     path.write_bytes(b'fake-mkv-bytes')
     media.media_file.name = str(path.relative_to(media_file_storage.location))
     media.downloaded = True
+    media.downloaded_filesize = path.stat().st_size
     media.save()
     media.write_nfo_file()
     return path
@@ -414,6 +415,22 @@ class PlexNamingCommandTestCase(TestCase):
             self.assertEqual(Path(song.media_file.path), song_path)
             other.refresh_from_db()
             self.assertEqual(Path(other.media_file.path), other_path)
+
+    def test_missing_video_never_adopts_an_unrelated_file_with_its_key(self):
+        with temp_download_root():
+            source, media, old_path = self._live_music()
+            Source.objects.filter(pk=source.pk).update(
+                media_format=artist_media_format(BRIDGE_FORMAT),
+            )
+            season = old_path.parent
+            stray = season / (self.NEW_STEM + '.mkv')
+            stray.write_bytes(b'not the downloaded video')
+            old_path.unlink()
+            with self.assertRaises(CommandError):
+                run('--source', source.key, '--artist-titles', '--apply')
+            media.refresh_from_db()
+            self.assertEqual(Path(media.media_file.path), old_path)
+            self.assertEqual(stray.read_bytes(), b'not the downloaded video')
 
     def test_rerun_moves_sidecars_left_by_a_failed_sidecar_move(self):
         with temp_download_root():

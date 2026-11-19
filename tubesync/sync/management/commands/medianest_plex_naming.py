@@ -336,7 +336,8 @@ class Command(BaseCommand):
             Recovery for an earlier run that moved the video but did not
             save the new media_file (rename_files() moves first, saves
             after): when the recorded file is gone and the expected one
-            exists, is named with this media's `[key]` and is recorded by
+            exists, is named with this media's `[key]`, has the size
+            recorded at download (`downloaded_filesize`) and is recorded by
             no other media, record it. True when it did. Otherwise the
             media is refused later as an occupied target.
         '''
@@ -347,6 +348,11 @@ class Command(BaseCommand):
         # [key], and no other media records it
         _, expected_stem = directory_and_stem(expected)
         if not expected_stem.endswith(f'[{media.key}]'):
+            return False
+        # and it is the size recorded when this media was downloaded
+        if not media.downloaded_filesize or (
+            expected.stat().st_size != media.downloaded_filesize
+        ):
             return False
         for other in Media.objects.filter(
             source_id=media.source_id,
