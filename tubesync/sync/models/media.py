@@ -60,6 +60,24 @@ EPISODE_OVERFLOW_BASE = 10_000_000
 EPISODE_OVERFLOW_MMDD_FACTOR = 10_000
 
 
+def _bounded_filename_text(text):
+    '''
+        `clean_filename(text)` bounded to at most
+        `TITLE_FULL_BOUNDED_MAX_BYTES` (150) UTF-8 bytes, truncated at a
+        character boundary so a multibyte character is never split, then
+        stripped.
+    '''
+    cleaned = clean_filename(text)
+    encoded = cleaned.encode('utf-8')
+    if len(encoded) <= TITLE_FULL_BOUNDED_MAX_BYTES:
+        return cleaned.strip()
+    # Decoding with errors='ignore' drops any incomplete trailing
+    # multibyte sequence left by the raw byte-offset truncation.
+    return encoded[:TITLE_FULL_BOUNDED_MAX_BYTES].decode(
+        'utf-8', errors='ignore',
+    ).strip()
+
+
 def _format_field_names(format_str):
     '''
         The top-level field names `format_str` substitutes, so
@@ -725,6 +743,8 @@ class Media(models.Model):
             'title': self.slugtitle,
             'title_full': clean_filename(self.title),
             'title_full_bounded': self.title_full_bounded,
+            'artist_title': clean_filename(self.artist_title),
+            'artist_title_bounded': _bounded_filename_text(self.artist_title),
             'key': self.key,
             'format': '-'.join(display_format['format']),
             'playlist_title': self.playlist_title,
@@ -949,15 +969,30 @@ class Media(models.Model):
             component past common filesystem length limits when
             combined with the rest of `media_format`.
         '''
-        cleaned = clean_filename(self.title)
-        encoded = cleaned.encode('utf-8')
-        if len(encoded) <= TITLE_FULL_BOUNDED_MAX_BYTES:
-            return cleaned.strip()
-        # Decoding with errors='ignore' drops any incomplete trailing
-        # multibyte sequence left by the raw byte-offset truncation.
-        return encoded[:TITLE_FULL_BOUNDED_MAX_BYTES].decode(
-            'utf-8', errors='ignore',
-        ).strip()
+        return _bounded_filename_text(self.title)
+
+    @property
+    def artist_title(self):
+        '''
+            The title as "Artist - Title" (MED-702, sync/plex_naming.py):
+            the `{artist_title}`/`{artist_title_bounded}` media_format keys,
+            and the NFO <title> of a source whose media_format uses them.
+        '''
+        from ..plex_naming import artist_title, metadata_artists
+        return artist_title(self.title, metadata_artists(self))
+
+    @property
+    def nfo_title(self):
+        '''
+            The episode NFO <title>: `artist_title` when the source's
+            media_format files videos by it, so the NFO and the filename
+            agree, else the plain title.
+        '''
+        from ..plex_naming import ARTIST_TITLE_FIELDS
+        used = _format_field_names(str(self.source.media_format))
+        if used & ARTIST_TITLE_FIELDS:
+            return self.artist_title
+        return self.title
 
     @property
     def thumbnail(self):
@@ -1198,7 +1233,7 @@ class Media(models.Model):
         nfo.text = '\n  '
         # title = media metadata title
         nfo.append(_nfo_element(nfo,
-            'title', clean_emoji(self.title),
+            'title', clean_emoji(self.nfo_title),
         ))
         # showtitle = resolved show title (Plex T2, sync/tvshow_nfo.py):
         # the <title> of a tvshow.nfo TubeSync leaves alone, else the same

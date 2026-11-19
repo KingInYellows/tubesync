@@ -533,6 +533,8 @@ class Source(db.models.Model):
             'title': 'some-media-title-name',
             'title_full': 'Some Media Title Name',
             'title_full_bounded': 'Some Media Title Name',
+            'artist_title': 'Some Artist - Some Media Title Name',
+            'artist_title_bounded': 'Some Artist - Some Media Title Name',
             'key': 'SoMeUnIqUiD',
             'format': '-'.join(fmt),
             'playlist_title': 'Some Playlist Title',
