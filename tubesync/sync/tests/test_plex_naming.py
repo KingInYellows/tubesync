@@ -432,6 +432,16 @@ class PlexNamingCommandTestCase(TestCase):
             self.assertEqual(Path(media.media_file.path), old_path)
             self.assertEqual(stray.read_bytes(), b'not the downloaded video')
 
+    def test_missing_video_at_its_path_counts_as_failed(self):
+        with temp_download_root():
+            source, media, old_path = self._live_music()
+            nfo = old_path.with_suffix('.nfo')
+            nfo_before = nfo.read_bytes()
+            old_path.unlink()
+            with self.assertRaises(CommandError):
+                run('--source', source.key, '--show-title', 'Live Sessions', '--apply')
+            self.assertEqual(nfo.read_bytes(), nfo_before)
+
     def test_rerun_moves_sidecars_left_by_a_failed_sidecar_move(self):
         with temp_download_root():
             source, media, old_path = self._live_music()

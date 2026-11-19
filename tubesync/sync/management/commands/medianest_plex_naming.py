@@ -295,7 +295,7 @@ class Command(BaseCommand):
                         )
                         continue
                     media.rename_files()
-                    if Path(media.media_file.path) != expected:
+                    if Path(media.media_file.path) != expected or not expected.is_file():
                         failed += 1
                         self.stdout.write(
                             f'  NOT RENAMED {media.key}: {media.media_file.path} '
