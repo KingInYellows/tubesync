@@ -33,11 +33,14 @@ from xml.etree import ElementTree
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Q
-from django.db.transaction import atomic
 from django_huey import lock_task as huey_lock_task
 from huey.exceptions import TaskLockedException
 
+from common.utils import directory_and_stem, glob_quote
 from sync.choices import Val, TaskQueue
+from sync.management.commands.medianest_backfill_plex_sidecars import (
+    _shrink_old_metadata_off,
+)
 from sync.models import Media, Source
 from sync.models.media import _format_field_names
 from sync.plex_naming import ARTIST_TITLE_FIELDS
@@ -145,10 +148,19 @@ class Command(BaseCommand):
         source = self._source(options['source'])
         mode = 'APPLY' if apply_changes else 'DRY-RUN'
         self.stdout.write(f'[{mode}]')
-        problems = self._naming(
-            source, show_title, options['artist_titles'],
-            apply_changes, options['examples'],
-        )
+        if apply_changes:
+            problems = self._naming(
+                source, show_title, options['artist_titles'],
+                apply_changes, options['examples'],
+            )
+        else:
+            # reading metadata with shrinking on writes it back; a
+            # preview must not write anything
+            with _shrink_old_metadata_off():
+                problems = self._naming(
+                    source, show_title, options['artist_titles'],
+                    apply_changes, options['examples'],
+                )
         if problems:
             raise CommandError(
                 f'{problems} media skipped or failed; see above, then re-run',
@@ -216,6 +228,13 @@ class Command(BaseCommand):
             rename_all_media_for_source's per-item loop, plus an NFO
             rewrite for media whose path did not change (rename_files only
             rewrites the NFO after a move).
+
+            No wrapping transaction: rename_files() saves media_file as
+            soon as the video moves, and a later sidecar or NFO error must
+            not roll that back while the file stays moved. Before a move,
+            any existing file at the new name (video or a same-stem
+            sidecar) refuses the media: rename_files() would overwrite
+            sidecars with Path.replace().
         '''
         mqs = Media.objects.filter(source_id=source.pk, downloaded=True)
         keys = list(mqs.order_by('pk').values_list('pk', flat=True))
@@ -229,12 +248,19 @@ class Command(BaseCommand):
                     huey_lock_task(
                         f'media:{media_key}', queue=Val(TaskQueue.DB),
                     ),
-                    atomic(durable=False),
                 ):
                     media = mqs.filter(pk=media_key).first()
                     if media is None or not media.media_file:
                         continue
                     expected = Path(media.filepath)
+                    occupied = self._occupied_targets(media, expected)
+                    if occupied:
+                        failed += 1
+                        self.stdout.write(
+                            f'  NOT RENAMED {media.key}: already exists: '
+                            + ', '.join(str(p) for p in occupied),
+                        )
+                        continue
                     media.rename_files()
                     if Path(media.media_file.path) != expected:
                         failed += 1
@@ -255,3 +281,22 @@ class Command(BaseCommand):
             f'  renamed/rewrote {done}, busy {skipped}, failed {failed}',
         )
         return skipped + failed
+
+    @staticmethod
+    def _occupied_targets(media, expected):
+        '''
+            Existing paths a move of `media` to `expected` would land on:
+            the new video path itself, or any file named with the new stem
+            (rename_files() moves every old-stem sidecar to the new stem).
+            Empty when the media does not move.
+        '''
+        current = Path(media.media_file.path)
+        if current == expected:
+            return []
+        new_dir, new_stem = directory_and_stem(expected)
+        if not new_dir.is_dir():
+            return []
+        return sorted(
+            path for path in new_dir.glob(glob_quote(new_stem) + '*')
+            if path.exists() or path.is_symlink()
+        )

@@ -313,6 +313,52 @@ class PlexNamingCommandTestCase(TestCase):
                     run('--source', source.key, '--artist-titles', '--apply')
             self.assertTrue(old_path.exists())
 
+    def test_occupied_sidecar_target_refuses_the_move(self):
+        with temp_download_root():
+            source, media, old_path = self._live_music()
+            season = source.directory_path / 'Season 2017'
+            stray = season / 's2017e091101 - Hans Zimmer - no fancy stuff title [vid1].nfo'
+            stray.write_text('keep me', encoding='utf-8')
+            with self.assertRaises(CommandError):
+                run('--source', source.key, '--artist-titles', '--apply')
+            self.assertTrue(old_path.exists())
+            self.assertEqual(stray.read_text(encoding='utf-8'), 'keep me')
+            media.refresh_from_db()
+            self.assertEqual(Path(media.media_file.path), old_path)
+
+    def test_failure_after_the_move_keeps_the_new_path_recorded(self):
+        with temp_download_root():
+            source, media, old_path = self._live_music()
+            with patch.object(Media, 'write_nfo_file', side_effect=OSError('disk')):
+                with self.assertRaises(CommandError):
+                    run('--source', source.key, '--artist-titles', '--apply')
+            media.refresh_from_db()
+            new_video = source.directory_path / 'Season 2017' / (
+                's2017e091101 - Hans Zimmer - no fancy stuff title [vid1].mkv'
+            )
+            self.assertTrue(new_video.exists())
+            self.assertEqual(Path(media.media_file.path), new_video)
+            # a re-run finishes the NFO
+            output = run('--source', source.key, '--artist-titles', '--apply')
+            self.assertIn('renamed/rewrote 1, busy 0, failed 0', output)
+
+    def test_preview_reads_metadata_with_shrinking_off(self):
+        seen = []
+        real = Media.loaded_metadata.fget
+
+        def spy(media):
+            from django.conf import settings
+            seen.append(getattr(settings, 'SHRINK_OLD_MEDIA_METADATA', False))
+            return real(media)
+
+        with temp_download_root():
+            source, media, old_path = self._live_music()
+            with override_settings(SHRINK_OLD_MEDIA_METADATA=True):
+                with patch.object(Media, 'loaded_metadata', property(spy)):
+                    run('--source', source.key, '--artist-titles')
+        self.assertTrue(seen)
+        self.assertFalse(any(seen))
+
     def test_needs_an_action_and_one_matching_source(self):
         with temp_download_root():
             source = make_source()
