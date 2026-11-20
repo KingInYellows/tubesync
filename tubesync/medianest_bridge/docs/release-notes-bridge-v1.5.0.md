@@ -16,8 +16,8 @@ owner. This file records what the tag would contain and what was verified.
    migrations. It never indexes. Adding a video creates its row and queues
    the same thumbnail and metadata tasks an index would, and TubeSync's
    normal download, NFO and naming path does the rest.
-2. **Contract 1.5.0 (additive).** `POST /videolists` creates one (or returns
-   the existing one with 409 `SOURCE_EXISTS` to adopt).
+2. **Contract 1.5.0 (additive).** `POST /videolists` creates one (or answers
+   409 `SOURCE_CONFLICT` with the existing uuid to adopt).
    `POST /sources/{uuid}/videos` adds a video ID (idempotent).
    `DELETE /sources/{uuid}/videos/{videoId}` removes one, keeping its files
    unless `deleteFiles=true`. A video that is downloading right now answers
