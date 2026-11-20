@@ -58,12 +58,14 @@ see that section for the current, authoritative list and line counts).
 `docs/planning/tubesync-integration/bridge-openapi.v1.yaml`), vendored
 read-only into `medianest_bridge/contract/bridge-openapi.v1.yaml`. `info.version:
 "1.0.0"` inside that file at that commit; the current vendored copy is
-`"1.4.0"` (MED-657: adds `DELETE /sources/{sourceUuid}` and `DELETE
+`"1.5.0"` (MED-730: adds `POST /videolists`, `POST
+/sources/{sourceUuid}/videos` and `DELETE /sources/{sourceUuid}/videos/{videoId}`;
+1.4.0, MED-657, added `DELETE /sources/{sourceUuid}` and `DELETE
 /folders/{sourceKey}`; 1.3.0, MED-635, added the optional, nullable `Source.title`; 1.2.0,
 MED-623/MED-624, added `ComponentStatus.reason` and `latestVersion` -- see
 the README's "Contract" section). This is the contract version, not the release
 version: `GET /meta`'s `bridgeVersion` field (`config.py::BRIDGE_VERSION`)
-reports the bridge release (`1.1.0` for `bridge-v1.1.0`, `1.2.0` for `bridge-v1.2.0` and its untagged `bridge-v1.2.1` rebuild, `1.2.2` for `bridge-v1.2.2`, `1.2.3` for `bridge-v1.2.3`, `1.3.0` for `bridge-v1.3.0`, `1.3.1` for `bridge-v1.3.1`, `1.4.0` for `bridge-v1.4.0`, `1.4.1` for `bridge-v1.4.1`, `1.4.2` for `bridge-v1.4.2`, `1.4.3` for `bridge-v1.4.3`, `1.4.4` for `bridge-v1.4.4`), which can move
+reports the bridge release (`1.1.0` for `bridge-v1.1.0`, `1.2.0` for `bridge-v1.2.0` and its untagged `bridge-v1.2.1` rebuild, `1.2.2` for `bridge-v1.2.2`, `1.2.3` for `bridge-v1.2.3`, `1.3.0` for `bridge-v1.3.0`, `1.3.1` for `bridge-v1.3.1`, `1.4.0` for `bridge-v1.4.0`, `1.4.1` for `bridge-v1.4.1`, `1.4.2` for `bridge-v1.4.2`, `1.4.3` for `bridge-v1.4.3`, `1.4.4` for `bridge-v1.4.4`, `1.5.0` for `bridge-v1.5.0`), which can move
 ahead of the contract for additive or internal changes. Full re-vendor history is in
 `medianest_bridge/README.md`'s "Contract" section; not repeated here to
 avoid a second place that can drift out of sync with the first.
@@ -98,6 +100,7 @@ something asserted here.
 | `POST /sources/{sourceUuid}/sync` | T3 | Sync-now trigger. |
 | `POST /sources/resolve` (contract 1.1.0, optional) | MED-589 (`@handle`/`c/`/`user/` URL -> `UC...` ID, one yt-dlp lookup on TubeSync's egress; `resolveChannelHandle: true`) | Channel-handle URL submission: MediaNest calls it only when `/capabilities` reports the flag. |
 | `DELETE /sources/{sourceUuid}?deleteFiles=<bool>`, `DELETE /folders/{sourceKey}` (contract 1.4.0, optional) | MED-657 (TubeSync's own delete via `sync/source_delete.py`, files kept by default; folder delete limited to `acq-src-<key>`; `deleteSource` and `deleteSourceFiles: true`) | Removing a YouTube source (MediaNest ADR-0022): MediaNest offers each action only when `/capabilities` reports its flag. |
+| `POST /videolists`, `POST /sources/{sourceUuid}/videos`, `DELETE /sources/{sourceUuid}/videos/{videoId}?deleteFiles=<bool>` (contract 1.5.0, optional) | MED-730 (`medianest_bridge/videolist.py`: a video list is a playlist-type source keyed `medianest-videolist-<suffix>` that never indexes; a video being downloaded answers 409 `MEDIA_BUSY`; `oneOffVideoDownload: true`) | Single videos added by link, one Plex show per MediaNest group (MediaNest ADR-0030): MediaNest offers them only when `/capabilities` reports the flag. |
 | `GET /sources/{sourceUuid}/media` | T2 (list), response shape ADR-0006 §4-pinned | **M6's Plex reconciliation consumes this directly, per ADR-0006 §4** -- this response shape "MUST NOT change without an ADR amendment" (contract's own words, quoted, not paraphrased). |
 
 Endpoints the contract explicitly defers (out of v1.0.0 scope, per the
@@ -127,3 +130,4 @@ is created by the repository owner.
 | `bridge-v1.4.2` | fork `main` after the MED-663 PR merges (includes bridge-v1.4.1) | `3b9d72f28dda9c931776f76e7428a72a24a57f82` | `bridge-openapi.v1.yaml` `1.4.0` (unchanged) | `v1.0.0` | See `release-notes-bridge-v1.4.2.md`. New video metadata is stored trimmed (`TUBESYNC_SHRINK_NEW` defaults to true) and refreshes only write what changed, so the database stops growing every day; `manage.py shrink-metadata` trims rows stored before (MED-663). |
 | `bridge-v1.4.3` | fork `main` after the release-prep PR merges (includes #75, #76 and MED-668 #74) | `3b9d72f28dda9c931776f76e7428a72a24a57f82` | `bridge-openapi.v1.yaml` `1.4.0` (unchanged) | `v1.0.0` | See `release-notes-bridge-v1.4.3.md`. Renaming a source's files no longer holds SQLite's write lock for the whole run, and `save_media` no longer sleeps inside its transaction, so huey's task-history writes stop hitting "database is locked" during the nightly crawl; a history write that still finds the database locked is logged as a warning instead of failing the task (MED-695). |
 | `bridge-v1.4.4` | fork `main` after the release-prep PR merges (includes #78) | `3b9d72f28dda9c931776f76e7428a72a24a57f82` | `bridge-openapi.v1.yaml` `1.4.0` (unchanged) | `v1.0.0` | See `release-notes-bridge-v1.4.4.md`. New `{artist_title}` / `{artist_title_bounded}` media-format keys put the artist first in episode file names and NFO titles, and `manage.py medianest_plex_naming` applies them to a source's existing files without downloading again (MED-702). |
+| `bridge-v1.5.0` | fork `main` after the release-prep PR merges (includes #80) | `3b9d72f28dda9c931776f76e7428a72a24a57f82` | `bridge-openapi.v1.yaml` `1.5.0` (additive) | `v1.0.0` | See `release-notes-bridge-v1.5.0.md`. Video lists: `POST /videolists`, `POST /sources/{uuid}/videos` and `DELETE /sources/{uuid}/videos/{videoId}` hold single videos, one Plex show per MediaNest group; capability `oneOffVideoDownload` is true (MED-730). |

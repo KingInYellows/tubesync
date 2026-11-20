@@ -769,8 +769,16 @@ uuid, none of which can carry either.
 ## Contract
 
 `medianest_bridge/contract/bridge-openapi.v1.yaml` is a vendored, read-only
-copy of the canonical contract. **Current copy: contract 1.4.0 (MED-657),
-from MediaNest main `89c6fc651aee` (PR #3161, byte-identical).** It adds `DELETE /sources/{sourceUuid}?deleteFiles=<bool>`,
+copy of the canonical contract. **Current copy: contract 1.5.0 (MED-730),
+written here first in #80; MediaNest PR #3388 carries the same contract
+(identical below this file's vendoring header).** It adds `POST /videolists`,
+`POST /sources/{sourceUuid}/videos` and
+`DELETE /sources/{sourceUuid}/videos/{videoId}?deleteFiles=<bool>`, the
+video-list request and response schemas, `Error.code` `MEDIA_BUSY`, and
+`Capabilities.oneOffVideoDownload` now true. `POST /sources` refuses the
+reserved `medianest-videolist-` key prefix. No required field changed.
+Before that, contract 1.4.0 (MED-657),
+from MediaNest main `89c6fc651aee` (PR #3161, byte-identical), added `DELETE /sources/{sourceUuid}?deleteFiles=<bool>`,
 `DELETE /folders/{sourceKey}`, the `SourceDeletion` and `FolderDeletion`
 schemas (both now in `contract_fixtures.json`), the `SourceKey` parameter,
 `Error.code` `SOURCE_DELETING` and `FOLDER_NOT_FOUND`,
