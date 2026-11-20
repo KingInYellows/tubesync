@@ -141,3 +141,57 @@ def validate_resolve_source_request(body):
         if not isinstance(url, str) or not (1 <= len(url) <= 2048):
             errors.append('url must be a string of 1-2048 characters.')
     return errors
+
+
+_CREATE_VIDEOLIST_REQUIRED = ('canonicalKey', 'name', 'directory')
+_ALLOWED_KEYS_CREATE_VIDEOLIST = frozenset(_CREATE_VIDEOLIST_REQUIRED)
+_ALLOWED_KEYS_ADD_VIDEO = frozenset({'videoId'})
+
+
+def validate_create_videolist_request(body):
+    '''
+        Contract 1.5.0: CreateVideoListRequest -- canonicalKey (the
+        reserved `medianest-videolist-` prefix, lowercase), name and
+        directory (1-100 characters each), no other keys.
+    '''
+    from .videolist import KEY_PATTERN
+
+    if not isinstance(body, dict):
+        return ['Request body must be a JSON object.']
+    errors = []
+    unknown = set(body.keys()) - _ALLOWED_KEYS_CREATE_VIDEOLIST
+    if unknown:
+        errors.append(f'Request has unknown field(s): {sorted(unknown)!r}.')
+    for field in _CREATE_VIDEOLIST_REQUIRED:
+        if field not in body:
+            errors.append(f'{field} is required.')
+    if 'canonicalKey' in body:
+        key = body['canonicalKey']
+        if not isinstance(key, str) or not KEY_PATTERN.match(key):
+            errors.append(
+                'canonicalKey must be "medianest-videolist-" followed by 1-80 '
+                'lowercase letters, digits or hyphens.',
+            )
+    for field in ('name', 'directory'):
+        if field in body:
+            value = body[field]
+            if not isinstance(value, str) or not (1 <= len(value) <= 100):
+                errors.append(f'{field} must be a string of 1-100 characters.')
+    return errors
+
+
+def validate_add_video_request(body):
+    '''Contract 1.5.0: AddVideoRequest -- videoId (11 characters), nothing else.'''
+    from .videolist import VIDEO_ID_PATTERN
+
+    if not isinstance(body, dict):
+        return ['Request body must be a JSON object.']
+    errors = []
+    unknown = set(body.keys()) - _ALLOWED_KEYS_ADD_VIDEO
+    if unknown:
+        errors.append(f'Request has unknown field(s): {sorted(unknown)!r}.')
+    if 'videoId' not in body:
+        errors.append('videoId is required.')
+    elif not isinstance(body['videoId'], str) or not VIDEO_ID_PATTERN.match(body['videoId']):
+        errors.append('videoId must be an 11-character YouTube video ID.')
+    return errors

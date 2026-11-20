@@ -4,6 +4,7 @@ from .views import CapabilitiesView, HealthLiveView, HealthReadyView, MetaView
 from .views_resolve import ResolveSourceView
 from .views_delete import FolderDeleteView, SourceDetailDeleteView
 from .views_sources import SourceMediaView
+from .views_videolist import CreateVideoListView, SourceVideoDetailView, SourceVideosView
 from .views_write import CreateSourceView, SyncSourceView, ValidateSourceView
 
 app_name = 'medianest_bridge'
@@ -62,6 +63,20 @@ urlpatterns = [
     path('sources/<str:source_uuid>/sync',
          SyncSourceView.as_view(),
          name='source-sync'),
+
+    # Contract 1.5.0 (MED-730): video lists (views_videolist.py).
+    path('videolists',
+         CreateVideoListView.as_view(),
+         name='videolist-create'),
+
+    path('sources/<str:source_uuid>/videos',
+         SourceVideosView.as_view(),
+         name='source-videos'),
+
+    # <str:...> so a malformed video ID reaches the view's own JSON 400.
+    path('sources/<str:source_uuid>/videos/<str:video_id>',
+         SourceVideoDetailView.as_view(),
+         name='source-video-detail'),
 
     # Contract 1.4.0 (MED-657). <str:...> for the same reason as above: a
     # malformed key must reach the view and get the bridge's own JSON 400.

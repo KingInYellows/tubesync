@@ -305,76 +305,95 @@ class CreateSourceView(SourceLookupView):
         if defaults_error:
             return defaults_error
 
-        existing = Source.objects.filter(key=canonical_key).first()
-        if existing:
-            return _conflict(request_id, existing)
+        return save_new_source(
+            request_id,
+            tubesync_source_type=tubesync_source_type,
+            canonical_key=canonical_key,
+            name=name,
+            directory=directory,
+            defaults_overlay=defaults_by_type[contract_source_type],
+        )
 
-        namespace_conflict = (
+
+def save_new_source(request_id, *, tubesync_source_type, canonical_key, name,
+                    directory, defaults_overlay):
+    '''
+        The create-or-adopt tail of POST /sources, shared with
+        POST /videolists (contract 1.5.0, views_videolist.py): key
+        conflict (409, adopt), name/directory conflict (400), form
+        validation, and the save with get-after-conflict recovery.
+        See CreateSourceView's docstring for the ordering and
+        concurrency reasoning. Returns the 201/409/400 response.
+    '''
+    existing = Source.objects.filter(key=canonical_key).first()
+    if existing:
+        return _conflict(request_id, existing)
+
+    namespace_conflict = (
+        Source.objects.filter(name=name).exists()
+        or Source.objects.filter(directory=directory).exists()
+    )
+    if namespace_conflict:
+        return _namespace_conflict(request_id)
+
+    form = build_source_form(
+        source_type=tubesync_source_type, key=canonical_key,
+        name=name, directory=directory, defaults_overlay=defaults_overlay,
+    )
+    if not form.is_valid():
+        # A concurrent create may have won the actual DB-level
+        # uniqueness check Django's own ModelForm.validate_unique()
+        # performs during build_source_form()'s own form.is_valid()
+        # call -- reached here, before form.save() and its own
+        # IntegrityError recovery below, if the race lands in this
+        # earlier window (key/name/directory are all unique=True on
+        # Source, so validate_unique() queries for exactly this).
+        # Re-query rather than trust the stale pre-check result, so a
+        # genuine key collision still returns 409 SOURCE_CONFLICT
+        # with the winner's uuid for adoption, not a generic 400 that
+        # gives the caller nothing to adopt.
+        #
+        # Checked BEFORE run_edit_source_checks() deliberately: that
+        # function calls form.save(commit=False), which raises
+        # ValueError unconditionally whenever form.errors is
+        # non-empty (Django's own BaseModelForm.save(), regardless of
+        # commit=), for ANY reason -- including this race. Only an
+        # already-valid form is safe to hand it.
+        winner = Source.objects.filter(key=canonical_key).first()
+        if winner:
+            return _conflict(request_id, winner)
+        if (
             Source.objects.filter(name=name).exists()
             or Source.objects.filter(directory=directory).exists()
-        )
-        if namespace_conflict:
+        ):
             return _namespace_conflict(request_id)
+        return _invalid(request_id, extract_form_errors(form))
 
-        defaults_overlay = defaults_by_type[contract_source_type]
-        form = build_source_form(
-            source_type=tubesync_source_type, key=canonical_key,
-            name=name, directory=directory, defaults_overlay=defaults_overlay,
-        )
-        if not form.is_valid():
-            # A concurrent create may have won the actual DB-level
-            # uniqueness check Django's own ModelForm.validate_unique()
-            # performs during build_source_form()'s own form.is_valid()
-            # call -- reached here, before form.save() and its own
-            # IntegrityError recovery below, if the race lands in this
-            # earlier window (key/name/directory are all unique=True on
-            # Source, so validate_unique() queries for exactly this).
-            # Re-query rather than trust the stale pre-check result, so a
-            # genuine key collision still returns 409 SOURCE_CONFLICT
-            # with the winner's uuid for adoption, not a generic 400 that
-            # gives the caller nothing to adopt.
-            #
-            # Checked BEFORE run_edit_source_checks() deliberately: that
-            # function calls form.save(commit=False), which raises
-            # ValueError unconditionally whenever form.errors is
-            # non-empty (Django's own BaseModelForm.save(), regardless of
-            # commit=), for ANY reason -- including this race. Only an
-            # already-valid form is safe to hand it.
-            winner = Source.objects.filter(key=canonical_key).first()
-            if winner:
-                return _conflict(request_id, winner)
-            if (
-                Source.objects.filter(name=name).exists()
-                or Source.objects.filter(directory=directory).exists()
-            ):
-                return _namespace_conflict(request_id)
-            return _invalid(request_id, extract_form_errors(form))
+    run_edit_source_checks(form)
+    if not form.is_valid():
+        return _invalid(request_id, extract_form_errors(form))
 
-        run_edit_source_checks(form)
-        if not form.is_valid():
-            return _invalid(request_id, extract_form_errors(form))
+    try:
+        source = form.save()
+    except IntegrityError:
+        # get-after-conflict: the pre-checks above narrowed the
+        # common case, but a concurrent request may have won the
+        # actual DB-level unique constraint in the gap between our
+        # pre-check and this save(). Re-query rather than trust the
+        # stale pre-check result.
+        winner = Source.objects.filter(key=canonical_key).first()
+        if winner:
+            return _conflict(request_id, winner)
+        if (
+            Source.objects.filter(name=name).exists()
+            or Source.objects.filter(directory=directory).exists()
+        ):
+            return _namespace_conflict(request_id)
+        # Neither key nor name/directory conflict is visible now --
+        # an unexpected DB-level failure, not a namespace race.
+        raise
 
-        try:
-            source = form.save()
-        except IntegrityError:
-            # get-after-conflict: the pre-checks above narrowed the
-            # common case, but a concurrent request may have won the
-            # actual DB-level unique constraint in the gap between our
-            # pre-check and this save(). Re-query rather than trust the
-            # stale pre-check result.
-            winner = Source.objects.filter(key=canonical_key).first()
-            if winner:
-                return _conflict(request_id, winner)
-            if (
-                Source.objects.filter(name=name).exists()
-                or Source.objects.filter(directory=directory).exists()
-            ):
-                return _namespace_conflict(request_id)
-            # Neither key nor name/directory conflict is visible now --
-            # an unexpected DB-level failure, not a namespace race.
-            raise
-
-        return _json_response(mapping.serialize_source(source), status=201)
+    return _json_response(mapping.serialize_source(source), status=201)
 
 
 def _conflict(request_id, existing_source):

@@ -6,6 +6,7 @@ from django.db import IntegrityError
 from django.db.models.signals import pre_save, post_save, pre_delete, post_delete
 from django.db.transaction import atomic, on_commit
 from django.dispatch import receiver
+from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from common.logger import log
 from common.models import TaskHistory
@@ -245,6 +246,8 @@ def media_post_save(sender, instance, created, **kwargs):
     except OSError as e:
         log.exception(e)
         pass
+    if media_file_exists and not downloaded and _adopt_videolist_file(instance):
+        downloaded = True
     # If the media has not yet been downloaded schedule it to be downloaded
     if not (media_file_exists or existing_media_download_task):
         # The file was deleted after it was downloaded, skip this media.
@@ -269,6 +272,43 @@ def media_post_save(sender, instance, created, **kwargs):
             can_download=instance.can_download,
             skip=instance.skip,
         )
+
+
+def _adopt_videolist_file(media):
+    '''
+        MediaNest bridge (MED-730): a video taken off a video list with its
+        files kept, then added again, gets a new row while its file is
+        still on disk. Attach that file to the new row, as a finished
+        download would, so the row is downloaded and a later removal with
+        deleteFiles can find the file. Other sources keep upstream
+        behaviour. Returns True when the file was attached.
+    '''
+    from medianest_bridge.videolist import is_videolist
+
+    if media.media_file or not is_videolist(media.source):
+        return False
+    filepath = media.filepath
+    try:
+        if not filepath.is_file():
+            return False
+        size = filepath.stat().st_size
+        name = str(filepath.relative_to(media.media_file.storage.location))
+    except (OSError, ValueError) as e:
+        log.exception(e)
+        return False
+    Media.objects.filter(pk=media.pk).update(
+        media_file=name,
+        downloaded=True,
+        download_date=timezone.now(),
+        downloaded_filesize=size,
+        skip=False,
+    )
+    media.media_file.name = name
+    media.downloaded = True
+    media.skip = False
+    log.info(f'Attached the kept file of a re-added video: {media} '
+             f'(UUID: {media.pk}): "{filepath}"')
+    return True
 
 
 @receiver(pre_delete, sender=Media)

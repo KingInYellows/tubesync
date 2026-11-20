@@ -1155,10 +1155,12 @@ class CapabilitiesReflectsT3TestCase(BridgeTestCase):
         # Contract 1.4.0 (MED-657): tests/test_delete_sources.py.
         self.assertTrue(body['deleteSource'])
         self.assertTrue(body['deleteSourceFiles'])
+        # Contract 1.5.0 (MED-730): tests/test_videolists.py.
+        self.assertTrue(body['oneOffVideoDownload'])
         # No task/retry/skip/enable/plex endpoints exist anywhere in this app.
         for flag in (
             'retryMedia', 'skipMedia', 'enableMedia', 'readTasks',
-            'cancelTask', 'retryTask', 'oneOffVideoDownload', 'pushEvents',
+            'cancelTask', 'retryTask', 'pushEvents',
             'plexScan', 'plexCollectionCreation',
         ):
             self.assertFalse(body[flag], flag)

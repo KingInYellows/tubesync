@@ -1164,9 +1164,21 @@ def download_media_image(media_id, url, manual=False):
             image_file.read(),
             'image/jpeg',
         ),
-        save=True
+        save=False
     )
     i = image_file = None
+    try:
+        # Media.save() only updates a row read from the database, so this
+        # raises when the row was deleted meanwhile (MediaNest bridge,
+        # MED-730: a video taken off a video list).
+        media.save()
+    except db.DatabaseError as e:
+        if Media.objects.filter(pk=media.pk).exists():
+            # The row is still there: a transient failure (such as a
+            # locked SQLite database), retried like any other error.
+            raise
+        media.thumb.delete(save=False)
+        raise CancelExecution(_('no such media'), retry=False) from e
     log.info(f'Saved thumbnail for: {media} from: {url}')
     # After media is downloaded, copy the updated thumbnail.
     copy_thumbnail = (
@@ -1175,9 +1187,22 @@ def download_media_image(media_id, url, manual=False):
         media.thumb_file_exists
     )
     if copy_thumbnail:
-        log.info(f'Copying media thumbnail from: {media.thumb.path} '
-                 f'to: {media.thumbpath}')
-        copyfile(media.thumb.path, media.thumbpath)
+        try:
+            # The media lock keeps the copy from landing beside a video
+            # that a removal (MediaNest bridge remove_video, MED-730) is
+            # deleting with its files: the removal takes the same lock,
+            # and the row is checked again while it is held.
+            with huey_lock_task(f'media:{media.uuid}', queue=Val(TaskQueue.DB)):
+                if Media.objects.filter(pk=media.pk).exists():
+                    log.info(f'Copying media thumbnail from: {media.thumb.path} '
+                             f'to: {media.thumbpath}')
+                    copyfile(media.thumb.path, media.thumbpath)
+        except TaskLockedException:
+            # A download or a removal holds the media right now. A
+            # download copies the thumbnail itself when it finishes, and
+            # a removed video needs none.
+            log.info(f'Not copying thumbnail for: {media} (UUID: {media.pk}), '
+                     'the media is locked')
     return True
 
 @huey_signal(huey_signals.SIGNAL_COMPLETE, queue=Val(TaskQueue.NET))
@@ -1215,6 +1240,11 @@ def download_media_file(media_id, override=False, *, task=None):
         f'media:{media.uuid}',
         queue=Val(TaskQueue.DB),
     ):
+        # MediaNest bridge (MED-730): a video taken off a video list while
+        # this task waited for the lock is gone; downloading it would save
+        # the deleted row again.
+        if not Media.objects.filter(pk=media.pk).exists():
+            raise CancelExecution(_('no such media'), retry=False)
         filepath = media.filepath
         container = format_str = None
         log.info(f'Downloading media: {media} (UUID: {media.pk}) to: "{filepath}"')
