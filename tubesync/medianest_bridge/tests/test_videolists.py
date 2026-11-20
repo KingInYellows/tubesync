@@ -9,12 +9,15 @@ from unittest.mock import MagicMock, patch
 
 from django.db import DatabaseError, transaction
 from django.utils import timezone
-from huey.exceptions import TaskLockedException
+from django.conf import settings
+from huey.exceptions import CancelExecution, TaskLockedException
+from PIL import Image
 
 from common.models import TaskHistory
 from sync.choices import IndexSchedule, Val, YouTube_SourceType
 from sync.models import Media, Source
 from sync.models._migrations import media_file_storage
+from sync.tasks import download_media_image as real_download_media_image
 from sync.tasks import download_media_metadata
 
 from .. import videolist
@@ -380,6 +383,36 @@ class RemoveVideoTestCase(VideoListTestCase):
             self.assertEqual(response.status_code, 204)
             self.assertFalse(video.exists())
             self.assertFalse(Media.objects.exists())
+
+    def test_a_thumbnail_fetched_for_a_removed_video_is_not_kept(self):
+        '''
+            The thumbnail task read the row, then the video was removed
+            while it fetched the image: it keeps neither the row nor the
+            cached image.
+        '''
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root():
+            source = make_videolist()
+            media = Media.objects.create(source=source, key=VIDEO, title=VIDEO)
+            # Not skipped, as after its metadata landed.
+            Media.objects.filter(pk=media.pk).update(skip=False, manual_skip=False)
+
+            removed = {}
+
+            def removed_during_fetch(url):
+                response = self.client.delete(video_url(source.pk, VIDEO), **self.auth_header())
+                removed['status'] = response.status_code
+                removed['row_left'] = Media.objects.filter(pk=media.pk).exists()
+                return Image.new('RGB', (64, 36))
+
+            # The failed save marks the test transaction for rollback, so
+            # the task runs in a savepoint and the row is checked above.
+            with patch('sync.tasks.get_remote_image', side_effect=removed_during_fetch):
+                with self.assertRaises(CancelExecution), transaction.atomic():
+                    real_download_media_image.call_local(str(media.pk), 'https://i.ytimg.com/x.jpg')
+            self.assertEqual(removed, {'status': 204, 'row_left': False})
+            thumb = Path(settings.MEDIA_ROOT) / media.thumb.field.upload_to(media, 'thumb')
+            self.assertFalse(thumb.exists())
 
     def test_absent_video_is_still_204(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')

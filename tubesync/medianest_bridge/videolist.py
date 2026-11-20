@@ -108,8 +108,11 @@ def add_video(source, video_id):
         if not media.has_metadata:
             # Adding again repairs a row whose metadata task never got
             # queued (scheduling failed after the row was committed).
-            # remove_duplicates keeps an already queued one single; once
-            # metadata lands, media_post_save fetches a missing thumbnail.
+            # With remove_duplicates, the first of several queued copies
+            # to start revokes the others, so metadata is fetched once.
+            # Once it lands, media_post_save fetches a missing thumbnail;
+            # if a thumbnail task from the failed add is still waiting,
+            # both write the same file, which is harmless.
             _schedule_metadata(media)
         return media, False
     _schedule_fetches(media)
@@ -124,7 +127,7 @@ def _schedule_fetches(media):
     '''The thumbnail and metadata tasks index_source() schedules for new media.'''
     # Imported here: source_forms imports this module for KEY_PREFIX, and
     # sync.tasks is heavy and best kept out of that import chain.
-    from sync.tasks import download_media_image, download_media_metadata
+    from sync.tasks import download_media_image
 
     for num, prefix in enumerate(reversed(('hq', 'sd', 'maxres'))):
         download_media_image(

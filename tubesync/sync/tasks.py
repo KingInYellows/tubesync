@@ -1164,15 +1164,24 @@ def download_media_image(media_id, url, manual=False):
             image_file.read(),
             'image/jpeg',
         ),
-        save=True
+        save=False
     )
     i = image_file = None
+    try:
+        # Media.save() only updates a row read from the database, so this
+        # raises when the row was deleted meanwhile (MediaNest bridge,
+        # MED-730: a video taken off a video list).
+        media.save()
+    except db.DatabaseError as e:
+        media.thumb.delete(save=False)
+        raise CancelExecution(_('no such media'), retry=False) from e
     log.info(f'Saved thumbnail for: {media} from: {url}')
     # After media is downloaded, copy the updated thumbnail.
     copy_thumbnail = (
         media.downloaded and
         media.source.copy_thumbnails and
-        media.thumb_file_exists
+        media.thumb_file_exists and
+        Media.objects.filter(pk=media.pk).exists()
     )
     if copy_thumbnail:
         log.info(f'Copying media thumbnail from: {media.thumb.path} '
