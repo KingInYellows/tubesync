@@ -24,6 +24,7 @@ from sync.tasks import get_error_message, get_running_tasks, get_source_index_ta
 from sync.tvshow_nfo import resolve_show_title
 
 from .error_sanitize import sanitize_error_message
+from .videolist import is_videolist
 
 _MISSING = object()
 
@@ -90,6 +91,13 @@ def map_source_type(raw_source_type):
     return 'channel'
 
 
+def map_source_type_for(source):
+    '''map_source_type(), plus contract 1.5.0's `videolist` (videolist.py).'''
+    if is_videolist(source):
+        return 'videolist'
+    return map_source_type(source.source_type)
+
+
 def map_source_state(source, *, index_task=None):
     '''
         Precedence, most-actionable-first (documented, not contract-defined
@@ -123,6 +131,11 @@ def map_source_state(source, *, index_task=None):
         index_task = get_source_index_task(str(source.pk))
     if index_task:
         return 'syncing'
+    if is_videolist(source):
+        # Contract 1.5.0: a video list never indexes (videolist.py), so
+        # is_active is always false and last_crawl stays None. It is ready
+        # to take videos as soon as it exists.
+        return 'active'
     if not source.is_active:
         return 'disabled'
     if source.last_crawl is None:
@@ -152,9 +165,10 @@ def serialize_source(source):
     index_task = get_source_index_task(str(source.pk))
     return {
         'uuid': str(source.pk),
-        'sourceType': map_source_type(source.source_type),
+        'sourceType': map_source_type_for(source),
         'canonicalKey': source.key,
-        'canonicalUrl': source.url,
+        # A video list's key is no YouTube ID, so it has no URL of its own.
+        'canonicalUrl': None if is_videolist(source) else source.url,
         'name': source.name,
         'title': source_title(source),
         'directory': source.directory,

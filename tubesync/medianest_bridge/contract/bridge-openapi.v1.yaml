@@ -70,7 +70,7 @@
 openapi: 3.1.0
 info:
   title: MediaNest TubeSync Bridge API
-  version: "1.4.0"
+  version: "1.5.0"
   summary: >-
     Slice-1 minimal server-to-server bridge exposed by the medianest_bridge
     Django app inside the KingInYellows/tubesync fork. Consumed only by the
@@ -89,6 +89,11 @@ info:
     DELETE /folders/{sourceKey}, so MediaNest can remove a source and, for
     admins only, its downloaded files. Both are optional, capability-gated
     additions (Capabilities.deleteSource, Capabilities.deleteSourceFiles).
+    Contract 1.5.0 (MED-730, ADR-0030) adds video lists: POST /videolists
+    creates a source that holds only the single videos MediaNest adds
+    with POST /sources/{sourceUuid}/videos and removes with DELETE
+    /sources/{sourceUuid}/videos/{videoId}. Capability-gated
+    (Capabilities.oneOffVideoDownload).
 externalDocs:
   description: ADR-0006 and the reconciled technical specification
   url: ../../../docs/adr/ADR-0006-tubesync-as-youtube-acquisition-provider.md
@@ -627,6 +632,171 @@ paths:
         "429":
           $ref: "#/components/responses/RateLimited"
 
+  /videolists:
+    post:
+      tags: [sources]
+      operationId: createVideoList
+      summary: Create-or-adopt a video list
+      description: >-
+        Contract 1.5.0 (MED-730, ADR-0030). Creates a source that never
+        indexes YouTube and holds only the videos added with POST
+        /sources/{sourceUuid}/videos. Its `sourceType` is `videolist`, its
+        `canonicalUrl` is null, and its `normalizedState` is `active` from
+        the start. The key must start with `medianest-videolist-`, a
+        prefix POST /sources refuses. Download settings come from the
+        bridge's playlist source defaults, with indexing, channel images,
+        removed-media cleanup and the download cap forced off. `name` is the
+        show title media servers display. Same conflict semantics as POST
+        /sources: 409 SOURCE_CONFLICT with `existingSourceUuid` to adopt,
+        409 SOURCE_DELETING while a deleted source with this key is still
+        being removed, 400 SOURCE_NAMESPACE_CONFLICT for a name or directory
+        another source uses.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateVideoListRequest"
+      responses:
+        "201":
+          description: Video list created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Source"
+        "400":
+          description: SOURCE_INVALID or SOURCE_NAMESPACE_CONFLICT.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReadOnly"
+        "409":
+          description: >-
+            SOURCE_CONFLICT (adopt `existingSourceUuid`) or SOURCE_DELETING
+            (retryable).
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Error"
+                  - type: object
+                    properties:
+                      existingSourceUuid:
+                        type: string
+                        format: uuid
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ProviderUnavailable"
+
+  /sources/{sourceUuid}/videos:
+    post:
+      tags: [media]
+      operationId: addVideo
+      summary: Add one video to a video list
+      description: >-
+        Contract 1.5.0. Puts one YouTube video on a video list and
+        schedules its metadata, thumbnail and download the way an index
+        does for a newly found video. 201 with the new item, or 200 with
+        the existing one when the video is already on this list. 400
+        SOURCE_INVALID when the source is not a video list, 409
+        SOURCE_DELETING while it is being deleted.
+      parameters:
+        - $ref: "#/components/parameters/SourceUuid"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddVideoRequest"
+      responses:
+        "200":
+          description: The video was already on this list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaItem"
+        "201":
+          description: Video added.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaItem"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReadOnly"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: SOURCE_DELETING (retryable).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /sources/{sourceUuid}/videos/{videoId}:
+    delete:
+      tags: [media]
+      operationId: removeVideo
+      summary: Remove one video from a video list
+      description: >-
+        Contract 1.5.0. Takes a video off a video list. With
+        `deleteFiles=false` (the default) its file and sidecars stay on
+        disk; with `deleteFiles=true` they are deleted too. 204 whether or
+        not the video was on the list, so a retry is safe. 400
+        SOURCE_INVALID when the source is not a video list, 409
+        SOURCE_DELETING while it is being deleted.
+      parameters:
+        - $ref: "#/components/parameters/SourceUuid"
+        - $ref: "#/components/parameters/VideoId"
+        - name: deleteFiles
+          in: query
+          required: false
+          description: >-
+            `true` also deletes the video's file and sidecars; `false` or
+            absent keeps them. Any other value is 400 SOURCE_INVALID.
+          schema:
+            type: boolean
+            default: false
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "204":
+          description: The video is not on the list (any more).
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReadOnly"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: SOURCE_DELETING (retryable).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
   /sources/{sourceUuid}/media:
     get:
       tags: [media]
@@ -679,6 +849,14 @@ components:
       schema:
         type: string
         format: uuid
+    VideoId:
+      name: videoId
+      in: path
+      required: true
+      description: A YouTube video ID (contract 1.5.0).
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9_-]{11}$"
     SourceKey:
       name: sourceKey
       in: path
@@ -1076,6 +1254,9 @@ components:
         oneOffVideoDownload:
           type: boolean
           default: false
+          description: >-
+            Contract 1.5.0: POST /videolists and POST|DELETE
+            /sources/{sourceUuid}/videos are available.
         pushEvents:
           type: boolean
           default: false
@@ -1285,12 +1466,18 @@ components:
             event.
         sourceType:
           type: string
-          enum: [channel, playlist]
+          description: >-
+            Contract 1.5.0 adds `videolist` (POST /videolists). A consumer
+            older than 1.5.0 never creates one, so never sees it.
+          enum: [channel, playlist, videolist]
         canonicalKey:
           type: string
         canonicalUrl:
-          type: string
+          type: [string, "null"]
           format: uri
+          description: >-
+            Null only for a video list (contract 1.5.0), whose key is no
+            YouTube id.
         name:
           type: string
         title:
@@ -1337,6 +1524,33 @@ components:
         lastCrawlAt:
           type: [string, "null"]
           format: date-time
+
+    CreateVideoListRequest:
+      type: object
+      additionalProperties: false
+      required: [canonicalKey, name, directory]
+      properties:
+        canonicalKey:
+          type: string
+          pattern: "^medianest-videolist-[a-z0-9][a-z0-9-]{0,79}$"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: The show title media servers display.
+        directory:
+          type: string
+          minLength: 1
+          maxLength: 100
+
+    AddVideoRequest:
+      type: object
+      additionalProperties: false
+      required: [videoId]
+      properties:
+        videoId:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{11}$"
 
     MediaItem:
       type: object

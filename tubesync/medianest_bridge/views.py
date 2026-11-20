@@ -402,7 +402,9 @@ class CapabilitiesView(BridgeView):
             'readTasks': False,
             'cancelTask': False,
             'retryTask': False,
-            'oneOffVideoDownload': False,
+            # Contract 1.5.0 (MED-730): video lists, POST /videolists and
+            # POST|DELETE /sources/{uuid}/videos (views_videolist.py).
+            'oneOffVideoDownload': True,
             'pushEvents': False,
             'plexScan': False,
             'plexCollectionCreation': False,

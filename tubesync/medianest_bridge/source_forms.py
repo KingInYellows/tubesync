@@ -72,6 +72,8 @@ from sync.forms import SourceForm
 from sync.models import Source
 from sync.utils import validate_url
 
+from .videolist import is_videolist_key
+
 CONTRACT_SOURCE_TYPES = ('channel', 'playlist')
 
 _CONTRACT_TO_TUBESYNC_SOURCE_TYPE = {
@@ -144,6 +146,13 @@ def validate_canonical_url(contract_source_type, canonical_key, canonical_url):
         both POST /sources/validate and POST /sources.
     '''
     errors = []
+    if is_videolist_key(canonical_key):
+        # Contract 1.5.0: that prefix names video lists, created only
+        # through POST /videolists (videolist.py).
+        return [
+            'canonicalKey uses the reserved video-list prefix; '
+            'create video lists with POST /videolists.',
+        ]
     tubesync_source_type = contract_source_type_to_tubesync(contract_source_type)
     validator = youtube_validation_urls.get(tubesync_source_type)
     try:
