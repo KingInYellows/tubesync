@@ -14,7 +14,8 @@ from huey.exceptions import CancelExecution, TaskLockedException
 from PIL import Image
 
 from common.models import TaskHistory
-from sync.choices import IndexSchedule, Val, YouTube_SourceType
+from sync import tasks as sync_tasks
+from sync.choices import IndexSchedule, TaskQueue, Val, YouTube_SourceType
 from sync.models import Media, Source
 from sync.models._migrations import media_file_storage
 from sync.tasks import download_media_image as real_download_media_image
@@ -413,6 +414,76 @@ class RemoveVideoTestCase(VideoListTestCase):
             self.assertEqual(removed, {'status': 204, 'row_left': False})
             thumb = Path(settings.MEDIA_ROOT) / media.thumb.field.upload_to(media, 'thumb')
             self.assertFalse(thumb.exists())
+
+    def test_a_thumbnail_copy_never_lands_beside_a_removed_video(self):
+        '''
+            The thumbnail task saved its image, then the video and its
+            files were removed just before it copied the image next to
+            the video: no thumbnail sidecar is left, and adding the video
+            again works.
+        '''
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root():
+            source = make_videolist(copy_thumbnails=True)
+            folder = Path(source.directory_path)
+            folder.mkdir(parents=True, exist_ok=True)
+            video = folder / f'{VIDEO}.mkv'
+            video.write_bytes(b'video')
+            media = Media.objects.create(source=source, key=VIDEO, title=VIDEO, published=timezone.now())
+            Media.objects.filter(pk=media.pk).update(
+                skip=False, manual_skip=False, downloaded=True,
+                media_file=str(video.relative_to(media_file_storage.location)),
+            )
+            media.refresh_from_db()
+            sidecar = media.thumbpath
+            real_lock = sync_tasks.huey_lock_task
+            removed = {}
+
+            def remove_then_lock(*args, **kwargs):
+                # The removal runs between the row check and the copy.
+                response = self.client.delete(
+                    video_url(source.pk, VIDEO) + '?deleteFiles=true', **self.auth_header(),
+                )
+                removed['status'] = response.status_code
+                return real_lock(*args, **kwargs)
+
+            with (
+                patch('sync.tasks.get_remote_image', return_value=Image.new('RGB', (64, 36))),
+                patch('sync.tasks.huey_lock_task', side_effect=remove_then_lock),
+            ):
+                real_download_media_image.call_local(str(media.pk), 'https://i.ytimg.com/x.jpg')
+            self.assertEqual(removed, {'status': 204})
+            self.assertFalse(video.exists())
+            self.assertFalse(sidecar.exists())
+            self.assertFalse(Media.objects.exists())
+
+            response = self.post_json(videos_url(source.pk), {'videoId': VIDEO})
+            self.assertEqual(response.status_code, 201)
+            self.assertTrue(Media.objects.filter(key=VIDEO).exists())
+
+    def test_a_thumbnail_copy_skips_media_a_removal_holds(self):
+        '''A removal holding the media lock means no copy, and no error.'''
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root():
+            source = make_videolist(copy_thumbnails=True)
+            folder = Path(source.directory_path)
+            folder.mkdir(parents=True, exist_ok=True)
+            video = folder / f'{VIDEO}.mkv'
+            video.write_bytes(b'video')
+            media = Media.objects.create(source=source, key=VIDEO, title=VIDEO, published=timezone.now())
+            Media.objects.filter(pk=media.pk).update(
+                skip=False, manual_skip=False, downloaded=True,
+                media_file=str(video.relative_to(media_file_storage.location)),
+            )
+            media.refresh_from_db()
+            with (
+                patch('sync.tasks.get_remote_image', return_value=Image.new('RGB', (64, 36))),
+                videolist.huey_lock_task(f'media:{media.uuid}', queue=Val(TaskQueue.DB)),
+            ):
+                self.assertTrue(
+                    real_download_media_image.call_local(str(media.pk), 'https://i.ytimg.com/x.jpg'),
+                )
+            self.assertFalse(media.thumbpath.exists())
 
     def test_absent_video_is_still_204(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')

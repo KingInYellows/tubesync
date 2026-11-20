@@ -1180,13 +1180,25 @@ def download_media_image(media_id, url, manual=False):
     copy_thumbnail = (
         media.downloaded and
         media.source.copy_thumbnails and
-        media.thumb_file_exists and
-        Media.objects.filter(pk=media.pk).exists()
+        media.thumb_file_exists
     )
     if copy_thumbnail:
-        log.info(f'Copying media thumbnail from: {media.thumb.path} '
-                 f'to: {media.thumbpath}')
-        copyfile(media.thumb.path, media.thumbpath)
+        try:
+            # The media lock keeps the copy from landing beside a video
+            # that a removal (MediaNest bridge remove_video, MED-730) is
+            # deleting with its files: the removal takes the same lock,
+            # and the row is checked again while it is held.
+            with huey_lock_task(f'media:{media.uuid}', queue=Val(TaskQueue.DB)):
+                if Media.objects.filter(pk=media.pk).exists():
+                    log.info(f'Copying media thumbnail from: {media.thumb.path} '
+                             f'to: {media.thumbpath}')
+                    copyfile(media.thumb.path, media.thumbpath)
+        except TaskLockedException:
+            # A download or a removal holds the media right now. A
+            # download copies the thumbnail itself when it finishes, and
+            # a removed video needs none.
+            log.info(f'Not copying thumbnail for: {media} (UUID: {media.pk}), '
+                     'the media is locked')
     return True
 
 @huey_signal(huey_signals.SIGNAL_COMPLETE, queue=Val(TaskQueue.NET))
