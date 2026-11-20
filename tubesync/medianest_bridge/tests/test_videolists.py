@@ -404,7 +404,18 @@ class RemoveVideoTestCase(VideoListTestCase):
                 response = self.client.delete(video_url(source.pk, VIDEO), **self.auth_header())
                 removed['status'] = response.status_code
                 removed['row_left'] = Media.objects.filter(pk=media.pk).exists()
+                # The task's save now fails the way Media.save() fails for
+                # a deleted row (test_a_task_holding_the_removed_video_*
+                # covers that part). Letting the real UPDATE run here
+                # leaves the test's in-memory SQLite with a table lock
+                # that breaks every later query.
+                save_patch.start()
                 return Image.new('RGB', (64, 36))
+
+            save_patch = patch.object(
+                Media, 'save', side_effect=DatabaseError('Forced update did not affect any rows.'),
+            )
+            self.addCleanup(patch.stopall)
 
             # The failed save marks the test transaction for rollback, so
             # the task runs in a savepoint and the row is checked above.
@@ -484,6 +495,58 @@ class RemoveVideoTestCase(VideoListTestCase):
                     real_download_media_image.call_local(str(media.pk), 'https://i.ytimg.com/x.jpg'),
                 )
             self.assertFalse(media.thumbpath.exists())
+
+    def test_a_thumbnail_save_that_fails_for_a_present_row_is_retried(self):
+        '''A transient database error is not mistaken for a removed video.'''
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root():
+            source = make_videolist()
+            media = Media.objects.create(source=source, key=VIDEO, title=VIDEO)
+            Media.objects.filter(pk=media.pk).update(skip=False, manual_skip=False)
+            with (
+                patch('sync.tasks.get_remote_image', return_value=Image.new('RGB', (64, 36))),
+                patch.object(Media, 'save', side_effect=DatabaseError('database is locked')),
+                self.assertRaises(DatabaseError),
+            ):
+                real_download_media_image.call_local(str(media.pk), 'https://i.ytimg.com/x.jpg')
+            self.assertTrue(Media.objects.filter(pk=media.pk).exists())
+
+    def test_a_video_added_again_gets_back_the_file_it_kept(self):
+        '''
+            Removed with its files kept, then added again: the new row
+            takes the kept file, so a later removal can delete it.
+        '''
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root():
+            source = make_videolist()
+            response = self.post_json(videos_url(source.pk), {'videoId': VIDEO})
+            self.assertEqual(response.status_code, 201)
+            media = Media.objects.get(key=VIDEO)
+            video = media.filepath
+            video.parent.mkdir(parents=True, exist_ok=True)
+            video.write_bytes(b'video')
+            # Any later save of the row (metadata landing, for one).
+            media.save()
+
+            media.refresh_from_db()
+            self.assertTrue(media.downloaded)
+            self.assertEqual(Path(media.media_file.path), video)
+            response = self.client.delete(
+                video_url(source.pk, VIDEO) + '?deleteFiles=true', **self.auth_header(),
+            )
+            self.assertEqual(response.status_code, 204)
+            self.assertFalse(video.exists())
+
+    def test_a_kept_file_is_not_taken_by_an_ordinary_source(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root():
+            source = make_videolist(key='PLordinary0000000000000000000000000')
+            media = Media.objects.create(source=source, key=VIDEO, title=VIDEO)
+            media.filepath.parent.mkdir(parents=True, exist_ok=True)
+            media.filepath.write_bytes(b'video')
+            media.save()
+            media.refresh_from_db()
+            self.assertFalse(media.downloaded)
 
     def test_absent_video_is_still_204(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')

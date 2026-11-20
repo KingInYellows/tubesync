@@ -1173,6 +1173,10 @@ def download_media_image(media_id, url, manual=False):
         # MED-730: a video taken off a video list).
         media.save()
     except db.DatabaseError as e:
+        if Media.objects.filter(pk=media.pk).exists():
+            # The row is still there: a transient failure (such as a
+            # locked SQLite database), retried like any other error.
+            raise
         media.thumb.delete(save=False)
         raise CancelExecution(_('no such media'), retry=False) from e
     log.info(f'Saved thumbnail for: {media} from: {url}')
