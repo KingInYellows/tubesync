@@ -45,7 +45,8 @@ class VideoBusy(Exception):
 KEY_PATTERN = re.compile(r'^medianest-videolist-[a-z0-9][a-z0-9-]{0,79}$')
 
 # A YouTube video ID: 11 characters of the URL-safe base64 alphabet.
-VIDEO_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]{11}$')
+# \Z, not $: $ also matches before a trailing newline.
+VIDEO_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]{11}\Z')
 
 # Applied over the playlist defaults overlay (MEDIANEST_BRIDGE_SOURCE_DEFAULTS)
 # for every video list, whatever that overlay says.
@@ -80,29 +81,37 @@ def is_videolist(source):
 def add_video(source, video_id):
     '''
         Puts `video_id` on the video list `source`. Returns (media, created).
-        Adding a video already on the list changes nothing. The row is
-        locked so two concurrent adds of the same video make one Media row
+        Adding a video already on the list changes nothing, except that a
+        row still without metadata gets its metadata task queued again. The
+        row is locked so two concurrent adds of the same video make one Media row
         and one set of tasks.
     '''
     with transaction.atomic():
         Source.objects.select_for_update().filter(pk=source.pk).first()
         media = Media.objects.filter(source=source, key=video_id).first()
-        if media is not None and not media.manual_skip:
-            return media, False
-        if media is not None:
+        existing = media is not None and not media.manual_skip
+        if media is not None and not existing:
             # A row left skipped by hand (in TubeSync's UI): adding the
             # video again is the request to download it.
             media.manual_skip = False
             media.skip = False
             media.save()
             revived = True
-        else:
+        elif media is None:
             # The save fires media_post_save, which marks the row skipped
             # until it has a published date (sync/filtering.py), so it
             # schedules nothing itself. The tasks below fetch what it needs.
             media = Media(source=source, key=video_id, title='')
             media.save()
             revived = False
+    if existing:
+        if not media.has_metadata:
+            # Adding again repairs a row whose metadata task never got
+            # queued (scheduling failed after the row was committed).
+            # remove_duplicates keeps an already queued one single; once
+            # metadata lands, media_post_save fetches a missing thumbnail.
+            _schedule_metadata(media)
+        return media, False
     _schedule_fetches(media)
     log.info(
         'medianest_bridge: video added to video list source=%s key=%s media=%s revived=%s',
@@ -124,6 +133,12 @@ def _schedule_fetches(media):
             priority=10 + (5 * num),
             delay=max(0, 65 - (30 * num)),
         )
+    _schedule_metadata(media)
+
+
+def _schedule_metadata(media):
+    from sync.tasks import download_media_metadata
+
     TaskHistory.schedule(
         download_media_metadata,
         str(media.pk),

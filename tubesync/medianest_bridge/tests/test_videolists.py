@@ -211,7 +211,23 @@ class AddVideoTestCase(VideoListTestCase):
         self.assertEqual(second.status_code, 200)
         self.assertEqual(json.loads(first.content)['id'], json.loads(second.content)['id'])
         self.assertEqual(Media.objects.filter(source=source).count(), 1)
-        self.assertEqual(len(self.metadata_schedules()), 1)
+        # Thumbnails are queued once. A row still without metadata gets its
+        # metadata task asked for again (repairs a lost one); TaskHistory's
+        # remove_duplicates keeps a queued one single.
+        self.assertEqual(self.image.call_count, 3)
+        self.assertEqual(len(self.metadata_schedules()), 2)
+        for call in self.metadata_schedules():
+            self.assertTrue(call.kwargs['remove_duplicates'])
+
+    def test_adding_a_video_with_metadata_again_schedules_nothing(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        source = make_videolist()
+        self.post_json(videos_url(source.pk), {'videoId': VIDEO})
+        self.schedule.reset_mock()
+        with patch.object(Media, 'has_metadata', new=True):
+            response = self.post_json(videos_url(source.pk), {'videoId': VIDEO})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.metadata_schedules(), [])
 
     def test_metadata_unskips_the_video(self):
         '''
@@ -240,7 +256,7 @@ class AddVideoTestCase(VideoListTestCase):
     def test_malformed_video_id_is_refused(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
         source = make_videolist()
-        for value in ('short', 'dQw4w9WgXcQx', 'dQw4w9WgX/Q', 12345678901, None):
+        for value in ('short', 'dQw4w9WgXcQx', 'dQw4w9WgX/Q', VIDEO + '\n', 12345678901, None):
             response = self.post_json(videos_url(source.pk), {'videoId': value})
             self.assertEqual(response.status_code, 400, value)
         response = self.post_json(videos_url(source.pk), {'videoId': VIDEO, 'extra': 1})
@@ -353,6 +369,8 @@ class RemoveVideoTestCase(VideoListTestCase):
         self.assertEqual(response.status_code, 400)
         response = self.client.delete(video_url(source.pk, 'nope'), **self.auth_header())
         self.assertEqual(response.status_code, 400)
+        response = self.client.delete(video_url(source.pk, VIDEO + '%0A'), **self.auth_header())
+        self.assertIn(response.status_code, (400, 404))
 
     def test_only_video_lists_lose_videos(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
