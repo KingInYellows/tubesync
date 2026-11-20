@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from django.db import DatabaseError, transaction
 from django.utils import timezone
 from huey.exceptions import TaskLockedException
 
@@ -324,6 +325,18 @@ class RemoveVideoTestCase(VideoListTestCase):
         media = Media.objects.get(key=VIDEO)
         taken.assert_called_once()
         self.assertEqual(taken.call_args.args[0], f'media:{media.uuid}')
+
+    def test_a_task_holding_the_removed_video_cannot_bring_it_back(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        source = make_videolist()
+        Media.objects.create(source=source, key=VIDEO, title='x')
+        # A thumbnail or metadata task read the row before the removal.
+        stale = Media.objects.get(key=VIDEO)
+        response = self.client.delete(video_url(source.pk, VIDEO), **self.auth_header())
+        self.assertEqual(response.status_code, 204)
+        with self.assertRaises(DatabaseError), transaction.atomic():
+            stale.save()
+        self.assertFalse(Media.objects.filter(key=VIDEO).exists())
 
     def test_absent_video_is_still_204(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')

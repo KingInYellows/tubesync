@@ -479,6 +479,13 @@ class Media(models.Model):
                 # If only some fields are being updated, make sure we update title and duration if metadata changes
                 update_fields = {"title", "duration"}.union(update_fields)
 
+        # MediaNest bridge (MED-730): an instance read from the database is
+        # only ever updated. Without this, a task still holding the instance
+        # (a thumbnail, metadata or file download) would INSERT the row
+        # again after it was deleted, e.g. a video taken off a video list;
+        # Django raises DatabaseError instead when the row is gone.
+        if not self._state.adding and not force_insert and update_fields is None:
+            force_update = True
         super().save(
             force_insert=force_insert,
             force_update=force_update,
