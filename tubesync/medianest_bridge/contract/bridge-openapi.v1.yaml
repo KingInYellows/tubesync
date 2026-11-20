@@ -708,7 +708,9 @@ paths:
         does for a newly found video. 201 with the new item, or 200 with
         the existing one when the video is already on this list. 400
         SOURCE_INVALID when the source is not a video list, 409
-        SOURCE_DELETING while it is being deleted.
+        SOURCE_DELETING while it is being deleted, 409 MEDIA_BUSY
+        (retryable) while the video is downloading: a download that
+        finished after the removal would bring the video back.
       parameters:
         - $ref: "#/components/parameters/SourceUuid"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -789,7 +791,7 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: SOURCE_DELETING (retryable).
+          description: SOURCE_DELETING or MEDIA_BUSY (both retryable).
           content:
             application/json:
               schema:
@@ -1039,6 +1041,9 @@ components:
             # no folder (404).
             - SOURCE_DELETING
             - FOLDER_NOT_FOUND
+            # Contract 1.5.0 (MED-730): DELETE /sources/{uuid}/videos/{id}
+            # while that video is downloading (409, retryable).
+            - MEDIA_BUSY
         detail:
           type: string
         requestId:

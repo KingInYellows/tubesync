@@ -44,6 +44,8 @@ _SLUGS = {
     # Contract 1.4.0 (MED-657).
     'SOURCE_DELETING': 'source-deleting',
     'FOLDER_NOT_FOUND': 'folder-not-found',
+    # Contract 1.5.0 (MED-730).
+    'MEDIA_BUSY': 'media-busy',
 }
 
 

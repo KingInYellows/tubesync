@@ -5,9 +5,10 @@
 '''
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.utils import timezone
+from huey.exceptions import TaskLockedException
 
 from common.models import TaskHistory
 from sync.choices import IndexSchedule, Val, YouTube_SourceType
@@ -305,6 +306,24 @@ class RemoveVideoTestCase(VideoListTestCase):
             # The flag was set on the deleted row's in-memory source only.
             source.refresh_from_db()
             self.assertFalse(source.delete_files_on_disk)
+
+    def test_a_video_that_is_downloading_is_refused_and_kept(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        source = make_videolist()
+        Media.objects.create(source=source, key=VIDEO, title='x')
+        lock = MagicMock()
+        lock.__enter__.side_effect = TaskLockedException('media lock held')
+        with patch('medianest_bridge.videolist.huey_lock_task', return_value=lock) as taken:
+            response = self.client.delete(
+                video_url(source.pk, VIDEO) + '?deleteFiles=true', **self.auth_header(),
+            )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['code'], 'MEDIA_BUSY')
+        self.assertTrue(response.json()['retryable'])
+        self.assertTrue(Media.objects.filter(key=VIDEO).exists())
+        media = Media.objects.get(key=VIDEO)
+        taken.assert_called_once()
+        self.assertEqual(taken.call_args.args[0], f'media:{media.uuid}')
 
     def test_absent_video_is_still_204(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')

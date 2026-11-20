@@ -27,13 +27,19 @@
 import re
 
 from django.db import transaction
+from django_huey import lock_task as huey_lock_task
+from huey.exceptions import TaskLockedException
 
 from common.logger import log
 from common.models import TaskHistory
-from sync.choices import IndexSchedule, Val, YouTube_SourceType
+from sync.choices import IndexSchedule, TaskQueue, Val, YouTube_SourceType
 from sync.models import Media, Source
 
 KEY_PREFIX = 'medianest-videolist-'
+
+
+class VideoBusy(Exception):
+    '''The video is being downloaded right now; removing it must wait.'''
 
 # Lowercase letters, digits and hyphens; 100 is Source.key's max_length.
 KEY_PATTERN = re.compile(r'^medianest-videolist-[a-z0-9][a-z0-9-]{0,79}$')
@@ -136,6 +142,13 @@ def remove_video(source, video_id, *, delete_files):
         stays. media_post_delete reads delete_files_on_disk from the
         in-memory source of the row being deleted, so the flag is set on
         that instance only and never saved.
+
+        The delete takes the same `media:<uuid>` lock download_media_file()
+        holds while it downloads, and raises VideoBusy when that lock is
+        held: a download that finished after the delete would save the
+        row again and leave its file on disk. download_media_file()
+        re-reads the row once it holds the lock, so a download that
+        started before the delete but locked after it stops there.
     '''
     media = Media.objects.filter(source=source, key=video_id).select_related('source').first()
     if media is None:
@@ -147,7 +160,11 @@ def remove_video(source, video_id, *, delete_files):
     # must be addable again later.
     media.skip = True
     media.manual_skip = True
-    media.delete()
+    try:
+        with huey_lock_task(f'media:{media.uuid}', queue=Val(TaskQueue.DB)):
+            media.delete()
+    except TaskLockedException as exc:
+        raise VideoBusy(video_id) from exc
     log.info(
         'medianest_bridge: video removed from video list source=%s key=%s delete_files=%s',
         source.pk, video_id, bool(delete_files),

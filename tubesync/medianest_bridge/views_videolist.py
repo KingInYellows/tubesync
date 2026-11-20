@@ -13,6 +13,7 @@
 from django.http import HttpResponse, JsonResponse
 
 from . import deletion, mapping, videolist
+from .errors import error_response
 from .request_schemas import validate_add_video_request, validate_create_videolist_request
 from .source_forms import allowed_source_default_fields, contract_source_type_to_tubesync
 from .views import BridgeView
@@ -118,7 +119,8 @@ class SourceVideoDetailView(BridgeView):
     '''
         DELETE /sources/{sourceUuid}/videos/{videoId}?deleteFiles=<bool> --
         removeVideo. 204 whether or not the video was on the list, so a
-        retried call is safe. Files are kept unless deleteFiles=true.
+        retried call is safe. Files are kept unless deleteFiles=true. 409
+        MEDIA_BUSY (retryable) while the video is downloading.
     '''
 
     def delete(self, request, source_uuid, video_id, *args, **kwargs):
@@ -131,5 +133,15 @@ class SourceVideoDetailView(BridgeView):
         source, error = _videolist_or_error(source_uuid, request_id)
         if error:
             return error
-        videolist.remove_video(source, video_id, delete_files=delete_files)
+        try:
+            videolist.remove_video(source, video_id, delete_files=delete_files)
+        except videolist.VideoBusy:
+            return error_response(
+                status=409,
+                code='MEDIA_BUSY',
+                title='Video is downloading',
+                detail='The video is being downloaded right now. Retry in a minute.',
+                request_id=request_id,
+                retryable=True,
+            )
         return HttpResponse(status=204)

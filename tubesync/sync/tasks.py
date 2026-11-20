@@ -1215,6 +1215,11 @@ def download_media_file(media_id, override=False, *, task=None):
         f'media:{media.uuid}',
         queue=Val(TaskQueue.DB),
     ):
+        # MediaNest bridge (MED-730): a video taken off a video list while
+        # this task waited for the lock is gone; downloading it would save
+        # the deleted row again.
+        if not Media.objects.filter(pk=media.pk).exists():
+            raise CancelExecution(_('no such media'), retry=False)
         filepath = media.filepath
         container = format_str = None
         log.info(f'Downloading media: {media} (UUID: {media.pk}) to: "{filepath}"')
