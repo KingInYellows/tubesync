@@ -548,6 +548,32 @@ class RemoveVideoTestCase(VideoListTestCase):
             media.refresh_from_db()
             self.assertFalse(media.downloaded)
 
+    def test_a_thumbnail_saved_after_the_removal_read_is_deleted_too(self):
+        '''
+            A thumbnail task saved its image between remove_video()'s read
+            and its delete: the cached image goes with the row.
+        '''
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root():
+            source = make_videolist()
+            media = Media.objects.create(source=source, key=VIDEO, title=VIDEO)
+            fileid = str(media.uuid).lower()
+            cached = Path(settings.MEDIA_ROOT) / 'thumbs' / fileid[:2] / f'{fileid}.jpg'
+            real_delete = Media.delete
+
+            def thumbnail_saved_then_delete(instance, *args, **kwargs):
+                # What download_media_image() does, after the read.
+                cached.parent.mkdir(parents=True, exist_ok=True)
+                cached.write_bytes(b'jpeg')
+                Media.objects.filter(pk=instance.pk).update(thumb=str(cached.relative_to(settings.MEDIA_ROOT)))
+                return real_delete(instance, *args, **kwargs)
+
+            with patch.object(Media, 'delete', autospec=True, side_effect=thumbnail_saved_then_delete):
+                response = self.client.delete(video_url(source.pk, VIDEO), **self.auth_header())
+            self.assertEqual(response.status_code, 204)
+            self.assertFalse(Media.objects.exists())
+            self.assertFalse(cached.exists())
+
     def test_absent_video_is_still_204(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
         source = make_videolist()

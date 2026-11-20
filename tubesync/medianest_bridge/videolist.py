@@ -188,7 +188,14 @@ def remove_video(source, video_id, *, delete_files):
             # indexed, and the video must be addable again later.
             media.skip = True
             media.manual_skip = True
+            storage, uuid = media.thumb.storage, media.uuid
             media.delete()
+            # media_pre_delete deletes the thumbnail this instance knows
+            # of. A thumbnail task that saved its image after the read
+            # above (it does not take the media lock) left one this
+            # instance does not know: its cached path is fixed per
+            # video, so delete that path too.
+            _delete_cached_thumbnail(storage, uuid)
     except TaskLockedException as exc:
         raise VideoBusy(video_id) from exc
     log.info(
@@ -196,3 +203,15 @@ def remove_video(source, video_id, *, delete_files):
         source.pk, video_id, bool(delete_files),
     )
     return True
+
+
+def _delete_cached_thumbnail(storage, uuid):
+    '''Deletes the cached thumbnail at the path get_media_thumb_path() gives.'''
+    # Taken before the delete: Django clears the deleted instance's pk.
+    fileid = str(uuid).lower()
+    name = f'thumbs/{fileid[:2]}/{fileid}.jpg'
+    try:
+        if storage.exists(name):
+            storage.delete(name)
+    except OSError as exc:
+        log.warning('medianest_bridge: could not delete cached thumbnail %s: %s', name, exc)
