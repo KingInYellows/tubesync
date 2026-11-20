@@ -354,6 +354,33 @@ class RemoveVideoTestCase(VideoListTestCase):
             stale.save()
         self.assertFalse(Media.objects.filter(key=VIDEO).exists())
 
+    def test_a_download_that_finished_just_before_still_loses_its_files(self):
+        self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
+        with temp_download_root():
+            source = make_videolist()
+            Media.objects.create(source=source, key=VIDEO, title=VIDEO, published=timezone.now())
+            folder = Path(source.directory_path)
+            folder.mkdir(parents=True, exist_ok=True)
+            video = folder / f'{VIDEO}.mkv'
+            real_lock = videolist.huey_lock_task
+
+            def finish_download_then_lock(*args, **kwargs):
+                # The download completes after remove_video's first read.
+                video.write_bytes(b'video')
+                Media.objects.filter(key=VIDEO).update(
+                    downloaded=True,
+                    media_file=str(video.relative_to(media_file_storage.location)),
+                )
+                return real_lock(*args, **kwargs)
+
+            with patch('medianest_bridge.videolist.huey_lock_task', side_effect=finish_download_then_lock):
+                response = self.client.delete(
+                    video_url(source.pk, VIDEO) + '?deleteFiles=true', **self.auth_header(),
+                )
+            self.assertEqual(response.status_code, 204)
+            self.assertFalse(video.exists())
+            self.assertFalse(Media.objects.exists())
+
     def test_absent_video_is_still_204(self):
         self.enable_bridge(MEDIANEST_BRIDGE_READ_ONLY='false')
         source = make_videolist()

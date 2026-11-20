@@ -163,20 +163,28 @@ def remove_video(source, video_id, *, delete_files):
         held: a download that finished after the delete would save the
         row again and leave its file on disk. download_media_file()
         re-reads the row once it holds the lock, so a download that
-        started before the delete but locked after it stops there.
+        started before the delete but locked after it stops there. The row
+        is read again under the lock too, so a download that finished just
+        before it still has its files deleted.
     '''
-    media = Media.objects.filter(source=source, key=video_id).select_related('source').first()
-    if media is None:
+    found = Media.objects.filter(source=source, key=video_id).only('uuid').first()
+    if found is None:
         return False
-    media.source.delete_files_on_disk = bool(delete_files)
-    # skip + manual_skip stop media_post_delete from recreating the row as
-    # a skipped placeholder (it keeps one so an index does not download a
-    # deleted video again); a video list is never indexed, and the video
-    # must be addable again later.
-    media.skip = True
-    media.manual_skip = True
     try:
-        with huey_lock_task(f'media:{media.uuid}', queue=Val(TaskQueue.DB)):
+        with huey_lock_task(f'media:{found.uuid}', queue=Val(TaskQueue.DB)):
+            # Read the row again under the lock: a download that finished
+            # just before it set downloaded and media_file, which
+            # media_post_delete needs to find the files to delete.
+            media = Media.objects.filter(pk=found.pk).select_related('source').first()
+            if media is None:
+                return False
+            media.source.delete_files_on_disk = bool(delete_files)
+            # skip + manual_skip stop media_post_delete from recreating the
+            # row as a skipped placeholder (it keeps one so an index does
+            # not download a deleted video again); a video list is never
+            # indexed, and the video must be addable again later.
+            media.skip = True
+            media.manual_skip = True
             media.delete()
     except TaskLockedException as exc:
         raise VideoBusy(video_id) from exc
