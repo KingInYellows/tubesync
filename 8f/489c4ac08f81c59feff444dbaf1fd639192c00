@@ -1,0 +1,24 @@
+tubesync/sync/youtube.py
+  s_f11397b0de4524::t_d3fd10e92e467f 58-68,235
+tubesync/sync/management/commands/full-playlist.py
+  s_f11397b0de4524::t_d3fd10e92e467f 7,40-43,45
+tubesync/sync/tests/test_playlist_metadata.py
+  s_f11397b0de4524::t_ab9ba540d49067 1-33,37-38,40-56
+  s_f11397b0de4524::t_e7e38f05316fed 34-36,39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8f489c4ac08f81c59feff444dbaf1fd639192c00",
+  "prompts": {},
+  "sessions": {
+    "s_f11397b0de4524": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a20b32-7a98-77c3-b978-0f5a71596551",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
