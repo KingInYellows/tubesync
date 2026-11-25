@@ -1,11 +1,10 @@
 import re
 import sys
-from pathlib import Path
 from common.logger import log
 from common.utils import glob_quote
-from django.conf import settings
 from django.core.management.base import BaseCommand
 from sync.models import Source
+from sync.youtube import playlist_metadata_directory
 
 
 class Command(BaseCommand):
@@ -32,31 +31,18 @@ class Command(BaseCommand):
         if playlist_id and source_qs.exists():
             this_source_deletes = False
 
-        where_dir = Path(getattr(settings, 'YOUTUBE_DL_CACHEDIR', None) or '/dev/shm')
-        search_paths = {Path('/dev/shm'), where_dir}
-
         exact_match_regex = re.compile(
             rf'postprocessor_\[{re.escape(playlist_id)}\]_(?P<idx>\d+)_{re.escape(total_entries)}_temp\.info\.json$'
         )
 
         cleanup_pattern = glob_quote(f'postprocessor_[{playlist_id}]_') + '*_temp.info.json'
 
-        for base_path in search_paths:
-            playlist_folder = base_path / 'infojson' / 'playlist'
-            if not playlist_folder.is_dir():
-                continue
+        for file_path in playlist_metadata_directory().rglob(cleanup_pattern):
+            match = exact_match_regex.match(file_path.name)
+            if match:
+                downloaded_entries = match.group('idx')
 
-            for file_path in playlist_folder.rglob(cleanup_pattern):
-                file_name = file_path.name
-
-                match = exact_match_regex.match(file_name)
-                if match:
-                    downloaded_entries = match.group('idx')
-
-                try:
-                    file_path.unlink()
-                except FileNotFoundError:
-                    pass
+            file_path.unlink(missing_ok=True)
 
         if (
             'NA' != downloaded_entries
