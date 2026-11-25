@@ -1,0 +1,35 @@
+config/root/etc/nginx/logs_location.conf
+  s_6bcfdfa7ee2c90::t_c9fb140d5be21d 1-4,7-9
+config/root/etc/s6-overlay/s6-rc.d/hat-syslog-server/run
+  s_831d1931171260::t_a42c8493fb38c4 54
+tubesync/medianest_bridge/README.md
+  s_831d1931171260::t_8f24326fae717d 40,208-213
+tubesync/sync/templates/sync/dashboard.html
+  s_6bcfdfa7ee2c90::t_db214bdc230d04 101
+tubesync/sync/tests/test_frontend.py
+  s_6bcfdfa7ee2c90::t_b4114c01a426e5 3,44-60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fcb5d574baf41e3fb3d1db07f4b707ba5c83e78e",
+  "prompts": {},
+  "sessions": {
+    "s_6bcfdfa7ee2c90": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d9efae83-f87a-4d20-bda7-d7394f4b439a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    },
+    "s_831d1931171260": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "37864a6d-547b-4cc5-89a8-bbcfae46452a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
