@@ -22,7 +22,7 @@ from xml.etree import ElementTree
 
 from django import db
 from django.core.exceptions import ObjectDoesNotExist
-from django.db.models import F
+from django.db.models import F, Q
 
 from common.logger import log
 from common.transactions import read_atomic
@@ -107,33 +107,34 @@ def _store_show_title(source, generation, title):
 
 def _cached_channel_metadata(source):
     '''
-        Returns the `Metadata` row `sync/youtube.py:get_image_info` caches
-        for this source's channel/playlist entity (`source`/`media` both
-        NULL, keyed by the extractor's own id for that entity) via
-        `Source.get_image_url` (F6), or `None` if nothing is cached yet --
-        that cache is only populated once `download_source_images` has run
-        at least once for this source. `get_image_info` is the only writer
-        of rows with both `source` and `media` NULL, so the key alone
-        identifies it; `site` (the extractor key, `YoutubeTab`) is not
-        filtered on.
+        Returns the newest `Metadata` row that holds this source's own
+        channel/playlist response (not a video's), or `None` if there is
+        none yet. Two writers keep such rows:
 
-        This only matches directly for PLAYLIST and CHANNEL_ID sources,
-        whose `Source.key` already IS that extractor id. For a handle-based
-        CHANNEL source (`key` is the handle, e.g. "@somechannel"), the
-        cached row's key is the resolved "UC..." id yt-dlp returns for the
-        channel, which this function has no cheap (no extra network call)
-        way to learn. `resolve_show_title()` simply falls through to its
-        next tier in that case -- an accepted, documented limitation, not
-        a bug.
+        - `Source.get_index` stores the index response without its entries
+          (`source` set, `media` NULL, keyed by the index URL). Every
+          indexing run refreshes it, for every source type, including a
+          handle-based CHANNEL source.
+        - `sync/youtube.py:get_image_info`, through `Source.get_image_url`
+          (F6), stored rows with `source` and `media` both NULL, keyed by
+          the extractor's own id for the entity. Since upstream v0.18.4,
+          `download_source_images` reads the index rows instead, so these
+          rows only come from earlier runs. They still match PLAYLIST and
+          CHANNEL_ID sources, whose `Source.key` is that id.
+
+        `site` is not filtered on.
     '''
     # Deferred import: `sync.models` is mid-import when `sync.models.media`
     # (which calls into this module) is first loaded -- see
     # `sync/models/__init__.py`'s import order (`Media` before `Metadata`).
     from .models import Metadata
-    return Metadata.objects.filter(
-        source__isnull=True,
-        media__isnull=True,
-        key=source.key,
+    index_keys = (
+        source.get_index_url('videos'),
+        source.get_index_url('streams'),
+    )
+    return Metadata.objects.filter(media__isnull=True).filter(
+        Q(source=source, key__in=index_keys)
+        | Q(source__isnull=True, key=source.key)
     ).order_by('-retrieved').first()
 
 

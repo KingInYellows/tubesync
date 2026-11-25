@@ -38,6 +38,7 @@ from common.errors import (
 )
 from common.utils import (  django_queryset_generator as qs_gen,
                             remove_enclosed, seconds_to_timestr, )
+from common.yt_dlp import retry_django_db
 from .choices import Val, IndexSchedule, TaskQueue
 from .models import Source, Media, MediaServer, Metadata
 from .tvshow_nfo import write_tvshow_nfo
@@ -248,12 +249,14 @@ def sqlite_backoff():
     time.sleep(random.expovariate(arg))
 
 
+@retry_django_db(3)
 def save_model(instance):
     with atomic(durable=False):
         instance.save()
     sqlite_backoff()
 
 
+@retry_django_db(3)
 def update_model(instance, **kwargs):
     qs = instance.__class__.objects.all()
     return qs.filter(
@@ -548,6 +551,8 @@ def migrate_to_metadata(media_id):
                 if existing_value and ('epoch' == key or value == existing_value):
                     continue
                 media.save_to_metadata(field, value)
+        # clean up the record created during indexing
+        data.delete()
     migrating_lock.acquired = False
 
 
@@ -790,7 +795,17 @@ def download_source_images(source_id):
         log.error(f'Task download_source_images(pk={source_id}) called but no '
                   f'source exists with ID: {source_id}')
         raise CancelExecution(_('no such source'), retry=False) from e
-    avatar, banner, thumbnail = source.get_image_url
+    keys = list()
+    if source.index_videos:
+        keys.append(source.get_index_url('videos'))
+    if not source.is_playlist and source.index_streams:
+        keys.append(source.get_index_url('streams'))
+    qs = source.videos.filter(media__isnull=True, key__in=keys)
+    if not qs.exists():
+        raise CancelExecution(_('data not yet available'))
+    avatar, banner, thumbnail = source.get_image_urls(qs)
+    if not any((avatar, banner, thumbnail)):
+        raise CancelExecution(_('data not yet available'))
     log.info(f'Thumbnail URL for source with ID: {source_id} / {source} '
         f'Avatar: {avatar} '
         f'Banner: {banner} '
@@ -827,10 +842,10 @@ def download_source_images(source_id):
 
         log.info(f'Thumbnail downloaded for source with ID: {source_id} / {source}')
     finally:
-        # get_image_url above also populates the channel/playlist Metadata
-        # cache resolve_show_title()/resolve_show_plot() prefer (F6) --
-        # refresh the show-level NFO even when an image fails, so a stale
-        # image URL cannot keep tvshow.nfo stale. write_tvshow_nfo() never
+        # The index metadata read above is also what
+        # resolve_show_title()/resolve_show_plot() prefer (F6) -- refresh
+        # the show-level NFO even when an image fails, so a stale image URL
+        # cannot keep tvshow.nfo stale. write_tvshow_nfo() never
         # raises, so an image error still propagates and retries the task.
         write_tvshow_nfo(source)
 
@@ -1035,18 +1050,21 @@ def download_media_metadata(media_id, manual=False):
     upload_date = media.upload_date
     # Media must have a valid upload date
     if upload_date:
-        media.published = timezone.make_aware(upload_date)
+        media.published = upload_date
     timestamp = media.get_metadata_first_value(
         ('release_timestamp', 'timestamp',),
         arg_dict=response,
     )
-    try:
-        published_dt = media.ts_to_dt(timestamp)
-    except AssertionError:
-        pass
-    else:
-        if published_dt:
-            media.published = published_dt
+    if timestamp:
+        try:
+            published_dt = media.ts_to_dt(timestamp)
+        except AssertionError:
+            pass
+        else:
+            if published_dt:
+                media.published = published_dt
+    if timezone.is_naive(media.published):
+        media.published = timezone.make_aware(media.published)
 
     # Store title in DB so it's fast to access
     if media.metadata_title:

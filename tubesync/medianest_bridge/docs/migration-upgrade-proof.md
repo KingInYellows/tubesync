@@ -83,17 +83,19 @@ rm -rf /tmp/shared-upgrade-db
 
 ## Captured result (this exact run)
 
+Re-run 2026-11-25 for the re-pin to upstream v0.18.4
+(`255b5b754ef8d47f79af58438b137e1374a63a94`), against the fork branch that
+merges it. Docker was not available, so steps 1-4 ran in a local
+Python 3.12 virtualenv built from the merged `Pipfile` (dev packages,
+without `mysqlclient`), with `patches/yt_dlp` copied in as the container
+does. Otherwise the procedure is the one above. The first run, against
+`3b9d72f2`, applied 30 migrations in step 1.
+
 **Step 1 -- upstream-base checkout, fresh database:**
-```
-Operations to perform:
-  Apply all migrations: admin, auth, common, contenttypes, sessions, sync
-Running migrations:
-  Applying contenttypes.0001_initial... OK
-  [... 30 migrations total, all OK ...]
-  Applying sync.0037_alter_source_fallback... OK
-```
-30 migrations applied, none failed. This is the "existing TubeSync
-database" state the upgrade proof starts from.
+All migrations applied without error. Afterwards `django_migrations`
+held 62 rows, the last `sync` one being `0037_alter_source_fallback`
+(40 `sync`, 4 `common`). This is the "existing TubeSync database" state
+the upgrade proof starts from.
 
 **Step 2 -- same database file, codebase swapped to the fork HEAD
 (`medianest_bridge` now in `INSTALLED_APPS`):**

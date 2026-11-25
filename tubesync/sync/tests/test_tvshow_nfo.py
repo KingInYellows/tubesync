@@ -17,7 +17,9 @@ import tempfile
 import time
 from contextlib import contextmanager
 from collections import deque
-from unittest.mock import PropertyMock, patch
+from unittest.mock import patch
+
+from huey import CancelExecution
 from xml.etree import ElementTree
 
 from django.conf import settings
@@ -131,6 +133,53 @@ class ResolveShowTitleTestCase(TestCase):
         tree = ElementTree.fromstring(build_tvshow_nfo(self.source))
         self.assertEqual(tree.find('studio').text, 'Cached Channel Title')
         self.assertEqual(tree.find('plot').text, 'Cached channel plot')
+
+    def test_uses_the_index_metadata_for_a_handle_based_channel(self):
+        handle_source = make_source(
+            source_type=Val(YouTube_SourceType.CHANNEL),
+            key='@somechannel',
+            name='handlename',
+            directory='handledirectory',
+        )
+        Metadata.objects.create(
+            site='YoutubeTab', source=handle_source,
+            key=handle_source.get_index_url('videos'),
+            value={
+                'title': 'Some Channel - Videos',
+                'channel': 'Some Channel',
+                'description': 'Index plot',
+            },
+        )
+        self.assertEqual(resolve_show_title(handle_source), 'Some Channel')
+        tree = ElementTree.fromstring(build_tvshow_nfo(handle_source))
+        self.assertEqual(tree.find('plot').text, 'Index plot')
+
+    def test_the_newer_of_index_and_legacy_rows_wins(self):
+        now = timezone.now()
+        Metadata.objects.create(
+            site='YoutubeTab', key=self.source.key,
+            value={'channel': 'Legacy Name'},
+            retrieved=now - timezone.timedelta(days=1),
+        )
+        Metadata.objects.create(
+            site='YoutubeTab', source=self.source,
+            key=self.source.get_index_url('videos'),
+            value={'channel': 'Index Name'},
+            retrieved=now,
+        )
+        self.assertEqual(resolve_show_title(self.source), 'Index Name')
+
+    def test_another_sources_index_metadata_does_not_match(self):
+        other = make_source(
+            key='UCotherotherotherotherot', name='othername',
+            directory='otherdirectory',
+        )
+        Metadata.objects.create(
+            site='YoutubeTab', source=other,
+            key=other.get_index_url('videos'),
+            value={'channel': 'Other Channel'},
+        )
+        self.assertEqual(resolve_show_title(self.source), 'testname')
 
     def test_a_differently_keyed_cache_row_does_not_match(self):
         # A handle-based CHANNEL source's key never matches the cached
@@ -922,23 +971,48 @@ class TasksWriteTvshowNfoTestCase(TestCase):
             index_source.call_local(str(self.source.pk))
         self.assert_called_for_source(mock_write)
 
+    def _index_metadata(self):
+        # Since upstream v0.18.4, download_source_images reads image URLs
+        # from the index metadata and cancels until indexing has stored it.
+        Metadata.objects.create(
+            site='YoutubeTab', source=self.source,
+            key=self.source.get_index_url('videos'), value={},
+        )
+
     def test_download_source_images(self):
+        from PIL import Image
         from sync.tasks import download_source_images
+        self._index_metadata()
         with (
             patch.object(
-                Source, 'get_image_url', new_callable=PropertyMock,
-                return_value=(None, None, None),
+                Source, 'get_image_urls',
+                return_value=('https://example.invalid/a.jpg', None, None),
             ),
+            patch(
+                'sync.tasks.get_remote_image',
+                side_effect=lambda url: Image.new('RGB', (8, 8)),
+            ),
+            temp_download_root(),
             patch('sync.tasks.write_tvshow_nfo') as mock_write,
         ):
+            self.source.make_directory()
             download_source_images.call_local(str(self.source.pk))
         self.assert_called_for_source(mock_write)
 
+    def test_download_source_images_waits_for_index_data(self):
+        from sync.tasks import download_source_images
+        with patch('sync.tasks.write_tvshow_nfo') as mock_write:
+            with self.assertRaisesRegex(CancelExecution, 'data not yet available'):
+                download_source_images.call_local(str(self.source.pk))
+        # index_source writes the NFO itself once the data exists.
+        mock_write.assert_not_called()
+
     def test_download_source_images_refreshes_the_nfo_when_an_image_fails(self):
         from sync.tasks import download_source_images
+        self._index_metadata()
         with (
             patch.object(
-                Source, 'get_image_url', new_callable=PropertyMock,
+                Source, 'get_image_urls',
                 return_value=('https://example.invalid/a.jpg', None, None),
             ),
             patch('sync.tasks.get_remote_image', side_effect=OSError('boom')),
@@ -961,11 +1035,11 @@ class TasksWriteTvshowNfoTestCase(TestCase):
             colour = (255, 0, 0) if 'avatar' in url else (0, 0, 255)
             return Image.new('RGB', (8, 8), colour)
 
+        self._index_metadata()
         with (
             temp_download_root(),
             patch.object(
-                Source, 'get_image_url', new_callable=PropertyMock,
-                return_value=image_urls,
+                Source, 'get_image_urls', return_value=image_urls,
             ),
             patch('sync.tasks.get_remote_image', side_effect=fake_image),
             patch('sync.tasks.write_tvshow_nfo'),

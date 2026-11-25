@@ -1074,11 +1074,12 @@ class NewMetadataOnlyTestCase(NewMetadataWithoutPublishedTestCase):
 
 class UploadDateOnlyTimezoneTestCase(TestCase):
     '''
-        `download_media_metadata` sets `Media.published` from a bare
-        `upload_date` with `timezone.make_aware` (local time), while
-        `Metadata.ingest_metadata` stores it as UTC midnight. `episode_date`
-        reads the latter, so a timezone east of UTC (local midnight is
-        the previous UTC day) does not move the episode to the day before.
+        A bare `upload_date` is UTC midnight both in `Media.published`
+        (`Media.upload_date` is aware since upstream v0.18.4; before, it
+        was made aware in local time) and in what
+        `Metadata.ingest_metadata` stores. `episode_date` reads the latter,
+        so a timezone east of UTC (local midnight is the previous UTC day)
+        does not move the episode to the day before.
     '''
 
     @override_settings(TIME_ZONE='Asia/Tokyo')
@@ -1107,9 +1108,9 @@ class UploadDateOnlyTimezoneTestCase(TestCase):
         media.ingest_metadata(data)
         # What download_media_metadata does next for a bare upload_date.
         media.metadata = media.metadata_dumps(arg_dict={'_using_table': True})
-        media.published = timezone.make_aware(media.upload_date)
+        media.published = media.upload_date
         media.save()
         media = Media.objects.get(pk=media.pk)
-        self.assertEqual(media.published.date(), datetime(2017, 9, 10).date())
+        self.assertEqual(media.published, aware(2017, 9, 11))
         self.assertEqual(media.episode_date, aware(2017, 9, 11))
         self.assertEqual(media.episode_mmddnn, '091101')

@@ -131,8 +131,8 @@ Fifteen upstream files are touched at fifteen points (`settings.py` twice; point
 10. `sync/tasks.py` (Plex T2) -- one new import (`sync/tvshow_nfo.py`'s
    `write_tvshow_nfo`) and three call sites: the end of `index_source()`,
    a `finally:` around `download_source_images()`'s image loop (so a
-   failed image still refreshes the NFO from the metadata
-   `get_image_url` just cached), and right after
+   failed image still refreshes the NFO from the index metadata the task
+   just read), and right after
    `download_media_metadata()` saves the media (so the first real channel
    name refreshes the show title), each just `write_tvshow_nfo(source)`.
    `write_tvshow_nfo` logs any error instead of raising it. The image
