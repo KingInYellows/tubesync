@@ -55,6 +55,17 @@ def get_yt_opts():
         opts.update({'cookiefile': cookie_file_path})
     return opts
 
+
+def playlist_metadata_directory():
+    """Directory shared by yt-dlp and the full-playlist postprocessor."""
+    try:
+        root = Path(_defaults.get('cachedir'))
+    except TypeError:
+        root = settings.CONFIG_BASE_DIR / 'cache' / 'playlist-metadata'
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return root / 'infojson' / 'playlist'
+
+
 def get_channel_id(url):
     # yt-dlp --simulate --no-check-formats --playlist-items 1
     #   --print 'pre_process:%(playlist_channel_id,playlist_id,channel_id)s'
@@ -217,12 +228,11 @@ def get_media_info(url, /, *, days=None, info_json=None):
         when='playlist',
         exec_cmd="/usr/bin/env python3 /app/manage.py full-playlist %(id)q '%(playlist_count)d'",
     ))
-    cache_directory_path = Path(user_set('cachedir', opts, '/dev/shm'))
     playlist_infojson = 'postprocessor_[%(id)s]_%(n_entries)d_%(playlist_count)d_temp'
     outtmpl = dict(
         default='',
         infojson='%(extractor_key)s/%(id)s.%(ext)s' if paths.get('infojson') else '',
-        pl_infojson=f'{cache_directory_path}/infojson/playlist/{playlist_infojson}.%(ext)s',
+        pl_infojson=f'{playlist_metadata_directory()}/{playlist_infojson}.%(ext)s',
     )
     for k in OUTTMPL_TYPES.keys():
         outtmpl.setdefault(k, '')
