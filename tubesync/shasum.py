@@ -249,8 +249,13 @@ def verify_checksums(line_data, is_tag, label, algorithm):
             if stat.st_size > max_size:
                 return None, 0
             buf = pool.get_nowait()
-            with target_path.open(mode='rb', buffering=0) as f:
-                actual_read = f.readinto(buf)
+            try:
+                with target_path.open(mode='rb', buffering=0) as f:
+                    actual_read = f.readinto(buf)
+            except OSError:
+                # Give the borrowed buffer back so the pool is not drained
+                return_buffer(buf, pool)
+                return None, 0
             return buf, actual_read
         except (queue.Empty, OSError):
             return None, 0

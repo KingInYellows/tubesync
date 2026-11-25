@@ -1063,7 +1063,7 @@ def download_media_metadata(media_id, manual=False):
         else:
             if published_dt:
                 media.published = published_dt
-    if timezone.is_naive(media.published):
+    if media.published and timezone.is_naive(media.published):
         media.published = timezone.make_aware(media.published)
 
     # Store title in DB so it's fast to access

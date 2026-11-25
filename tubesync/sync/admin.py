@@ -37,61 +37,79 @@ class MediaAdmin(admin.ModelAdmin):
         'redownload',
     )
 
-    def _queue_save_media_tasks(self, queryset):
+    def _snapshot_media_uuids(self, queryset):
+        '''
+            Capture the selected media UUIDs before an action changes them.
+            A changelist filter on a changed field (skip, can_download,
+            downloaded) would otherwise exclude the updated rows afterwards.
+            Returns an empty list when SAVE_MEDIA_AFTER_BULK_ACTION is off.
+        '''
+        if not getattr(settings, 'SAVE_MEDIA_AFTER_BULK_ACTION', False):
+            return []
+        return [
+            str(media_uuid)
+            for media_uuid in queryset.distinct().values_list('uuid', flat=True).iterator()
+        ]
+
+    def _queue_save_media_tasks(self, media_uuids):
         '''
             Optionally queue a `save_media` task per changed item, so flags
             are re-evaluated without waiting for the next source edit/index.
             Disabled by default: SAVE_MEDIA_AFTER_BULK_ACTION = True enables it.
+            `media_uuids` is the snapshot from `_snapshot_media_uuids`.
         '''
-        if not getattr(settings, 'SAVE_MEDIA_AFTER_BULK_ACTION', False):
+        if not media_uuids:
             return
-        save_media.map(
-            str(media_uuid)
-            for media_uuid in queryset.distinct().values_list('uuid', flat=True).iterator()
-        )
+        save_media.map(media_uuids)
 
     @admin.action(description='Set "skip" for the selected media')
     def enable_skip(self, request, queryset):
+        media_uuids = self._snapshot_media_uuids(queryset)
         updated = queryset.update(skip=True, manual_skip=True)
-        self._queue_save_media_tasks(queryset)
+        self._queue_save_media_tasks(media_uuids)
         self.message_user(request, f'Set "skip" on {updated} media item(s).')
 
     @admin.action(description='Unset "skip" for the selected media')
     def disable_skip(self, request, queryset):
+        media_uuids = self._snapshot_media_uuids(queryset)
         updated = queryset.update(skip=False, manual_skip=False)
-        self._queue_save_media_tasks(queryset)
+        self._queue_save_media_tasks(media_uuids)
         self.message_user(request, f'Unset "skip" on {updated} media item(s).')
 
     @admin.action(description='Set "can download" for the selected media')
     def enable_can_download(self, request, queryset):
+        media_uuids = self._snapshot_media_uuids(queryset)
         updated = queryset.update(can_download=True)
-        self._queue_save_media_tasks(queryset)
+        self._queue_save_media_tasks(media_uuids)
         self.message_user(
             request, f'Set "can download" on {updated} media item(s).')
 
     @admin.action(description='Unset "can download" for the selected media')
     def disable_can_download(self, request, queryset):
+        media_uuids = self._snapshot_media_uuids(queryset)
         updated = queryset.update(can_download=False)
-        self._queue_save_media_tasks(queryset)
+        self._queue_save_media_tasks(media_uuids)
         self.message_user(
             request, f'Unset "can download" on {updated} media item(s).')
 
     @admin.action(description='Clear all metadata from the selected Media instances')
     def clear_metadata(self, request, queryset):
         # clear the metadata
+        media_uuids = self._snapshot_media_uuids(queryset)
         updated = 0
         for media in qs_gen(queryset):
             media.metadata_clear(save=True)
             updated += 1
-        self._queue_save_media_tasks(queryset)
+        self._queue_save_media_tasks(media_uuids)
         self.message_user(
             request, f'Cleared metadata from {updated} media item(s).')
 
     @admin.action(description='Unset "downloaded" for the selected media')
     def redownload(self, request, queryset):
         # unset skip, manual_skip and downloaded
+        media_uuids = self._snapshot_media_uuids(queryset)
         updated = queryset.update(skip=False, manual_skip=False, downloaded=False)
-        self._queue_save_media_tasks(queryset)
+        self._queue_save_media_tasks(media_uuids)
         self.message_user(
             request, f'Unset "downloaded" on {updated} media item(s).')
 
