@@ -51,6 +51,7 @@ esac
 
 exec s6-setuidgid app \
     hat-syslog-server --log-level 'INFO' \
+        --ui-addr 'http://127.0.0.1:23020' \
         --db-path "${DATABASE}" \
         --db-high-size "${HIGH}" --db-low-size "${LOW}" \
         "${ARCHIVE[@]}"
