@@ -1,0 +1,19 @@
+tubesync/sync/tests/test_playlist_metadata.py
+  s_f11397b0de4524::t_8c0d2e74b41191 15,20-21,24-26,31-34,36-39,42,44-46,52-60,63
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c2c92c5d187d0493e51ff91a128b176b1c70ec44",
+  "prompts": {},
+  "sessions": {
+    "s_f11397b0de4524": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a20b32-7a98-77c3-b978-0f5a71596551",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
