@@ -223,6 +223,15 @@ class FilepathTestCase(TestCase):
                 # never empty
                 self.assertTrue(result)
 
+    def test_truncate_filename_long_suffix_stays_in_budget(self):
+        max_bytes = 216
+        for ext_len in range(max_bytes - 8, max_bytes + 3):
+            with self.subTest(ext_len=ext_len):
+                original = 'a' * 40 + '.' + 'x' * ext_len
+                result = truncate_filename(original, max_bytes=max_bytes)
+                self.assertLessEqual(len(result.encode('utf-8')), max_bytes)
+                self.assertTrue(result.startswith('a'))
+
     def test_truncate_filename_bytes_rejects_non_str(self):
 
         for bad in (None, 42, b'bytes.mkv', Path('p.mkv')):

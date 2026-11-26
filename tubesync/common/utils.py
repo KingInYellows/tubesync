@@ -428,10 +428,12 @@ def truncate_filename(filename: str, *, max_bytes=216, encoding='utf-8') -> str:
     path = Path(filename)
     name, ext = clean_filename(path.stem), clean_filename(path.suffix)
     ext_bytes = ext.encode(encoding)
-    if len(ext_bytes) >= max_bytes:
-        # Pathological extension; fall back to a plain byte cut
-        name, ext_bytes = filename, b''
     marker = '_..._'
+    # Keep at least one byte of head and tail beside the marker. A suffix
+    # that leaves less room than that (a custom media format can end in a
+    # long, dotted title) is treated as part of the name instead.
+    if len(ext_bytes) + len(marker.encode(encoding)) + 2 > max_bytes:
+        name, ext_bytes = filename, b''
     stem_budget = max_bytes - len(ext_bytes) - len(marker.encode(encoding))
     stem_bytes = name.encode(encoding)
     # Keep the unique suffixes at the end of the stem intact (up to a third of
