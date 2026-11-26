@@ -530,6 +530,13 @@ def migrate_to_metadata(media_id):
     except Metadata.DoesNotExist as e:
         migrating_lock.acquired = False
         raise CancelExecution(_('no indexed data to migrate to metadata'), retry=False) from e
+    if not data.value:
+        # index_source saves its rows in batches; until this row's batch is
+        # written it holds only the default empty value. Migrating it now
+        # would copy nothing and then delete the row the batch is about to
+        # fill, so retry once it has been written.
+        migrating_lock.acquired = False
+        raise CancelExecution(_('indexed data not yet saved'), retry=True)
 
     with huey_lock_task(
         f'media:{media.uuid}',
@@ -795,11 +802,7 @@ def download_source_images(source_id):
         log.error(f'Task download_source_images(pk={source_id}) called but no '
                   f'source exists with ID: {source_id}')
         raise CancelExecution(_('no such source'), retry=False) from e
-    keys = list()
-    if source.index_videos:
-        keys.append(source.get_index_url('videos'))
-    if not source.is_playlist and source.index_streams:
-        keys.append(source.get_index_url('streams'))
+    keys = source.index_metadata_keys()
     qs = source.videos.filter(media__isnull=True, key__in=keys)
     if not qs.exists():
         raise CancelExecution(_('data not yet available'))

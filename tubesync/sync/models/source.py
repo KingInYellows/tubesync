@@ -459,6 +459,22 @@ class Source(db.models.Model):
     def get_index_url(self, url_type, /):
         return self.__class__.create_index_url(self.source_type, url_key=self.key, url_type=url_type)
 
+    def index_metadata_keys(self):
+        '''
+            Keys of the index `Metadata` rows `get_index` stores for this
+            source, in preference order: the videos tab when `index_videos`
+            is set, then the streams tab when `index_streams` is set and the
+            source is not a playlist. The one place that decides which index
+            rows `download_source_images`, `get_image_urls` and
+            `sync.tvshow_nfo` read.
+        '''
+        keys = []
+        if self.index_videos:
+            keys.append(self.get_index_url('videos'))
+        if self.index_streams and not self.is_playlist:
+            keys.append(self.get_index_url('streams'))
+        return keys
+
     @property
     def format_summary(self):
         if self.is_audio:
@@ -494,10 +510,13 @@ class Source(db.models.Model):
 
     def get_image_urls(self, qs):
         avatar_url = banner_url = thumbnail_url = None
+        keys = self.index_metadata_keys()
         index_preference = db.models.Case(
-            db.models.When(key=self.get_index_url('videos'), then=0),
-            db.models.When(key=self.get_index_url('streams'), then=1),
-            default=2,
+            *(
+                db.models.When(key=key, then=rank)
+                for rank, key in enumerate(keys)
+            ),
+            default=len(keys),
             output_field=db.models.IntegerField(),
         )
         for metadata in qs.order_by(index_preference, '-retrieved', '-created'):

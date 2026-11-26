@@ -20,7 +20,13 @@ def retry_django_db(max_retries=15, *, callback_func=None, **settings):
                     return func(*args, **kwargs)
                 # django.db.utils.OperationalError: database is locked
                 except db.utils.OperationalError as e:
-                    if str(e).endswith('database is locked'):
+                    # Inside a caller's transaction the failed query has
+                    # already marked it for rollback, so a retry would only
+                    # raise TransactionManagementError and hide this error.
+                    if (
+                        'is locked' in str(e).lower() and
+                        not db.connection.in_atomic_block
+                    ):
                         retry.error = e
                         continue
                     raise
