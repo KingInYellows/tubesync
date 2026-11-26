@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlsplit
 from django.conf import settings
 from django.test import TestCase, Client
@@ -39,6 +40,23 @@ class FrontEndTestCase(TestCase):
         c = Client()
         response = c.get('/')
         self.assertEqual(response.status_code, 200)
+
+    def test_web_logs_is_not_linked(self):
+        response = Client().get('/')
+        self.assertContains(response, 'Services')
+        self.assertNotContains(response, '/web-logs')
+
+    def test_web_logs_is_not_proxied(self):
+        conf = (
+            Path(settings.BASE_DIR).parent
+            / 'config/root/etc/nginx/logs_location.conf'
+        )
+        if not conf.is_file():
+            # The container image ships only the Django project.
+            self.skipTest('nginx configuration is not in this tree')
+        text = conf.read_text()
+        self.assertNotIn('proxy_pass', text)
+        self.assertEqual(text.count('return 410;'), 2)
 
     def test_validate_source(self):
         test_sources = {

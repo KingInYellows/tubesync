@@ -37,7 +37,7 @@ signal-driven task scheduling.
 
 ## Fork delta
 
-Fifteen upstream files are touched at fifteen points (`settings.py` twice; point 13 spans two files), ten of the fifteen minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml`, `.github/workflows/medianest-bridge-refresh.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
+Eighteen upstream files are touched at sixteen points (`settings.py` twice; point 13 spans two files, point 16 three), eleven of the sixteen minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml`, `.github/workflows/medianest-bridge-refresh.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
 
 1. `tubesync/tubesync/settings.py` -- `INSTALLED_APPS += 'medianest_bridge'`.
 2. `tubesync/tubesync/urls.py` -- one `include('medianest_bridge.urls')` at
@@ -205,6 +205,12 @@ Fifteen upstream files are touched at fifteen points (`settings.py` twice; point
    a source whose "delete files on disk" box is ticked, even when the
    caller asked to keep files. On an upstream merge that touches
    `DeleteSourceView.post`, carry the change into `source_delete.py`.
+16. `config/root/etc/nginx/logs_location.conf`, `common/templates/base.html`
+   and `sync/templates/sync/dashboard.html` -- `/web-logs/` returns 410 and
+   both links to it are gone. nginx proxied the log viewer without Django,
+   so `HTTP_USER`/`HTTP_PASS` did not cover it. hat-syslog-server keeps
+   running and keeps its database; point 14's `run` script now binds its
+   viewer to `127.0.0.1:23020` instead of the library default `0.0.0.0`.
 
 `sync/tvshow_nfo.py` (Plex T2) is a new, wholly fork-owned module (like
 `medianest_bridge/` itself), not an upstream touch point -- it is not
