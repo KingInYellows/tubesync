@@ -251,7 +251,13 @@ def verify_checksums(line_data, is_tag, label, algorithm):
             buf = pool.get_nowait()
             try:
                 with target_path.open(mode='rb', buffering=0) as f:
-                    actual_read = f.readinto(buf)
+                    # readinto() may return fewer bytes before EOF
+                    actual_read = 0
+                    while actual_read < len(buf):
+                        n = f.readinto(buf[actual_read:])
+                        if not n:
+                            break
+                        actual_read += n
             except OSError:
                 # Give the borrowed buffer back so the pool is not drained
                 return_buffer(buf, pool)

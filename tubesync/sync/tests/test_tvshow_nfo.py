@@ -169,6 +169,23 @@ class ResolveShowTitleTestCase(TestCase):
         )
         self.assertEqual(resolve_show_title(self.source), 'Index Name')
 
+    def test_a_titled_legacy_row_wins_over_a_newer_untitled_index_row(self):
+        now = timezone.now()
+        Metadata.objects.create(
+            site='YoutubeTab', key=self.source.key,
+            value={'channel': 'Legacy Name', 'description': 'Legacy plot'},
+            retrieved=now - timezone.timedelta(days=1),
+        )
+        Metadata.objects.create(
+            site='YoutubeTab', source=self.source,
+            key=self.source.get_index_url('videos'),
+            value={'id': self.source.key, 'thumbnails': []},
+            retrieved=now,
+        )
+        self.assertEqual(resolve_show_title(self.source), 'Legacy Name')
+        tree = ElementTree.fromstring(build_tvshow_nfo(self.source))
+        self.assertEqual(tree.find('plot').text, 'Legacy plot')
+
     def test_another_sources_index_metadata_does_not_match(self):
         other = make_source(
             key='UCotherotherotherotherot', name='othername',

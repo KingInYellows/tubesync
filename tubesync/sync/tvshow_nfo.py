@@ -36,6 +36,8 @@ from .utils import write_text_file
 # where expires_at is a `time.monotonic()` deadline. See resolve_show_title()
 # for the caching rationale.
 _SHOW_TITLE_CACHE_TTL_SECONDS = 60
+# Rows `_cached_channel_metadata` reads looking for one with a title.
+_CACHED_ROW_SCAN_LIMIT = 10
 _show_title_cache = {}
 # source.pk -> how many times write_tvshow_nfo() invalidated it. A lookup
 # that started before an invalidation must not store its (older) result.
@@ -135,7 +137,10 @@ def _cached_channel_metadata(source):
         Index rows win over legacy rows, and the videos tab over the
         streams tab (the order `Source.get_image_urls` uses): a streams
         response can lack the channel name or description the videos one
-        has. Within a kind, the newest row wins. `site` is not filtered on.
+        has. Within a kind, the newest row wins. A row without a usable
+        title is passed over for the next one that has one (an index
+        response can carry only an id and thumbnails), and returned only
+        when no row has a title. `site` is not filtered on.
     '''
     # Deferred import: `sync.models` is mid-import when `sync.models.media`
     # (which calls into this module) is first loaded -- see
@@ -150,10 +155,17 @@ def _cached_channel_metadata(source):
         default=len(index_keys),
         output_field=IntegerField(),
     )
-    return Metadata.objects.filter(media__isnull=True).filter(
+    rows = Metadata.objects.filter(media__isnull=True).filter(
         Q(source=source, key__in=index_keys)
         | Q(source__isnull=True, key=source.key)
-    ).order_by(preference, '-retrieved').first()
+    ).order_by(preference, '-retrieved')[:_CACHED_ROW_SCAN_LIMIT]
+    first = None
+    for row in rows:
+        if _cached_title(source, row):
+            return row
+        if first is None:
+            first = row
+    return first
 
 
 def _clean_text(value):
@@ -231,17 +243,7 @@ def _resolve_show_title_from_data(source, cached):
         Not cached here: `build_tvshow_nfo()` always wants a fresh read.
         The caching lives one layer up, in `resolve_show_title()`.
     '''
-    cached_title = None
-    if cached is not None:
-        fields = ('title',) if source.is_playlist else (
-            'channel', 'uploader', 'title',
-        )
-        for field in fields:
-            cached_title = _clean_text(_value_dict(cached).get(field))
-            if cached_title and field == 'title' and not source.is_playlist:
-                cached_title = _TAB_TITLE_SUFFIX.sub('', cached_title).strip()
-            if cached_title:
-                break
+    cached_title = _cached_title(source, cached)
     if cached_title and source.is_playlist:
         return cached_title
     media_title, media_retrieved = _media_title(source)
@@ -258,6 +260,27 @@ def _display_title(source, data_title):
         would otherwise leave an empty title).
     '''
     return data_title or _clean_text(source.name) or str(source.name).strip()
+
+
+def _cached_title(source, cached):
+    '''
+        The show title `cached` (a `_cached_channel_metadata` row, or
+        `None`) carries for `source`: its `title` for a playlist, else its
+        `channel`/`uploader`/`title` (a tab suffix stripped from the
+        last). `''` when it carries none.
+    '''
+    if cached is None:
+        return ''
+    fields = ('title',) if source.is_playlist else (
+        'channel', 'uploader', 'title',
+    )
+    for field in fields:
+        title = _clean_text(_value_dict(cached).get(field))
+        if title and field == 'title' and not source.is_playlist:
+            title = _TAB_TITLE_SUFFIX.sub('', title).strip()
+        if title:
+            return title
+    return ''
 
 
 def _value_dict(cached):
