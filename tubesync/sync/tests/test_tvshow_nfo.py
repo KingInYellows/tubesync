@@ -17,7 +17,9 @@ import tempfile
 import time
 from contextlib import contextmanager
 from collections import deque
-from unittest.mock import PropertyMock, patch
+from unittest.mock import patch
+
+from huey import CancelExecution
 from xml.etree import ElementTree
 
 from django.conf import settings
@@ -131,6 +133,70 @@ class ResolveShowTitleTestCase(TestCase):
         tree = ElementTree.fromstring(build_tvshow_nfo(self.source))
         self.assertEqual(tree.find('studio').text, 'Cached Channel Title')
         self.assertEqual(tree.find('plot').text, 'Cached channel plot')
+
+    def test_uses_the_index_metadata_for_a_handle_based_channel(self):
+        handle_source = make_source(
+            source_type=Val(YouTube_SourceType.CHANNEL),
+            key='@somechannel',
+            name='handlename',
+            directory='handledirectory',
+        )
+        Metadata.objects.create(
+            site='YoutubeTab', source=handle_source,
+            key=handle_source.get_index_url('videos'),
+            value={
+                'title': 'Some Channel - Videos',
+                'channel': 'Some Channel',
+                'description': 'Index plot',
+            },
+        )
+        self.assertEqual(resolve_show_title(handle_source), 'Some Channel')
+        tree = ElementTree.fromstring(build_tvshow_nfo(handle_source))
+        self.assertEqual(tree.find('plot').text, 'Index plot')
+
+    def test_an_index_row_wins_over_a_newer_legacy_row(self):
+        now = timezone.now()
+        Metadata.objects.create(
+            site='YoutubeTab', key=self.source.key,
+            value={'channel': 'Legacy Name'},
+            retrieved=now,
+        )
+        Metadata.objects.create(
+            site='YoutubeTab', source=self.source,
+            key=self.source.get_index_url('videos'),
+            value={'channel': 'Index Name'},
+            retrieved=now - timezone.timedelta(days=1),
+        )
+        self.assertEqual(resolve_show_title(self.source), 'Index Name')
+
+    def test_a_titled_legacy_row_wins_over_a_newer_untitled_index_row(self):
+        now = timezone.now()
+        Metadata.objects.create(
+            site='YoutubeTab', key=self.source.key,
+            value={'channel': 'Legacy Name', 'description': 'Legacy plot'},
+            retrieved=now - timezone.timedelta(days=1),
+        )
+        Metadata.objects.create(
+            site='YoutubeTab', source=self.source,
+            key=self.source.get_index_url('videos'),
+            value={'id': self.source.key, 'thumbnails': []},
+            retrieved=now,
+        )
+        self.assertEqual(resolve_show_title(self.source), 'Legacy Name')
+        tree = ElementTree.fromstring(build_tvshow_nfo(self.source))
+        self.assertEqual(tree.find('plot').text, 'Legacy plot')
+
+    def test_another_sources_index_metadata_does_not_match(self):
+        other = make_source(
+            key='UCotherotherotherotherot', name='othername',
+            directory='otherdirectory',
+        )
+        Metadata.objects.create(
+            site='YoutubeTab', source=other,
+            key=other.get_index_url('videos'),
+            value={'channel': 'Other Channel'},
+        )
+        self.assertEqual(resolve_show_title(self.source), 'testname')
 
     def test_a_differently_keyed_cache_row_does_not_match(self):
         # A handle-based CHANNEL source's key never matches the cached
@@ -922,23 +988,48 @@ class TasksWriteTvshowNfoTestCase(TestCase):
             index_source.call_local(str(self.source.pk))
         self.assert_called_for_source(mock_write)
 
+    def _index_metadata(self):
+        # Since upstream v0.18.4, download_source_images reads image URLs
+        # from the index metadata and cancels until indexing has stored it.
+        Metadata.objects.create(
+            site='YoutubeTab', source=self.source,
+            key=self.source.get_index_url('videos'), value={},
+        )
+
     def test_download_source_images(self):
+        from PIL import Image
         from sync.tasks import download_source_images
+        self._index_metadata()
         with (
             patch.object(
-                Source, 'get_image_url', new_callable=PropertyMock,
-                return_value=(None, None, None),
+                Source, 'get_image_urls',
+                return_value=('https://example.invalid/a.jpg', None, None),
             ),
+            patch(
+                'sync.tasks.get_remote_image',
+                side_effect=lambda url: Image.new('RGB', (8, 8)),
+            ),
+            temp_download_root(),
             patch('sync.tasks.write_tvshow_nfo') as mock_write,
         ):
+            self.source.make_directory()
             download_source_images.call_local(str(self.source.pk))
         self.assert_called_for_source(mock_write)
 
+    def test_download_source_images_waits_for_index_data(self):
+        from sync.tasks import download_source_images
+        with patch('sync.tasks.write_tvshow_nfo') as mock_write:
+            with self.assertRaisesRegex(CancelExecution, 'data not yet available'):
+                download_source_images.call_local(str(self.source.pk))
+        # index_source writes the NFO itself once the data exists.
+        mock_write.assert_not_called()
+
     def test_download_source_images_refreshes_the_nfo_when_an_image_fails(self):
         from sync.tasks import download_source_images
+        self._index_metadata()
         with (
             patch.object(
-                Source, 'get_image_url', new_callable=PropertyMock,
+                Source, 'get_image_urls',
                 return_value=('https://example.invalid/a.jpg', None, None),
             ),
             patch('sync.tasks.get_remote_image', side_effect=OSError('boom')),
@@ -961,11 +1052,11 @@ class TasksWriteTvshowNfoTestCase(TestCase):
             colour = (255, 0, 0) if 'avatar' in url else (0, 0, 255)
             return Image.new('RGB', (8, 8), colour)
 
+        self._index_metadata()
         with (
             temp_download_root(),
             patch.object(
-                Source, 'get_image_url', new_callable=PropertyMock,
-                return_value=image_urls,
+                Source, 'get_image_urls', return_value=image_urls,
             ),
             patch('sync.tasks.get_remote_image', side_effect=fake_image),
             patch('sync.tasks.write_tvshow_nfo'),
@@ -1224,3 +1315,121 @@ class TvshowNfoFollowUp57TestCase(TestCase):
             # The in-flight lookup now finishes with an older title.
             _store_show_title(self.source, seen[0], 'stale title')
         self.assertNotIn(self.source.pk, _show_title_cache)
+
+
+class IndexMetadataRowsTestCase(TestCase):
+    '''
+        Which index `Metadata` rows `_cached_channel_metadata` reads
+        (`Source.index_metadata_keys()`), in which order, and how their
+        title reaches the NFO.
+    '''
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+        _clear_show_title_cache()
+        self.source = make_source()
+
+    def tearDown(self):
+        _clear_show_title_cache()
+
+    def _index_row(self, source, tab, value, retrieved=None):
+        fields = dict(
+            site='YoutubeTab', source=source,
+            key=source.get_index_url(tab), value=value,
+        )
+        if retrieved is not None:
+            fields['retrieved'] = retrieved
+        return Metadata.objects.create(**fields)
+
+    def test_the_videos_row_wins_over_a_newer_streams_row(self):
+        self.source.index_streams = True
+        self.source.save()
+        now = timezone.now()
+        self._index_row(
+            self.source, 'videos',
+            {'channel': 'Videos Name', 'description': 'Videos plot'},
+            retrieved=now - timezone.timedelta(hours=1),
+        )
+        self._index_row(
+            self.source, 'streams', {'title': 'Videos Name - Live'},
+            retrieved=now,
+        )
+        self.assertEqual(resolve_show_title(self.source), 'Videos Name')
+        tree = ElementTree.fromstring(build_tvshow_nfo(self.source))
+        self.assertEqual(tree.find('plot').text, 'Videos plot')
+
+    def test_the_streams_row_is_read_when_only_streams_are_indexed(self):
+        self.source.index_videos = False
+        self.source.index_streams = True
+        self.source.save()
+        self._index_row(self.source, 'streams', {'channel': 'Streams Name'})
+        self.assertEqual(resolve_show_title(self.source), 'Streams Name')
+
+    def test_the_streams_row_is_ignored_while_streams_are_not_indexed(self):
+        self._index_row(self.source, 'streams', {'channel': 'Streams Name'})
+        self.assertEqual(resolve_show_title(self.source), 'testname')
+
+    def test_a_playlist_index_row_gives_its_title(self):
+        playlist_source = make_source(
+            source_type=Val(YouTube_SourceType.PLAYLIST),
+            key='PLabcdefghijklmnopqrstuv',
+            name='playlistname',
+            directory='playlistdirectory',
+        )
+        self._index_row(
+            playlist_source, 'videos',
+            {'title': 'The Playlist - Live', 'channel': 'Its Owner'},
+        )
+        # A playlist's own title keeps any " - <Tab>"-like ending.
+        self.assertEqual(
+            resolve_show_title(playlist_source), 'The Playlist - Live',
+        )
+
+    def test_a_row_with_this_source_but_no_index_key_does_not_match(self):
+        Metadata.objects.create(
+            site='YoutubeTab', source=self.source,
+            key='https://www.youtube.com/@elsewhere/videos',
+            value={'channel': 'Wrong Channel'},
+        )
+        self.assertEqual(resolve_show_title(self.source), 'testname')
+
+    def test_a_channel_title_fallback_loses_its_tab_suffix(self):
+        self._index_row(self.source, 'videos', {'title': 'Some Channel - Videos'})
+        self.assertEqual(resolve_show_title(self.source), 'Some Channel')
+
+    def test_media_retrieved_after_an_index_row_wins_for_a_channel(self):
+        now = timezone.now()
+        row = self._index_row(
+            self.source, 'videos', {'channel': 'Old Name'},
+            retrieved=now - timezone.timedelta(days=2),
+        )
+        media = Media.objects.create(key='renamed', source=self.source)
+        media.ingest_metadata(json.loads(media_metadata(
+            channel='New Name', epoch=int(now.timestamp()),
+        )))
+        self.assertEqual(resolve_show_title(self.source), 'New Name')
+        Metadata.objects.filter(pk=row.pk).update(
+            retrieved=now + timezone.timedelta(days=1),
+        )
+        _clear_show_title_cache()
+        self.assertEqual(resolve_show_title(self.source), 'Old Name')
+
+    def test_an_index_run_feeds_the_show_title_and_plot(self):
+        # Ties the NFO reader to the row upstream's Source.get_index writes,
+        # rather than to a hand-built row.
+        response = {
+            'extractor_key': 'YoutubeTab',
+            'id': self.source.key,
+            'title': 'Real Channel - Videos',
+            'channel': 'Real Channel',
+            'description': 'Real plot',
+            'thumbnails': [],
+            'entries': [{'id': 'video-id'}],
+        }
+        with patch.dict(self.source.INDEXERS, {
+            self.source.source_type: lambda *args, **kwargs: dict(response),
+        }):
+            self.source.get_index('videos')
+        self.assertEqual(resolve_show_title(self.source), 'Real Channel')
+        tree = ElementTree.fromstring(build_tvshow_nfo(self.source))
+        self.assertEqual(tree.find('plot').text, 'Real plot')

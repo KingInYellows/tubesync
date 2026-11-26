@@ -22,7 +22,7 @@ from xml.etree import ElementTree
 
 from django import db
 from django.core.exceptions import ObjectDoesNotExist
-from django.db.models import F
+from django.db.models import Case, F, IntegerField, Q, When
 
 from common.logger import log
 from common.transactions import read_atomic
@@ -36,6 +36,8 @@ from .utils import write_text_file
 # where expires_at is a `time.monotonic()` deadline. See resolve_show_title()
 # for the caching rationale.
 _SHOW_TITLE_CACHE_TTL_SECONDS = 60
+# Rows `_cached_channel_metadata` reads looking for one with a title.
+_CACHED_ROW_SCAN_LIMIT = 10
 _show_title_cache = {}
 # source.pk -> how many times write_tvshow_nfo() invalidated it. A lookup
 # that started before an invalidation must not store its (older) result.
@@ -46,6 +48,12 @@ _show_title_lock = threading.Lock()
 # title lookup reads before giving up on the per-media tier. A freshly
 # indexed stub row can carry metadata without a channel/uploader name.
 _TITLE_MEDIA_SCAN_LIMIT = 5
+
+# yt-dlp titles a channel tab's response "<channel> - <Tab>". Removed when a
+# channel's show title can only come from that `title`.
+_TAB_TITLE_SUFFIX = re.compile(
+    r'\s+-\s+(?:Home|Videos|Shorts|Live|Streams|Playlists|Podcasts|Releases)$',
+)
 
 # The writer's own marker: `<uniqueid type="tubesync" checksum="sha256:...">`
 # holding the source's immutable uuid. The checksum covers the whole file
@@ -107,34 +115,57 @@ def _store_show_title(source, generation, title):
 
 def _cached_channel_metadata(source):
     '''
-        Returns the `Metadata` row `sync/youtube.py:get_image_info` caches
-        for this source's channel/playlist entity (`source`/`media` both
-        NULL, keyed by the extractor's own id for that entity) via
-        `Source.get_image_url` (F6), or `None` if nothing is cached yet --
-        that cache is only populated once `download_source_images` has run
-        at least once for this source. `get_image_info` is the only writer
-        of rows with both `source` and `media` NULL, so the key alone
-        identifies it; `site` (the extractor key, `YoutubeTab`) is not
-        filtered on.
+        Returns the `Metadata` row that holds this source's own
+        channel/playlist response (not a video's), or `None` if there is
+        none yet. Rows come from two places:
 
-        This only matches directly for PLAYLIST and CHANNEL_ID sources,
-        whose `Source.key` already IS that extractor id. For a handle-based
-        CHANNEL source (`key` is the handle, e.g. "@somechannel"), the
-        cached row's key is the resolved "UC..." id yt-dlp returns for the
-        channel, which this function has no cheap (no extra network call)
-        way to learn. `resolve_show_title()` simply falls through to its
-        next tier in that case -- an accepted, documented limitation, not
-        a bug.
+        - `Source.get_index` (the active writer) stores the index response
+          without its entries (`source` set, `media` NULL, keyed by the
+          index URL). Every indexing run refreshes it, for every source
+          type, including a handle-based CHANNEL source. Only the keys
+          `Source.index_metadata_keys()` names are read, the same rows
+          `download_source_images` uses.
+        - Legacy rows from before upstream v0.18.4, which
+          `sync/youtube.py:get_image_info` stored through
+          `Source.get_image_url` (F6) with `source` and `media` both NULL,
+          keyed by the extractor's own id for the entity. Nothing calls
+          that writer any more; both functions are kept unchanged as
+          upstream code, so these rows only come from earlier runs. They
+          still match PLAYLIST and CHANNEL_ID sources, whose `Source.key`
+          is that id.
+
+        Index rows win over legacy rows, and the videos tab over the
+        streams tab (the order `Source.get_image_urls` uses): a streams
+        response can lack the channel name or description the videos one
+        has. Within a kind, the newest row wins. A row without a usable
+        title is passed over for the next one that has one (an index
+        response can carry only an id and thumbnails), and returned only
+        when no row has a title. `site` is not filtered on.
     '''
     # Deferred import: `sync.models` is mid-import when `sync.models.media`
     # (which calls into this module) is first loaded -- see
     # `sync/models/__init__.py`'s import order (`Media` before `Metadata`).
     from .models import Metadata
-    return Metadata.objects.filter(
-        source__isnull=True,
-        media__isnull=True,
-        key=source.key,
-    ).order_by('-retrieved').first()
+    index_keys = source.index_metadata_keys()
+    preference = Case(
+        *(
+            When(source=source, key=key, then=rank)
+            for rank, key in enumerate(index_keys)
+        ),
+        default=len(index_keys),
+        output_field=IntegerField(),
+    )
+    rows = Metadata.objects.filter(media__isnull=True).filter(
+        Q(source=source, key__in=index_keys)
+        | Q(source__isnull=True, key=source.key)
+    ).order_by(preference, '-retrieved')[:_CACHED_ROW_SCAN_LIMIT]
+    first = None
+    for row in rows:
+        if _cached_title(source, row):
+            return row
+        if first is None:
+            first = row
+    return first
 
 
 def _clean_text(value):
@@ -192,33 +223,27 @@ def _resolve_show_title_from_data(source, cached):
         2. `_media_title()`: the newest media's `playlist_title` (for a
            playlist source) or `channel`/`uploader` (for a channel).
 
+        When a channel's tier-1 value has to come from `title`, its
+        " - <Tab>" suffix is removed (`_TAB_TITLE_SUFFIX`).
+
         Tier 1 wins, except for a channel whose tier-2 value was retrieved
         after the cached row: a renamed channel's new videos carry the new
-        name before `download_source_images` next refreshes the cache.
+        name before the next indexing run refreshes the cached row.
 
-        Playlist tier-2 caveat (accepted limitation): per-media metadata is
-        fetched from standalone `watch?v=` URLs, so `playlist_title` is
-        usually empty even for playlist sources. We do not read
-        `source.videos` (the indexed playlist payload) here -- that would
-        couple this resolver to the index payload shape for a
-        fallback-of-a-fallback. Bridge-created sources normally never hit
-        this path: their profile sets `copy_channel_images=True`, so tier 1
-        caches the playlist-scoped metadata; when tier 1/2 both miss,
-        `resolve_show_title()` falls back to `source.name` (MediaNest sets
-        that from the playlist title at creation).
+        Tier 1 depends on the shape of the index response `Source.get_index`
+        stores (via `_cached_channel_metadata`), for every source whatever
+        its `copy_channel_images` setting, since `index_source` refreshes
+        that row on every run. Playlist tier-2 caveat (accepted
+        limitation): per-media metadata is fetched from standalone
+        `watch?v=` URLs, so `playlist_title` is usually empty even for
+        playlist sources; when tier 1/2 both miss, `resolve_show_title()`
+        falls back to `source.name` (MediaNest sets that from the playlist
+        title at creation).
 
         Not cached here: `build_tvshow_nfo()` always wants a fresh read.
         The caching lives one layer up, in `resolve_show_title()`.
     '''
-    cached_title = None
-    if cached is not None:
-        fields = ('title',) if source.is_playlist else (
-            'channel', 'uploader', 'title',
-        )
-        for field in fields:
-            cached_title = _clean_text(_value_dict(cached).get(field))
-            if cached_title:
-                break
+    cached_title = _cached_title(source, cached)
     if cached_title and source.is_playlist:
         return cached_title
     media_title, media_retrieved = _media_title(source)
@@ -235,6 +260,27 @@ def _display_title(source, data_title):
         would otherwise leave an empty title).
     '''
     return data_title or _clean_text(source.name) or str(source.name).strip()
+
+
+def _cached_title(source, cached):
+    '''
+        The show title `cached` (a `_cached_channel_metadata` row, or
+        `None`) carries for `source`: its `title` for a playlist, else its
+        `channel`/`uploader`/`title` (a tab suffix stripped from the
+        last). `''` when it carries none.
+    '''
+    if cached is None:
+        return ''
+    fields = ('title',) if source.is_playlist else (
+        'channel', 'uploader', 'title',
+    )
+    for field in fields:
+        title = _clean_text(_value_dict(cached).get(field))
+        if title and field == 'title' and not source.is_playlist:
+            title = _TAB_TITLE_SUFFIX.sub('', title).strip()
+        if title:
+            return title
+    return ''
 
 
 def _value_dict(cached):

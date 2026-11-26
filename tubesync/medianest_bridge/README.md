@@ -37,7 +37,7 @@ signal-driven task scheduling.
 
 ## Fork delta
 
-Eighteen upstream files are touched at sixteen points (`settings.py` twice; point 13 spans two files, point 16 three), eleven of the sixteen minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml`, `.github/workflows/medianest-bridge-refresh.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
+Twenty-two upstream files are touched at twenty points (`settings.py` twice; point 13 spans two files, point 16 three), fifteen of the twenty minimal; the fork also owns `.github/workflows/medianest-bridge-release.yaml`, `.github/workflows/medianest-bridge-refresh.yaml` and a job-level `bridge-v*` guard in the inherited `.github/workflows/release.yaml`:
 
 1. `tubesync/tubesync/settings.py` -- `INSTALLED_APPS += 'medianest_bridge'`.
 2. `tubesync/tubesync/urls.py` -- one `include('medianest_bridge.urls')` at
@@ -113,8 +113,12 @@ Eighteen upstream files are touched at sixteen points (`settings.py` twice; poin
    (`episode_yyyy`, `episode_mmddnn`, `title_full_bounded`) to the dict
    `example_media_format_dict` returns, required for
    `get_example_media_format()` (and so `run_edit_source_checks`) to accept
-   a `media_format` that uses them. That is the only change to its body;
-   no existing keys change.
+   a `media_format` that uses them. No existing keys change. A later
+   review fix (PR #85) adds `Source.index_metadata_keys()`, the one place
+   that decides which index `Metadata` rows (videos tab, then streams tab
+   for a non-playlist with `index_streams`) `download_source_images()`,
+   `get_image_urls()` and `sync/tvshow_nfo.py` read; `get_image_urls()`
+   orders by it instead of its own two hard-coded keys.
 8. `sync/models/metadata.py` (Plex T1) -- `Metadata.ingest_metadata`'s
    `published` fallback (when the ingested data has neither
    `release_timestamp` nor `timestamp`) now tries `upload_date` (parsed
@@ -131,8 +135,8 @@ Eighteen upstream files are touched at sixteen points (`settings.py` twice; poin
 10. `sync/tasks.py` (Plex T2) -- one new import (`sync/tvshow_nfo.py`'s
    `write_tvshow_nfo`) and three call sites: the end of `index_source()`,
    a `finally:` around `download_source_images()`'s image loop (so a
-   failed image still refreshes the NFO from the metadata
-   `get_image_url` just cached), and right after
+   failed image still refreshes the NFO from the index metadata the task
+   just read), and right after
    `download_media_metadata()` saves the media (so the first real channel
    name refreshes the show title), each just `write_tvshow_nfo(source)`.
    `write_tvshow_nfo` logs any error instead of raising it. The image
@@ -144,6 +148,16 @@ Eighteen upstream files are touched at sixteen points (`settings.py` twice; poin
    avatar (a playlist), its thumbnail is also written as `poster.jpg` and
    `season-poster.jpg`, so Plex has a show poster. With an avatar, the
    list is upstream's.
+   Since upstream v0.18.4, `download_source_images()` cancels and retries
+   before its `try:` while the source has no index data yet, so this call
+   site does not run then; `index_source()`'s call writes `tvshow.nfo`
+   once indexing has stored data. The task takes its index keys from
+   `Source.index_metadata_keys()` (point 7). Two review fixes (PR #85)
+   change upstream lines here too: `download_media_metadata()` makes
+   `published` timezone-aware only when it is set (it is nullable), and
+   `migrate_to_metadata()` cancels and retries, instead of migrating and
+   deleting, an index row whose batch `index_source()` has not written
+   yet.
 11. `healthcheck.py` (MED-623, see `docs/adr-0001-stale-ytdlp-guard.md`)
    -- upstream's Docker HEALTHCHECK stops the `huey-net-limited`
    (download) consumer as soon as the bundled yt-dlp is older than the
@@ -211,6 +225,27 @@ Eighteen upstream files are touched at sixteen points (`settings.py` twice; poin
    so `HTTP_USER`/`HTTP_PASS` did not cover it. hat-syslog-server keeps
    running and keeps its database; point 14's `run` script now binds its
    viewer to `127.0.0.1:23020` instead of the library default `0.0.0.0`.
+17. `sync/admin.py` (PR #85 review) -- `MediaAdmin`'s bulk actions take
+   the selected media UUIDs before their `update()` and queue
+   `save_media` from that list. Upstream re-read the filtered changelist
+   queryset after the update, so with a filter on the changed field no
+   task was queued.
+18. `shasum.py` (PR #85 review) -- `fill_buffer()` returns the buffer it
+   borrowed to the pool when opening or reading a file fails. Upstream
+   dropped it, so enough unreadable files emptied the pool and the
+   blocking `get()` hung verification.
+19. `common/huey.py` (MED-695) -- `historical_task()` writes the
+   `TaskHistory` row with no retry and, when SQLite reports a lock
+   outside a transaction, logs a warning and skips that update.
+   Upstream wrapped `get_or_create` in `retry_django_db(5)`, and
+   `TaskHistory.save` carries `retry_django_db(10)`; with the fork's 30 s
+   lock timeout either could block the worker's signal thread for
+   minutes. The handler calls the undecorated `save` (`__wrapped__`).
+20. `common/yt_dlp.py` (PR #85 review) -- `retry_django_db` re-raises a
+   lock error inside a transaction instead of retrying it (the failed
+   query has already marked the transaction for rollback, so a retry
+   only raises `TransactionManagementError`), and also retries
+   "database table is locked".
 
 `sync/tvshow_nfo.py` (Plex T2) is a new, wholly fork-owned module (like
 `medianest_bridge/` itself), not an upstream touch point -- it is not

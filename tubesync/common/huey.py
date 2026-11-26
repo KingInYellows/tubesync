@@ -491,7 +491,12 @@ def historical_task(signal_name, task_obj, exception_obj=None, /, *, huey=None):
                 th.scheduled_at = scheduled_at
         th.end_at = signal_dt
         th.elapsed = history['elapsed']
-        th.save()
+        # TaskHistory.save retries a locked database (upstream's
+        # retry_django_db(10)); each attempt can wait the whole SQLite lock
+        # timeout, which would block this signal thread for minutes. Save
+        # once and let the skip below handle a locked database.
+        save_once = getattr(TaskHistory.save, '__wrapped__', TaskHistory.save)
+        save_once(th)
     except db.OperationalError as exc:
         # Inside a caller's transaction the error has already marked it
         # for rollback, so the caller has to see it.
@@ -519,7 +524,7 @@ def register_huey_signals():
         assert hasattr(huey, 'immediate')
         # Guard against immediate mode and transactions
         if (
-            any((huey is None, not hasattr(huey, 'immediate'), huey.immediate,)) or
+            huey is None or getattr(huey, 'immediate', True) or
             any(dbw.in_atomic_block for dbw in db.connections.all())
         ):
             return
