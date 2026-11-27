@@ -118,6 +118,34 @@ class PauseResumeTestCase(ControlsTestMixin, BridgeTestCase):
         self.assertEqual(first['settings'], second['settings'])
         self.assertEqual(second['settings']['indexSchedule'], HOURLY)
 
+    def test_pause_of_a_source_set_to_never_index_in_tubesync_turns_downloads_off(self):
+        # CodeRabbit review on #86: a source set to never index in
+        # TubeSync's own UI already reads as paused, but its downloads are
+        # still on until the bridge pauses it.
+        self.writable()
+        source = make_source(index_schedule=NEVER)
+        body = json.loads(self.patch_json(source_url(source.pk), {'paused': True}).content)
+        self.assertTrue(body['settings']['paused'])
+        self.assertFalse(body['settings']['downloadMedia'])
+        source.refresh_from_db()
+        self.assertFalse(source.download_media)
+        self.patch_json(source_url(source.pk), {'paused': False})
+        source.refresh_from_db()
+        self.assertTrue(source.download_media)
+        self.assertEqual(source.index_schedule, pause.default_schedule(source))
+
+    def test_a_source_that_indexes_nothing_can_still_be_resumed(self):
+        # CodeRabbit review on #86.
+        self.writable()
+        source = make_source(index_videos=False, index_streams=False)
+        body = json.loads(self.patch_json(source_url(source.pk), {'paused': True}).content)
+        self.assertTrue(body['settings']['paused'])
+        body = json.loads(self.patch_json(source_url(source.pk), {'paused': False}).content)
+        self.assertFalse(body['settings']['paused'])
+        source.refresh_from_db()
+        self.assertEqual(source.index_schedule, HOURLY)
+        self.assertTrue(source.download_media)
+
     def test_resume_restores_the_schedule_and_asks_for_an_index(self):
         self.writable()
         source = make_source()
@@ -329,6 +357,19 @@ class RetryMediaTestCase(ControlsTestMixin, BridgeTestCase):
         ]
         self.assertEqual(len(manual), 1)
 
+    def test_retry_of_a_queued_video_changes_nothing(self):
+        # CodeRabbit review on #86: the contract says a video already
+        # queued is left as it is.
+        self.writable()
+        make_download_task(
+            self.media, start_at=None,
+            scheduled_at=timezone.now() + timezone.timedelta(minutes=5),
+        )
+        with patch.object(TaskHistory, 'schedule') as schedule:
+            response = self.post(media_url(self.source.pk, self.media.pk, 'retry'))
+        self.assertEqual(response.status_code, 202)
+        schedule.assert_not_called()
+
     def test_video_without_metadata_fetches_it_first(self):
         self.writable()
         with patch.object(TaskHistory, 'schedule') as schedule:
@@ -441,6 +482,21 @@ class SkipMediaTestCase(ControlsTestMixin, BridgeTestCase):
         self.assertEqual([call.args[0].pk for call in revoke.call_args_list], [due.pk])
         due.refresh_from_db()
         self.assertTrue(due.verbose_name.startswith('[revoked] '))
+
+    def test_skip_while_metadata_is_being_fetched_is_busy(self):
+        # CodeRabbit review on #86: the fetch saves the whole row when it
+        # finishes, which would undo the skip.
+        self.writable()
+        now = timezone.now()
+        make_download_task(
+            self.media, name='sync.tasks.download_media_metadata',
+            start_at=now, end_at=now, scheduled_at=now - timezone.timedelta(seconds=5),
+        )
+        response = self.post(media_url(self.source.pk, self.media.pk, 'skip'))
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(json.loads(response.content)['code'], 'MEDIA_BUSY')
+        self.media.refresh_from_db()
+        self.assertFalse(self.media.manual_skip)
 
     def test_skip_survives_a_later_save(self):
         self.writable()

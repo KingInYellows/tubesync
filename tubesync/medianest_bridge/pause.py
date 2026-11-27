@@ -72,7 +72,9 @@ def is_paused(source):
         return False
     if source.index_schedule != Val(IndexSchedule.NEVER):
         return False
-    return bool(source.index_videos or source.index_streams)
+    # A source that indexes nothing reads as paused only when the bridge
+    # paused it (its record is there), so it can still be resumed.
+    return bool(source.index_videos or source.index_streams) or _record_path(source).exists()
 
 
 def read_record(source):
@@ -188,7 +190,9 @@ def apply_update(source_pk, *, paused=None, index_schedule=None):
     with transaction.atomic():
         source = Source.objects.select_for_update().get(pk=source_pk)
         currently_paused = is_paused(source)
-        if paused is True and not currently_paused:
+        if paused is True and (not currently_paused or read_record(source) is None):
+            # Also a source set to never index in TubeSync's own UI: the
+            # bridge has not paused it yet, so its downloads are still on.
             _pause(source, index_schedule=index_schedule)
         elif paused is True:
             if index_schedule is not None:

@@ -563,7 +563,9 @@ paths:
 
         `paused: true` stops the source: TubeSync stops indexing it and
         stops downloading its videos (a download already running
-        finishes; a queued one does nothing when it starts). The bridge
+        finishes; a queued one does nothing when it starts, except a
+        manual download a retry queued before the pause, which still
+        runs). The bridge
         keeps the schedule and download setting the source had, and GET
         /sources/{sourceUuid} reports normalizedState `paused`.
         `paused: false` puts them back and asks for an index right away,

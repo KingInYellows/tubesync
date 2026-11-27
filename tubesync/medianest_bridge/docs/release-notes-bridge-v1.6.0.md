@@ -63,7 +63,8 @@ MediaNest or TubeSync's own UI), and ignore the new fields.
 
 - Merge the MediaNest PR that carries contract 1.6.0 first, then point the
   vendored contract header at its squash-merge SHA (the body is already
-  byte-identical) and regenerate nothing else.
+  byte-identical), then update `source_sha256` in
+  `contract/contract_fixtures.json`, which hashes the whole file.
 - Tag `bridge-v1.6.0` on the `main` commit that merges this PR. That
   triggers `medianest-bridge-release.yaml` to publish
   `ghcr.io/kinginyellows/tubesync:bridge-v1.6.0`. The workflow can also be

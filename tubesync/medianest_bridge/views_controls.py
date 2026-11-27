@@ -16,7 +16,7 @@
 import uuid
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import F, Q
 from django.http import JsonResponse
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
@@ -130,6 +130,32 @@ def _running_download_task(media):
     return None
 
 
+def _not_started_download(media):
+    '''A download for this video that is queued and has never started (a
+    failed one awaiting its huey retry has start_at set, so a retry still
+    re-queues it now).'''
+    return get_model_tasks(
+        str(media.pk),
+        name='download_media_file',
+        qs=TaskHistory.objects.filter(start_at__isnull=True).exclude(
+            verbose_name__startswith=_REVOKED_VERBOSE_PREFIX,
+        ),
+    ).first()
+
+
+def _running_metadata_task(media):
+    '''A metadata fetch running right now (start_at == end_at, as
+    sync_dedup._is_actively_running): it saves the whole row when done,
+    which would undo a skip committed meanwhile.'''
+    return get_model_tasks(
+        str(media.pk),
+        name='download_media_metadata',
+        qs=TaskHistory.objects.filter(start_at__isnull=False, start_at=F('end_at')).exclude(
+            verbose_name__startswith=_REVOKED_VERBOSE_PREFIX,
+        ),
+    ).first()
+
+
 def _media_response(media):
     fresh = Media.objects.select_related('source').get(pk=media.pk)
     return JsonResponse(mapping.serialize_media(fresh), status=202)
@@ -174,11 +200,22 @@ class RetryMediaView(_MediaControlView):
             )
         if media.downloaded:
             return _media_downloaded(request_id)
-        if _running_download_task(media):
+        # Safe to repeat: a video already downloading, or with a download
+        # queued that has not started yet, is left as it is (contract
+        # retryMedia). A skipped video is retried anyway, which un-skips
+        # it; a queued metadata fetch is deduplicated by the schedule
+        # below (remove_duplicates=True).
+        if _running_download_task(media) or (
+            not media.skip and _not_started_download(media)
+        ):
             return _media_response(media)
 
         with transaction.atomic():
             media = Media.objects.select_for_update().select_related('source').get(pk=media.pk)
+            # A download can finish between the check above and the lock;
+            # the override download below would then replace the file.
+            if media.downloaded:
+                return _media_downloaded(request_id)
             if media.has_metadata:
                 media.save_to_metadata('_refresh_formats_attempted', 1)
                 media.save_to_metadata('formats_epoch', 1)
@@ -231,7 +268,7 @@ class SkipMediaView(_MediaControlView):
             return error
         if media.downloaded:
             return _media_downloaded(request_id)
-        if _running_download_task(media):
+        if _running_download_task(media) or _running_metadata_task(media):
             return error_response(
                 status=409,
                 code='MEDIA_BUSY',
@@ -243,6 +280,8 @@ class SkipMediaView(_MediaControlView):
 
         with transaction.atomic():
             media = Media.objects.select_for_update().select_related('source').get(pk=media.pk)
+            if media.downloaded:
+                return _media_downloaded(request_id)
             # Every download that could still run: not started yet, a
             # failed one huey will retry (its retry reuses the row, with
             # scheduled_at moved on, which may already be due while it
