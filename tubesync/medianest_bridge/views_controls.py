@@ -143,17 +143,19 @@ def _not_started_download(media):
     ).first()
 
 
-def _running_metadata_task(media):
-    '''A metadata fetch running right now (start_at == end_at, as
-    sync_dedup._is_actively_running): it saves the whole row when done,
-    which would undo a skip committed meanwhile.'''
-    return get_model_tasks(
-        str(media.pk),
-        name='download_media_metadata',
-        qs=TaskHistory.objects.filter(start_at__isnull=False, start_at=F('end_at')).exclude(
-            verbose_name__startswith=_REVOKED_VERBOSE_PREFIX,
-        ),
-    ).first()
+def _running_row_saving_task(media):
+    '''A metadata fetch or format refresh running right now (start_at ==
+    end_at, as sync_dedup._is_actively_running): each loads the video
+    before its network call and saves the whole row when done, which
+    would undo a skip committed meanwhile.'''
+    running = TaskHistory.objects.filter(start_at__isnull=False, start_at=F('end_at')).exclude(
+        verbose_name__startswith=_REVOKED_VERBOSE_PREFIX,
+    )
+    for name in ('download_media_metadata', 'refresh_formats'):
+        task = get_model_tasks(str(media.pk), name=name, qs=running).first()
+        if task:
+            return task
+    return None
 
 
 def _media_response(media):
@@ -268,7 +270,7 @@ class SkipMediaView(_MediaControlView):
             return error
         if media.downloaded:
             return _media_downloaded(request_id)
-        if _running_download_task(media) or _running_metadata_task(media):
+        if _running_download_task(media) or _running_row_saving_task(media):
             return error_response(
                 status=409,
                 code='MEDIA_BUSY',

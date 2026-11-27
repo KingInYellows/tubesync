@@ -498,6 +498,18 @@ class SkipMediaTestCase(ControlsTestMixin, BridgeTestCase):
         self.media.refresh_from_db()
         self.assertFalse(self.media.manual_skip)
 
+    def test_skip_while_formats_are_being_refreshed_is_busy(self):
+        # Codex review on #86: refresh_formats saves the whole row too.
+        self.writable()
+        now = timezone.now()
+        make_download_task(
+            self.media, name='sync.tasks.refresh_formats',
+            start_at=now, end_at=now, scheduled_at=now - timezone.timedelta(seconds=5),
+        )
+        response = self.post(media_url(self.source.pk, self.media.pk, 'skip'))
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(json.loads(response.content)['code'], 'MEDIA_BUSY')
+
     def test_skip_survives_a_later_save(self):
         self.writable()
         self.post(media_url(self.source.pk, self.media.pk, 'skip'))
