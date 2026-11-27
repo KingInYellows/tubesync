@@ -337,6 +337,7 @@ class RetryMediaTestCase(ControlsTestMixin, BridgeTestCase):
         calls = [c for c in schedule.call_args_list if c.args[0] is download_media_metadata]
         self.assertTrue(calls)
         self.assertTrue(any(c.kwargs.get('manual') for c in calls))
+        self.assertTrue(any(c.kwargs.get('download_after') for c in calls))
 
     def test_retry_unskips_a_skipped_video(self):
         self.writable()

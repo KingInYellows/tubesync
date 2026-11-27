@@ -198,6 +198,7 @@ class RetryMediaView(_MediaControlView):
                     download_media_metadata,
                     str(media.pk),
                     manual=True,
+                    download_after=True,
                     priority=90,
                     remove_duplicates=True,
                     vn_fmt=_('Downloading metadata (manually) for "{}": "{}"'),

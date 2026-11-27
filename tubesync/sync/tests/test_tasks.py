@@ -8,7 +8,7 @@ from django.test import TestCase, Client, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from sync.choices import (
-    Fallback, SourceResolution, Val, YouTube_AudioCodec, YouTube_SourceType, YouTube_VideoCodec,
+    CapChoices, Fallback, SourceResolution, Val, YouTube_AudioCodec, YouTube_SourceType, YouTube_VideoCodec,
 )
 from sync.models import Source, Media
 from sync.tasks import (
@@ -220,6 +220,33 @@ class ManualActionBypassesIndexOnlyGuardTestCase(TestCase):
         # only the plain automatic one.
         self.assertFalse(download_task_has_override(media))
         self.assertTrue(get_model_tasks(str(media.pk), name='download_media_file').exists())
+
+    def test_bridge_retry_downloads_a_video_the_filters_skip(self):
+        # download_after=True (the MediaNest bridge's retry): on a normal
+        # source whose download cap skips the video once its metadata is
+        # in, the automatic scheduling never downloads it, so the manual
+        # override download is chained here (Codex review on tubesync #86).
+        source = Source.objects.create(
+            key='rw-bridge-retry', name='rw-bridge-retry', directory='/tmp/rw-bridge-retry',
+            download_media=True,
+            download_cap=Val(CapChoices.CAP_7DAYS),
+            source_resolution=Val(SourceResolution.VIDEO_1080P),
+            source_vcodec=Val(YouTube_VideoCodec.VP9),
+            source_acodec=Val(YouTube_AudioCodec.OPUS),
+            prefer_60fps=False,
+            prefer_hdr=False,
+            fallback=Val(Fallback.FAIL),
+        )
+        media = Media.objects.create(
+            source=source, key='vid-bridge-retry', title='Vid Bridge Retry',
+            published=timezone.now() - timezone.timedelta(days=30),
+        )
+        fake_response = json.loads(all_test_metadata['minimal'])
+        with patch.object(Media, 'index_metadata', return_value=fake_response):
+            download_media_metadata.call_local(str(media.pk), manual=True, download_after=True)
+        media.refresh_from_db()
+        self.assertTrue(media.skip)
+        self.assertTrue(download_task_has_override(media))
 
     def test_manual_thumbnail_fetch_bypasses_guard(self):
         source = Source.objects.create(

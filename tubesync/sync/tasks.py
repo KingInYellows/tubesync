@@ -949,7 +949,7 @@ def upgrade_media(media_id):
         download_media_file.call_local(str(media.pk), override=True)
 
 @db_task(delay=60, priority=60, retries=3, retry_delay=600, queue=Val(TaskQueue.LIMIT))
-def download_media_metadata(media_id, manual=False):
+def download_media_metadata(media_id, manual=False, download_after=False):
     '''
         Downloads the metadata for a media item.
 
@@ -965,6 +965,12 @@ def download_media_metadata(media_id, manual=False):
         succeeds, trigger an actual download -- for an index-only source's
         media even though automatic scheduling is disabled for it. See
         settings.INDEX_ONLY_SKIP_METADATA.
+
+        download_after=True (with manual=True) is the MediaNest bridge's
+        "retry this video" (medianest_bridge/views_controls.py): once the
+        metadata is in, the video is downloaded even when the source's
+        filters skip it again, as a retry of a video that already had
+        metadata does.
     '''
     try:
         media = Media.objects.get(pk=media_id)
@@ -1094,7 +1100,9 @@ def download_media_metadata(media_id, manual=False):
     if (
         manual and
         media.can_download and
-        not source.download_media
+        # A skipped video gets no automatic download either, so a bridge
+        # retry chains the manual one too (Codex review on tubesync #86).
+        (not source.download_media or (download_after and media.skip))
     ):
         # media_post_save() (triggered by media.save() above) recalculated
         # can_download from the metadata we just fetched, but its own
