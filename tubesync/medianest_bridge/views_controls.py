@@ -157,9 +157,19 @@ def _not_started_download(media):
             verbose_name__startswith=_REVOKED_VERBOSE_PREFIX,
         ),
     )
+    executed = list(get_model_tasks(
+        str(media.pk),
+        name='download_media_file',
+        qs=TaskHistory.objects.filter(start_at__isnull=False),
+    ))
     for task in queued:
-        if not _huey_revoked(task):
-            return task
+        if _huey_revoked(task):
+            continue
+        # Once a worker has dequeued the revoked twin its revoke is gone;
+        # mapping uses the same shape check for the reported state.
+        if mapping._pending_likely_auto_revoked_duplicate(task, executed):
+            continue
+        return task
     return None
 
 

@@ -17,6 +17,7 @@ from sync.tasks import (
     download_media_metadata,
     get_model_tasks,
     index_source,
+    refresh_formats,
 )
 from .fixtures import all_test_metadata
 
@@ -273,6 +274,31 @@ class ManualActionBypassesIndexOnlyGuardTestCase(TestCase):
         self.assertTrue(media.manual_skip)
         self.assertTrue(media.has_metadata)
         self.assertFalse(download_task_has_override(media))
+
+    def test_skip_committed_during_a_format_refresh_is_kept(self):
+        # Codex review on tubesync #86: Media.refresh_formats() clears skip
+        # on an instance loaded before a skip committed; the task's save
+        # must keep the committed skip.
+        source = Source.objects.create(
+            key='rw-refresh-race', name='rw-refresh-race', directory='/tmp/rw-refresh-race',
+            download_media=False,
+        )
+        media = Media.objects.create(
+            source=source, key='vid-refresh-race', title='Vid Refresh Race',
+            published=timezone.now() - timezone.timedelta(days=30),
+        )
+
+        def refresh_while_skipped(self):
+            Media.objects.filter(pk=self.pk).update(skip=True, manual_skip=True)
+            self.skip = False
+            return (True, False, 'refreshed')
+
+        with patch('sync.tasks.wait_for_errors'), \
+                patch.object(Media, 'refresh_formats', refresh_while_skipped):
+            refresh_formats.call_local(str(media.pk))
+        media.refresh_from_db()
+        self.assertTrue(media.skip)
+        self.assertTrue(media.manual_skip)
 
     def test_manual_thumbnail_fetch_bypasses_guard(self):
         source = Source.objects.create(

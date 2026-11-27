@@ -1447,6 +1447,13 @@ def refresh_formats(media_id):
             exc.reason = msg
             exc.save = save
             raise exc
+        # Media.refresh_formats() clears skip on this instance, which was
+        # loaded before its network call: a skip committed meanwhile (a
+        # bridge skip, MED-810) wins over that.
+        committed = Media.objects.filter(pk=media.pk).values('manual_skip').first()
+        if committed and committed['manual_skip']:
+            media.skip = True
+            media.manual_skip = True
         # the metadata has already been saved, trigger the post_save signal
         log.info(f'Saving refreshed formats for "{media.key}": {msg}')
         media.save()

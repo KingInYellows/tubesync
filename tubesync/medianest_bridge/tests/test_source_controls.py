@@ -391,6 +391,28 @@ class RetryMediaTestCase(ControlsTestMixin, BridgeTestCase):
         self.assertEqual(response.status_code, 202)
         schedule.assert_called()
 
+    def test_retry_ignores_a_dequeued_auto_revoked_duplicate(self):
+        # Codex review on #86: after a worker dequeues a twin huey revoked,
+        # the revoke is gone and its row is still unmarked; a failed
+        # sibling that ran after it was queued shows it is dead.
+        self.writable()
+        failed_at = timezone.now() - timezone.timedelta(seconds=30)
+        make_download_task(
+            self.media,
+            start_at=timezone.now() - timezone.timedelta(seconds=60),
+            end_at=failed_at, failed_at=failed_at, attempts=1,
+            scheduled_at=timezone.now() - timezone.timedelta(seconds=60),
+        )
+        make_download_task(
+            self.media, start_at=None, attempts=0,
+            end_at=timezone.now() - timezone.timedelta(seconds=55),
+            scheduled_at=timezone.now() + timezone.timedelta(seconds=300),
+        )
+        with patch.object(TaskHistory, 'schedule') as schedule:
+            response = self.post(media_url(self.source.pk, self.media.pk, 'retry'))
+        self.assertEqual(response.status_code, 202)
+        schedule.assert_called()
+
     def test_video_without_metadata_fetches_it_first(self):
         self.writable()
         with patch.object(TaskHistory, 'schedule') as schedule:
