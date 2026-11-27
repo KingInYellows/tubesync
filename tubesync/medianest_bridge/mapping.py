@@ -24,6 +24,8 @@ from sync.tasks import get_error_message, get_running_tasks, get_source_index_ta
 from sync.tvshow_nfo import resolve_show_title
 
 from .error_sanitize import sanitize_error_message
+from .failure_kind import classify as classify_failure
+from .pause import is_paused, settings_for
 from .videolist import is_videolist
 
 _MISSING = object()
@@ -116,6 +118,12 @@ def map_source_state(source, *, index_task=None):
         5. is_active, has crawled at least once, not failed, not currently
            syncing -> "active".
 
+        0. Contract 1.6.0: a paused source (pause.py) -> "paused", before
+           everything else. Nothing happens to it until it is resumed, so
+           an old failure or an index still finishing is not what a
+           caller needs to show. TubeSync's own all-off "disabled" stays
+           step 3.
+
         "unknown" is never emitted by this function -- the above is
         exhaustive over is_active/has_failed/last_crawl/task-running, all
         of which are always determinable for an existing Source row.
@@ -125,6 +133,8 @@ def map_source_state(source, *, index_task=None):
         so both fields cannot disagree if the task starts or finishes
         between lookups.
     '''
+    if is_paused(source):
+        return 'paused'
     if source.has_failed:
         return 'failed'
     if index_task is None:
@@ -180,6 +190,8 @@ def serialize_source(source):
         },
         'normalizedState': map_source_state(source, index_task=index_task),
         'lastCrawlAt': _iso(source.last_crawl),
+        # Contract 1.6.0 (MED-809).
+        'settings': settings_for(source),
     }
 
 
@@ -506,4 +518,11 @@ def serialize_media(media, *, download_task=_MISSING):
             else None
         ),
         'error': error_message,
+        # Contract 1.6.0 (MED-813): set exactly when `error` is. Read from
+        # the whole stored error, before sanitizing, since the phrase that
+        # names the cause can sit above the last line.
+        'failureKind': (
+            classify_failure(task.last_error)
+            if error_message is not None else None
+        ),
     }

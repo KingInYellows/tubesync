@@ -82,12 +82,29 @@ class SourceTypeMappingTestCase(TestCase):
 
 class SourceStateMappingTestCase(TestCase):
 
-    def test_failed_takes_precedence_over_everything(self):
-        source = make_source(has_failed=True, index_schedule=Val(IndexSchedule.NEVER))
+    def test_failed_takes_precedence_over_everything_but_paused(self):
+        source = make_source(
+            has_failed=True, index_schedule=Val(IndexSchedule.NEVER),
+            download_media=False, index_videos=False, index_streams=False,
+        )
         self.assertEqual(mapping.map_source_state(source), 'failed')
 
+    def test_paused_takes_precedence_over_failed(self):
+        # Contract 1.6.0: a source that still indexes videos but is set to
+        # never index is paused (pause.py).
+        source = make_source(has_failed=True, index_schedule=Val(IndexSchedule.NEVER))
+        self.assertEqual(mapping.map_source_state(source), 'paused')
+
     def test_disabled_when_not_active(self):
-        source = make_source(index_schedule=Val(IndexSchedule.NEVER))
+        source = make_source(
+            index_schedule=Val(IndexSchedule.NEVER),
+            download_media=False, index_videos=False, index_streams=False,
+        )
+        self.assertFalse(source.is_active)
+        self.assertEqual(mapping.map_source_state(source), 'disabled')
+
+    def test_disabled_when_nothing_is_indexed_or_downloaded(self):
+        source = make_source(download_media=False, index_videos=False, index_streams=False)
         self.assertFalse(source.is_active)
         self.assertEqual(mapping.map_source_state(source), 'disabled')
 

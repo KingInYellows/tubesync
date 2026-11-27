@@ -14,6 +14,10 @@ write endpoints -- the first mutation surface in this app.
 keeping or deleting its files, and delete the folder of a source already
 removed (see "Endpoints").
 
+**MED-809/810/813 (contract 1.6.0)** adds the first update routes: pause,
+resume or reschedule a source, and retry or skip one video. Failed videos
+also say why they failed (`failureKind`). See "Endpoints".
+
 Every slice deliberately implements only the endpoints the vendored
 contract actually defines: no general paginated source list, no `GET
 /media/{mediaId}`, no `/tasks` endpoint. The M0 contract is scoped to the vertical-slice minimum by
@@ -758,6 +762,49 @@ each call writes a `mutation_audit` line (the folder route logs
   `{"canonicalKey", "folders": ["video/acq-src-..."]}` (paths relative to
   the download root).
 
+**MED-809/810/813 (contract 1.6.0, `medianest_bridge/views_controls.py`,
+backed by `pause.py` and `failure_kind.py`; MediaNest ADR-0036):**
+
+- `PATCH /sources/{sourceUuid}` -- `updateSource`. The body has only
+  `paused` (boolean) and `indexSchedule` (seconds, one of TubeSync's
+  schedules except "never"); any other field, an empty body or a bad value
+  is `400 SOURCE_INVALID` and changes nothing. Pause sets the source's
+  `index_schedule` to NEVER and `download_media` off, so TubeSync stops
+  indexing and a queued download does nothing when it starts. What resume
+  brings back is kept in `<CONFIG_BASE_DIR>/medianest-bridge/paused/<uuid>.json`
+  (no migration; the record sits beside `db.sqlite3`, so it is backed up
+  with it). Resume restores the schedule and download setting, removes the
+  record and asks for an index right away (the same dedup as sync-now). No
+  record (a source set to "never" in TubeSync itself) resumes on the
+  default schedule (`MEDIANEST_BRIDGE_SOURCE_DEFAULTS`' `index_schedule`
+  for its type, else 24 hours). `indexSchedule` on a paused source sets
+  what resume brings back. A video list is `400`; a source being deleted
+  is `409 SOURCE_DELETING`. Returns the `Source`.
+- Every `Source` now carries `settings` (`paused`, `pausedAt`,
+  `indexSchedule`, `downloadMedia`), and `normalizedState` is `paused` for
+  a paused source, ahead of every other state. A source is paused when it
+  is not a video list, its schedule is NEVER and it still indexes videos
+  or streams; a source with every index and download flag off stays
+  TubeSync's own `disabled`, and the hidden row a deletion leaves has
+  `index_videos` off, so it is never mistaken for one.
+- `POST /sources/{sourceUuid}/media/{mediaId}/retry` -- `retryMedia`.
+  Un-skips the video and queues a manual download the way TubeSync's
+  redownload button does for a video with nothing on disk (fresh formats,
+  then `schedule_manual_media_download()`), or a manual metadata fetch when
+  it has no metadata yet. `202` with the `MediaItem`; a download already
+  running is left alone. `409 MEDIA_DOWNLOADED` for a downloaded video
+  (this route never deletes a file), `409 SOURCE_PAUSED` on a paused
+  source, `404 MEDIA_NOT_FOUND` for a video not on this source.
+- `POST /sources/{sourceUuid}/media/{mediaId}/skip` -- `skipMedia`. Sets
+  `skip` and `manual_skip` as TubeSync's skip button does (so a later index
+  keeps it skipped) and revokes the video's queued downloads, override ones
+  included. `409 MEDIA_DOWNLOADED` for a downloaded video, `409 MEDIA_BUSY`
+  (retryable) while it downloads. Retry undoes it.
+- `MediaItem.failureKind` is set exactly when `error` is: `unavailable`,
+  `private`, `members_only`, `age_restricted`, `geo_blocked`, `upcoming`,
+  `temporary`, `disk_full` or `unknown`, matched from the stored error text
+  (`failure_kind.py`).
+
 Every response (success and error) echoes `X-Request-ID`. A caller-supplied
 `X-Request-ID` header is echoed verbatim when it is a valid UUID; otherwise
 the bridge generates a new UUID4. `X-Correlation-ID`, if supplied, is logged (paired with the request
@@ -906,6 +953,12 @@ from the YAML rather than hand-edited.
   `validate_source_defaults()`'s own field-level/
   `run_edit_source_checks()` pass (a bad `media_format`, no raw env
   value ever echoed in an error message).
+- `test_source_controls.py` -- contract 1.6.0: pause, resume and schedule
+  through `PATCH /sources/{uuid}` (record kept and removed, default
+  schedule with no or a broken record, video lists and deleting sources
+  refused), retry and skip of one video (manual download or metadata
+  fetch, queued downloads revoked, downloaded/paused/busy refusals), and
+  `failureKind` phrase matching.
 - `test_auth.py` -- client-IP resolution, CIDR allow/deny,
   `hmac.compare_digest` patch-asserted as the actual comparison mechanism.
 - `test_dispatch.py` -- the full gate order end-to-end: disabled,
