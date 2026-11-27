@@ -130,17 +130,37 @@ def _running_download_task(media):
     return None
 
 
+def _huey_revoked(task):
+    '''True when huey holds a revoke for this task id. common/huey.py's
+    on_executing_remove_duplicates() revokes a queued duplicate when its
+    twin starts, and leaves the duplicate's history row unmarked (start_at
+    null, no [revoked] prefix) until a worker dequeues it.'''
+    from django_huey import DJANGO_HUEY, get_queue
+    from huey.api import Task
+
+    for name in DJANGO_HUEY.get('queues', {}):
+        queue = get_queue(name)
+        if queue.name == task.queue:
+            return queue.is_revoked(Task(id=task.task_id), peek=True)
+    return False
+
+
 def _not_started_download(media):
     '''A download for this video that is queued and has never started (a
     failed one awaiting its huey retry has start_at set, so a retry still
-    re-queues it now).'''
-    return get_model_tasks(
+    re-queues it now). A duplicate huey revoked without marking its row
+    does not count.'''
+    queued = get_model_tasks(
         str(media.pk),
         name='download_media_file',
         qs=TaskHistory.objects.filter(start_at__isnull=True).exclude(
             verbose_name__startswith=_REVOKED_VERBOSE_PREFIX,
         ),
-    ).first()
+    )
+    for task in queued:
+        if not _huey_revoked(task):
+            return task
+    return None
 
 
 def _running_row_saving_task(media):

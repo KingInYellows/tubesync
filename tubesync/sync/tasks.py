@@ -1083,6 +1083,14 @@ def download_media_metadata(media_id, manual=False, download_after=False):
     if media.metadata_duration:
         media.duration = media.metadata_duration
 
+    # A skip committed while the metadata was being fetched (a bridge
+    # skip, MED-810) wins: this instance was loaded before the fetch and
+    # its full-row save would otherwise undo it.
+    committed = Media.objects.filter(pk=media.pk).values('skip', 'manual_skip').first()
+    if committed and committed['manual_skip'] and not media.manual_skip:
+        media.skip = True
+        media.manual_skip = True
+
     # Don't filter media here, the post_save signal will handle that
     try:
         media.save()
@@ -1100,6 +1108,7 @@ def download_media_metadata(media_id, manual=False, download_after=False):
     if (
         manual and
         media.can_download and
+        not media.manual_skip and
         # A skipped video gets no automatic download either, so a bridge
         # retry chains the manual one too (Codex review on tubesync #86).
         (not source.download_media or (download_after and media.skip))

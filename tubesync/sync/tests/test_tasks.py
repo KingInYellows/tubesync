@@ -248,6 +248,32 @@ class ManualActionBypassesIndexOnlyGuardTestCase(TestCase):
         self.assertTrue(media.skip)
         self.assertTrue(download_task_has_override(media))
 
+    def test_skip_committed_during_the_metadata_fetch_is_kept(self):
+        # CodeRabbit review on tubesync #86: the task loads the video before
+        # its network fetch; a bridge skip committed meanwhile must survive
+        # the save and get no chained download.
+        source = Source.objects.create(
+            key='rw-skip-race', name='rw-skip-race', directory='/tmp/rw-skip-race',
+            download_media=False,
+        )
+        media = Media.objects.create(
+            source=source, key='vid-skip-race', title='Vid Skip Race',
+            published=timezone.now() - timezone.timedelta(days=30),
+        )
+        fake_response = json.loads(all_test_metadata['minimal'])
+
+        def fetch_while_skipped(*args, **kwargs):
+            Media.objects.filter(pk=media.pk).update(skip=True, manual_skip=True)
+            return fake_response
+
+        with patch.object(Media, 'index_metadata', side_effect=fetch_while_skipped):
+            download_media_metadata.call_local(str(media.pk), manual=True, download_after=True)
+        media.refresh_from_db()
+        self.assertTrue(media.skip)
+        self.assertTrue(media.manual_skip)
+        self.assertTrue(media.has_metadata)
+        self.assertFalse(download_task_has_override(media))
+
     def test_manual_thumbnail_fetch_bypasses_guard(self):
         source = Source.objects.create(
             key='ro-manual-thumb', name='ro-manual-thumb', directory='/tmp/ro-manual-thumb',

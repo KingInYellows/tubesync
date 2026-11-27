@@ -370,6 +370,27 @@ class RetryMediaTestCase(ControlsTestMixin, BridgeTestCase):
         self.assertEqual(response.status_code, 202)
         schedule.assert_not_called()
 
+    def test_retry_ignores_a_queued_duplicate_huey_revoked(self):
+        # CodeRabbit review on #86: on_executing_remove_duplicates() revokes
+        # a queued twin without marking its history row, so that row must
+        # not make a retry do nothing.
+        from django_huey import DJANGO_HUEY, get_queue
+
+        self.writable()
+        queue = get_queue(next(iter(DJANGO_HUEY['queues'])))
+        twin = make_download_task(
+            self.media, start_at=None, queue=queue.name,
+            scheduled_at=timezone.now() + timezone.timedelta(minutes=5),
+        )
+        queue.revoke_by_id(twin.task_id, revoke_once=True)
+        try:
+            with patch.object(TaskHistory, 'schedule') as schedule:
+                response = self.post(media_url(self.source.pk, self.media.pk, 'retry'))
+        finally:
+            queue.restore_by_id(twin.task_id)
+        self.assertEqual(response.status_code, 202)
+        schedule.assert_called()
+
     def test_video_without_metadata_fetches_it_first(self):
         self.writable()
         with patch.object(TaskHistory, 'schedule') as schedule:
