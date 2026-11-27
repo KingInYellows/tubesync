@@ -420,6 +420,27 @@ class SkipMediaTestCase(ControlsTestMixin, BridgeTestCase):
             task.refresh_from_db()
             self.assertTrue(task.verbose_name.startswith('[revoked] '))
 
+    def test_skip_revokes_a_failed_download_whose_retry_is_due(self):
+        # Codex review on #86: a retry that is due but still waiting for a
+        # worker has start_at set and scheduled_at in the past; huey must
+        # still be told to drop it, or its override=True downloads anyway.
+        self.writable()
+        due = make_failed_task(
+            self.media,
+            scheduled_at=timezone.now() - timezone.timedelta(seconds=5),
+            task_params=[[str(self.media.pk)], repr({'override': True})],
+        )
+        from .. import views_controls
+        with patch.object(
+            views_controls, '_revoke_pending_index_task',
+            wraps=views_controls._revoke_pending_index_task,
+        ) as revoke:
+            response = self.post(media_url(self.source.pk, self.media.pk, 'skip'))
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual([call.args[0].pk for call in revoke.call_args_list], [due.pk])
+        due.refresh_from_db()
+        self.assertTrue(due.verbose_name.startswith('[revoked] '))
+
     def test_skip_survives_a_later_save(self):
         self.writable()
         self.post(media_url(self.source.pk, self.media.pk, 'skip'))

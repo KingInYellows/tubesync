@@ -207,8 +207,10 @@ def apply_update(source_pk, *, paused=None, index_schedule=None):
             # the next index; ask for it now rather than after a whole
             # schedule period. Same dedup as POST /sources/{uuid}/sync.
             schedule_sync_now_index(source)
-    if resumed:
-        _remove_record(source)
+            # Still under the row lock: a pause that runs right after this
+            # resume writes its own record, which an unlink after the lock
+            # is released could delete (Codex review on #86).
+            _remove_record(source)
     return Source.objects.get(pk=source_pk)
 
 

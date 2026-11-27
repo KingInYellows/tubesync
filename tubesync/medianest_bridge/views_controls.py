@@ -242,35 +242,28 @@ class SkipMediaView(_MediaControlView):
 
         with transaction.atomic():
             media = Media.objects.select_for_update().select_related('source').get(pk=media.pk)
-            pending = get_model_tasks(
+            # Every download that could still run: not started yet, a
+            # failed one huey will retry (its retry reuses the row, with
+            # scheduled_at moved on, which may already be due while it
+            # waits for a worker), or one scheduled ahead. All are revoked
+            # in huey and marked [revoked], so the media list reads
+            # `skipped`, not `failed`, even for a failed manual download,
+            # whose override=True would otherwise keep it current (see
+            # mapping._task_has_override()) and download a skipped video.
+            # A running one was refused above.
+            queued = get_model_tasks(
                 str(media.pk),
                 name='download_media_file',
-                # Not started yet, or a failed one huey will run again
-                # (its retry reuses the row, with scheduled_at ahead).
                 qs=TaskHistory.objects.filter(
-                    Q(start_at__isnull=True) | Q(scheduled_at__gt=timezone.now()),
+                    Q(start_at__isnull=True)
+                    | Q(failed_at__isnull=False)
+                    | Q(scheduled_at__gt=timezone.now()),
                 ).exclude(
                     verbose_name__startswith=_REVOKED_VERBOSE_PREFIX,
                 ),
             )
-            for task in pending:
+            for task in queued:
                 _revoke_pending_index_task(task)
-            # A finished failed attempt is no longer this video's fate
-            # either. Marked like a revoked row (no huey call: it will
-            # never run again) so the media list reads `skipped`, not
-            # `failed`, even for a failed manual download, whose
-            # override=True would otherwise keep it current (see
-            # mapping._task_has_override()).
-            finished = get_model_tasks(
-                str(media.pk),
-                name='download_media_file',
-                qs=TaskHistory.objects.filter(failed_at__isnull=False).exclude(
-                    verbose_name__startswith=_REVOKED_VERBOSE_PREFIX,
-                ),
-            )
-            for task in finished:
-                task.verbose_name = _REVOKED_VERBOSE_PREFIX + (task.verbose_name or task.name)
-                task.save(update_fields=['verbose_name'])
             if not (media.skip and media.manual_skip):
                 media.skip = True
                 media.manual_skip = True
