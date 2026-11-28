@@ -1,5 +1,5 @@
 '''
-    Contract 1.6.0 (MED-809, MediaNest ADR-0036): pausing a source.
+    Contract 1.6.0 (MED-809, MediaNest ADR-0038): pausing a source.
 
     A paused source is an ordinary TubeSync source with index_schedule
     NEVER and download_media off: TubeSync's own index task and

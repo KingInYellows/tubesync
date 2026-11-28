@@ -2,10 +2,9 @@
 #
 # Canonical source: KingInYellows/medianest,
 #   docs/planning/tubesync-integration/bridge-openapi.v1.yaml
-#   @ branch claude/project-thread-52e0p9 (MediaNest PR for MED-809/810/813,
-#   not merged yet; the body below is byte-identical to that branch's copy.
-#   Re-point this line at the squash-merge SHA before this fork PR merges).
-#   Contract version 1.6.0 (MED-809, MED-810, MED-813, MediaNest ADR-0036):
+#   @ b6abd1c802cc7a20d87be2776fa03e42e3177d6e (MediaNest main, PR #3594
+#   squash merge, MED-809/810/813, 2026-11-28).
+#   Contract version 1.6.0 (MED-809, MED-810, MED-813, MediaNest ADR-0038):
 #   adds PATCH /sources/{sourceUuid} (UpdateSourceRequest: paused,
 #   indexSchedule), the OPTIONAL Source.settings (SourceSettings),
 #   Source.normalizedState `paused`, POST
@@ -107,7 +106,7 @@ info:
     with POST /sources/{sourceUuid}/videos and removes with DELETE
     /sources/{sourceUuid}/videos/{videoId}. Capability-gated
     (Capabilities.oneOffVideoDownload).
-    Contract 1.6.0 (MED-809, MED-810, MED-813, ADR-0036) adds PATCH
+    Contract 1.6.0 (MED-809, MED-810, MED-813, ADR-0038) adds PATCH
     /sources/{sourceUuid} with a short list of allowed fields (pause or
     resume a source, and its sync schedule), the OPTIONAL Source.settings
     object, Source.normalizedState `paused`, POST
@@ -555,7 +554,7 @@ paths:
       operationId: updateSource
       summary: Change a source's allowed settings (pause, resume, schedule)
       description: >-
-        Contract 1.6.0 (MED-809, ADR-0036). Changes only the fields listed
+        Contract 1.6.0 (MED-809, ADR-0038). Changes only the fields listed
         in UpdateSourceRequest; any other field is 400 SOURCE_INVALID, and
         nothing is changed. Safe to repeat: sending the state a source is
         already in changes nothing.
@@ -926,7 +925,7 @@ paths:
       operationId: retryMedia
       summary: Try one video's download again
       description: >-
-        Contract 1.6.0 (MED-810, ADR-0036). Queues a new download of one
+        Contract 1.6.0 (MED-810, ADR-0038). Queues a new download of one
         video that is not downloaded: a failed video, one that never
         started, or a skipped one (retry also un-skips it, so it is the
         undo for skip). The download runs as TubeSync's own "redownload"
@@ -978,7 +977,7 @@ paths:
       operationId: skipMedia
       summary: Stop trying to download one video
       description: >-
-        Contract 1.6.0 (MED-810, ADR-0036). Marks one video that is not
+        Contract 1.6.0 (MED-810, ADR-0038). Marks one video that is not
         downloaded as skipped, the way TubeSync's own "skip" does: it is
         never downloaded, and a later index keeps it skipped. A queued
         download does nothing when it starts. 202 with the video, now
@@ -1828,7 +1827,7 @@ components:
       description: >-
         Field set settled verbatim by ADR-0006 §4 / SUCCESS-SPEC §9.4 as
         the Plex-reconciliation interface. Do not add or remove fields
-        without an ADR amendment. ADR-0036 (contract 1.6.0) adds the
+        without an ADR amendment. ADR-0038 (contract 1.6.0) adds the
         OPTIONAL failureKind, which Plex reconciliation does not read.
       required:
         - id
@@ -1913,7 +1912,7 @@ components:
         failureKind:
           type: [string, "null"]
           description: >-
-            OPTIONAL (contract 1.6.0, MED-813, ADR-0036 amends ADR-0006 §4's
+            OPTIONAL (contract 1.6.0, MED-813, ADR-0038 amends ADR-0006 §4's
             field set). Set exactly when `error` is set: the bridge's
             reading of the error, so a caller can say in plain words why a
             video failed. `unavailable` (removed, or the account is gone),

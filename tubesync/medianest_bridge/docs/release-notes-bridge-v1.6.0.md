@@ -2,7 +2,7 @@
 
 This release lets MediaNest pause and resume a YouTube source, change how
 often it syncs, and retry or skip one video. A failed video also says why
-it failed (MED-809, MED-810, MED-813, MediaNest ADR-0036). Until now the
+it failed (MED-809, MED-810, MED-813, MediaNest ADR-0038). Until now the
 bridge had no way to change a source after creating it, so the only way to
 stop one was to remove it, and a failed video showed "Failed" forever.
 

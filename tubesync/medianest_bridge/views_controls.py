@@ -1,5 +1,5 @@
 '''
-    Contract 1.6.0 (MED-809, MED-810, MediaNest ADR-0036):
+    Contract 1.6.0 (MED-809, MED-810, MediaNest ADR-0038):
     PATCH /sources/{sourceUuid} (pause, resume, schedule) and
     POST /sources/{sourceUuid}/media/{mediaId}/retry|skip.
 

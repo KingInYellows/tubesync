@@ -763,7 +763,7 @@ each call writes a `mutation_audit` line (the folder route logs
   the download root).
 
 **MED-809/810/813 (contract 1.6.0, `medianest_bridge/views_controls.py`,
-backed by `pause.py` and `failure_kind.py`; MediaNest ADR-0036):**
+backed by `pause.py` and `failure_kind.py`; MediaNest ADR-0038):**
 
 - `PATCH /sources/{sourceUuid}` -- `updateSource`. The body has only
   `paused` (boolean) and `indexSchedule` (seconds, one of TubeSync's

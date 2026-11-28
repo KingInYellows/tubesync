@@ -1,5 +1,5 @@
 '''
-    Contract 1.6.0 (MED-813, MediaNest ADR-0036): MediaItem.failureKind,
+    Contract 1.6.0 (MED-813, MediaNest ADR-0038): MediaItem.failureKind,
     the bridge's reading of why a download failed, so MediaNest can say it
     in plain words ("This video is private on YouTube") instead of showing
     a cleaned-up yt-dlp error.
