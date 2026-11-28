@@ -2,8 +2,12 @@
 #
 # Canonical source: KingInYellows/medianest,
 #   docs/planning/tubesync-integration/bridge-openapi.v1.yaml
-#   @ b6abd1c802cc7a20d87be2776fa03e42e3177d6e (MediaNest main, PR #3594
-#   squash merge, MED-809/810/813, 2026-11-28).
+#   @ MediaNest branch claude/project-thread-bhodkb (MED-816, 2026-11-28;
+#   becomes the squash-merge SHA on main before this merges).
+#   Contract version 1.6.1 (MED-816): adds the OPTIONAL, nullable
+#   Source.nextCheckAt. No path, request or required field changed.
+#   (Previous re-vendor: b6abd1c802cc7a20d87be2776fa03e42e3177d6e
+#   (MediaNest main, PR #3594 squash merge, MED-809/810/813, 2026-11-28).
 #   Contract version 1.6.0 (MED-809, MED-810, MED-813, MediaNest ADR-0038):
 #   adds PATCH /sources/{sourceUuid} (UpdateSourceRequest: paused,
 #   indexSchedule), the OPTIONAL Source.settings (SourceSettings),
@@ -11,7 +15,7 @@
 #   /sources/{sourceUuid}/media/{mediaId}/retry and /skip, the MediaId
 #   parameter, Error.code MEDIA_DOWNLOADED and SOURCE_PAUSED, and the
 #   OPTIONAL MediaItem.failureKind. Capabilities.updateSource, retryMedia
-#   and skipMedia flip to true.
+#   and skipMedia flip to true.)
 #   (Previous re-vendor: MediaNest main with contract 1.5.0, MED-730:
 #   video lists.)
 #   (Previous re-vendor: 89c6fc651aee (MediaNest main, PR #3161 squash
@@ -82,7 +86,7 @@
 openapi: 3.1.0
 info:
   title: MediaNest TubeSync Bridge API
-  version: "1.6.0"
+  version: "1.6.1"
   summary: >-
     Slice-1 minimal server-to-server bridge exposed by the medianest_bridge
     Django app inside the KingInYellows/tubesync fork. Consumed only by the
@@ -113,6 +117,8 @@ info:
     /sources/{sourceUuid}/media/{mediaId}/retry and /skip for one video,
     and the OPTIONAL MediaItem.failureKind. Capability-gated
     (Capabilities.updateSource, retryMedia, skipMedia).
+    Contract 1.6.1 (MED-816) adds the OPTIONAL Source.nextCheckAt, when
+    TubeSync next looks the source over for new videos.
 externalDocs:
   description: ADR-0006 and the reconciled technical specification
   url: ../../../docs/adr/ADR-0006-tubesync-as-youtube-acquisition-provider.md
@@ -1748,6 +1754,19 @@ components:
         lastCrawlAt:
           type: [string, "null"]
           format: date-time
+        nextCheckAt:
+          type: [string, "null"]
+          format: date-time
+          description: >-
+            OPTIONAL (contract 1.6.1, MED-816). When TubeSync next looks
+            this source over for new videos: the soonest index already
+            queued for it, or else the hourly sweep that will queue one
+            (an estimate to the minute). It can be a little in the past
+            while that index waits for a free worker. Null when no check
+            is coming: a paused or inactive source, a video list, or an
+            index running right now. Not in `required`: bridges older
+            than 1.6.1 omit it, and a consumer treats a missing value as
+            unknown, not as "never".
         settings:
           $ref: "#/components/schemas/SourceSettings"
 

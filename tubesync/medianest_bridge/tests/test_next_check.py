@@ -1,0 +1,144 @@
+'''
+    Contract 1.6.1 (MED-816): Source.nextCheckAt, from next_check.py.
+'''
+import json
+import tempfile
+from datetime import datetime, timedelta, timezone as dt_timezone
+from pathlib import Path
+
+from django.test import override_settings
+
+from common.models import TaskHistory
+from sync.choices import IndexSchedule, Val
+
+from .. import next_check
+from .base import BridgeTestCase
+from .test_endpoints import assert_matches_schema
+from .test_source_controls import make_source, source_url
+
+HOURLY = Val(IndexSchedule.EVERY_HOUR)
+SIX_HOURS = Val(IndexSchedule.EVERY_6_HOURS)
+DAILY = Val(IndexSchedule.EVERY_24_HOURS)
+WEEKLY = Val(IndexSchedule.EVERY_7_DAYS)
+
+NOW = datetime(2026, 11, 28, 14, 20, 0, tzinfo=dt_timezone.utc)
+
+
+def at(hours=0, minutes=0):
+    return NOW + timedelta(hours=hours, minutes=minutes)
+
+
+def queue_index(source, *, scheduled_at, recorded_at=None, **fields):
+    return TaskHistory.objects.create(
+        name='sync.tasks.index_source',
+        task_id=f'{source.pk}-{scheduled_at.isoformat()}-{fields.get("verbose_name", "")}',
+        task_params=[[str(source.pk)], '{}'],
+        scheduled_at=scheduled_at,
+        end_at=recorded_at or NOW,
+        start_at=None,
+        **fields,
+    )
+
+
+class NextCheckTestCase(BridgeTestCase):
+
+    def setUp(self):
+        super().setUp()
+        config_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(config_dir.cleanup)
+        ctx = override_settings(CONFIG_BASE_DIR=Path(config_dir.name))
+        ctx.enable()
+        self.addCleanup(ctx.disable)
+
+    def source(self, **fields):
+        source = make_source(**fields)
+        # Creating a source queues its first index; these tests queue
+        # their own.
+        TaskHistory.objects.all().delete()
+        # Source.target_schedule defaults to its creation time.
+        updates = {k: fields[k] for k in ('target_schedule', 'last_crawl') if k in fields}
+        if updates:
+            type(source).objects.filter(pk=source.pk).update(**updates)
+            source.refresh_from_db()
+        return source
+
+    def test_daily_source_waits_for_the_sweep_after_its_target_hour(self):
+        # Crawled at 03:10, target 03:00 tomorrow. The 01:59 sweep looks
+        # ahead to 03:00 and skips (target not before it); the 02:59 sweep
+        # queues the index 5 minutes later.
+        source = self.source(
+            index_schedule=DAILY,
+            last_crawl=NOW.replace(hour=3, minute=10),
+            target_schedule=(NOW + timedelta(days=1)).replace(hour=3, minute=0),
+        )
+        expected = (NOW + timedelta(days=1)).replace(hour=3, minute=4)
+        self.assertEqual(next_check.next_check_at(source, now=NOW), expected)
+
+    def test_hourly_source_overdue_is_picked_up_by_the_next_sweep(self):
+        source = self.source(index_schedule=HOURLY, last_crawl=at(hours=-3), target_schedule=at(hours=-2))
+        self.assertEqual(next_check.next_check_at(source, now=NOW), NOW.replace(minute=59) + timedelta(minutes=5))
+
+    def test_queued_index_sooner_than_the_sweep_wins(self):
+        source = self.source(index_schedule=WEEKLY, last_crawl=at(hours=-1), target_schedule=at(hours=160))
+        queue_index(source, scheduled_at=at(minutes=10))
+        self.assertEqual(next_check.next_check_at(source, now=NOW), at(minutes=10))
+
+    def test_queued_index_later_than_the_sweep_loses(self):
+        source = self.source(index_schedule=HOURLY, last_crawl=at(hours=-2), target_schedule=at(hours=-1))
+        queue_index(source, scheduled_at=at(hours=5))
+        self.assertEqual(next_check.next_check_at(source, now=NOW), NOW.replace(minute=59) + timedelta(minutes=5))
+
+    def test_queued_rows_recorded_before_the_last_crawl_are_ignored(self):
+        # on_executing_remove_duplicates() revoked it without marking it.
+        source = self.source(index_schedule=WEEKLY, last_crawl=at(hours=-1), target_schedule=at(hours=160))
+        queue_index(source, scheduled_at=at(minutes=10), recorded_at=at(hours=-2))
+        self.assertGreater(next_check.next_check_at(source, now=NOW), at(hours=100))
+
+    def test_revoked_and_failed_rows_are_ignored(self):
+        source = self.source(index_schedule=WEEKLY, last_crawl=at(hours=-1), target_schedule=at(hours=160))
+        queue_index(source, scheduled_at=at(minutes=10), verbose_name='[revoked] Index media')
+        queue_index(source, scheduled_at=at(minutes=20), failed_at=NOW)
+        self.assertGreater(next_check.next_check_at(source, now=NOW), at(hours=100))
+
+    def test_other_sources_queued_rows_are_ignored(self):
+        source = self.source(index_schedule=WEEKLY, last_crawl=at(hours=-1), target_schedule=at(hours=160))
+        other = self.source(
+            index_schedule=WEEKLY, key='UCzyxwvutsrqponmlkjihgfe',
+            name='acq-src-other', directory='acq-src-other',
+        )
+        queue_index(other, scheduled_at=at(minutes=10))
+        self.assertGreater(next_check.next_check_at(source, now=NOW), at(hours=100))
+
+    def test_never_crawled_source_reports_its_first_queued_index(self):
+        source = self.source(index_schedule=SIX_HOURS)
+        queue_index(source, scheduled_at=at(minutes=10))
+        self.assertEqual(next_check.next_check_at(source, now=NOW), at(minutes=10))
+
+    def test_no_check_while_indexing(self):
+        source = self.source(index_schedule=HOURLY)
+        self.assertIsNone(next_check.next_check_at(source, index_task=object(), now=NOW))
+
+    def test_no_check_for_a_paused_or_inactive_source(self):
+        never = Val(IndexSchedule.NEVER)
+        self.assertIsNone(next_check.next_check_at(self.source(index_schedule=never), now=NOW))
+        inactive = self.source(
+            index_schedule=HOURLY, download_media=False, index_videos=False, index_streams=False,
+            key='UCzyxwvutsrqponmlkjihgfe', name='acq-src-off', directory='acq-src-off',
+        )
+        self.assertIsNone(next_check.next_check_at(inactive, now=NOW))
+
+    def test_sweep_exactly_on_the_minute_moves_to_the_next_hour(self):
+        self.assertEqual(
+            next_check._first_sweep_after(NOW.replace(minute=59)),
+            NOW.replace(minute=59) + timedelta(hours=1),
+        )
+
+    def test_source_read_reports_next_check_at(self):
+        self.enable_bridge()
+        source = self.source(index_schedule=HOURLY)
+        queue_index(source, scheduled_at=datetime.now(dt_timezone.utc) + timedelta(minutes=10))
+        response = self.client.get(source_url(source.pk), **self.auth_header())
+        self.assertEqual(response.status_code, 200)
+        body = json.loads(response.content)
+        assert_matches_schema(self, body, 'Source')
+        self.assertRegex(body['nextCheckAt'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$')

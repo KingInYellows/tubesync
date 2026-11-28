@@ -18,6 +18,9 @@ removed (see "Endpoints").
 resume or reschedule a source, and retry or skip one video. Failed videos
 also say why they failed (`failureKind`). See "Endpoints".
 
+**MED-816 (contract 1.6.1)** adds `nextCheckAt` to every source read: when
+TubeSync next looks the source over for new videos (`next_check.py`).
+
 Every slice deliberately implements only the endpoints the vendored
 contract actually defines: no general paginated source list, no `GET
 /media/{mediaId}`, no `/tasks` endpoint. The M0 contract is scoped to the vertical-slice minimum by
@@ -953,6 +956,9 @@ from the YAML rather than hand-edited.
   `validate_source_defaults()`'s own field-level/
   `run_edit_source_checks()` pass (a bad `media_format`, no raw env
   value ever echoed in an error message).
+- `test_next_check.py` -- contract 1.6.1: `nextCheckAt` from a queued
+  index or the hourly sweep, revoked, failed, stale and other sources'
+  rows ignored, null while paused, inactive or indexing.
 - `test_source_controls.py` -- contract 1.6.0: pause, resume and schedule
   through `PATCH /sources/{uuid}` (record kept and removed, default
   schedule with no or a broken record, video lists and deleting sources
