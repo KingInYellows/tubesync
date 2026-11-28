@@ -300,6 +300,27 @@ class ManualActionBypassesIndexOnlyGuardTestCase(TestCase):
         self.assertTrue(media.skip)
         self.assertTrue(media.manual_skip)
 
+    def test_skip_committed_during_a_thumbnail_fetch_is_kept(self):
+        # Codex review on tubesync #86: the thumbnail task saves the whole
+        # row it loaded before its network fetch.
+        source = Source.objects.create(
+            key='rw-thumb-race', name='rw-thumb-race', directory='/tmp/rw-thumb-race',
+            download_media=False,
+        )
+        media = Media.objects.create(
+            source=source, key='vid-thumb-race', title='Vid Thumb Race', published=timezone.now(),
+        )
+
+        def fetch_while_skipped(*args, **kwargs):
+            Media.objects.filter(pk=media.pk).update(skip=True, manual_skip=True)
+            return Image.new('RGB', (16, 16))
+
+        with patch('sync.tasks.get_remote_image', side_effect=fetch_while_skipped):
+            download_media_image.call_local(str(media.pk), media.thumbnail, manual=True)
+        media.refresh_from_db()
+        self.assertTrue(media.skip)
+        self.assertTrue(media.manual_skip)
+
     def test_manual_thumbnail_fetch_bypasses_guard(self):
         source = Source.objects.create(
             key='ro-manual-thumb', name='ro-manual-thumb', directory='/tmp/ro-manual-thumb',

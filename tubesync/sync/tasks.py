@@ -948,6 +948,20 @@ def upgrade_media(media_id):
             raise CancelExecution(_('downloaded media is better'))
         download_media_file.call_local(str(media.pk), override=True)
 
+
+def keep_committed_skip(media):
+    '''
+        Tasks that load a video before a network call and then save the
+        whole row would undo a manual skip committed meanwhile (a MediaNest
+        bridge skip, MED-810). Call just before that save: a committed
+        manual skip wins over this instance's stale flags.
+    '''
+    committed = Media.objects.filter(pk=media.pk).values('manual_skip').first()
+    if committed and committed['manual_skip']:
+        media.skip = True
+        media.manual_skip = True
+
+
 @db_task(delay=60, priority=60, retries=3, retry_delay=600, queue=Val(TaskQueue.LIMIT))
 def download_media_metadata(media_id, manual=False, download_after=False):
     '''
@@ -1083,13 +1097,7 @@ def download_media_metadata(media_id, manual=False, download_after=False):
     if media.metadata_duration:
         media.duration = media.metadata_duration
 
-    # A skip committed while the metadata was being fetched (a bridge
-    # skip, MED-810) wins: this instance was loaded before the fetch and
-    # its full-row save would otherwise undo it.
-    committed = Media.objects.filter(pk=media.pk).values('skip', 'manual_skip').first()
-    if committed and committed['manual_skip'] and not media.manual_skip:
-        media.skip = True
-        media.manual_skip = True
+    keep_committed_skip(media)
 
     # Don't filter media here, the post_save signal will handle that
     try:
@@ -1209,6 +1217,7 @@ def download_media_image(media_id, url, manual=False):
         # Media.save() only updates a row read from the database, so this
         # raises when the row was deleted meanwhile (MediaNest bridge,
         # MED-730: a video taken off a video list).
+        keep_committed_skip(media)
         media.save()
     except db.DatabaseError as e:
         if Media.objects.filter(pk=media.pk).exists():
@@ -1447,13 +1456,8 @@ def refresh_formats(media_id):
             exc.reason = msg
             exc.save = save
             raise exc
-        # Media.refresh_formats() clears skip on this instance, which was
-        # loaded before its network call: a skip committed meanwhile (a
-        # bridge skip, MED-810) wins over that.
-        committed = Media.objects.filter(pk=media.pk).values('manual_skip').first()
-        if committed and committed['manual_skip']:
-            media.skip = True
-            media.manual_skip = True
+        # Media.refresh_formats() also clears skip on this instance.
+        keep_committed_skip(media)
         # the metadata has already been saved, trigger the post_save signal
         log.info(f'Saving refreshed formats for "{media.key}": {msg}')
         media.save()
