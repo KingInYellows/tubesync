@@ -24,7 +24,7 @@ from django.utils.translation import gettext_lazy as _
 
 from common.logger import log
 from common.models import TaskHistory
-from sync.models import Media
+from sync.models import Media, Source
 from sync.tasks import (
     download_media_metadata,
     get_model_tasks,
@@ -119,6 +119,17 @@ def _media_downloaded(request_id):
         code='MEDIA_DOWNLOADED',
         title='Video is already downloaded',
         detail='The video is already downloaded. This route never deletes or replaces a file.',
+        request_id=request_id,
+        retryable=False,
+    )
+
+
+def _source_paused(request_id):
+    return error_response(
+        status=409,
+        code='SOURCE_PAUSED',
+        title='Source is paused',
+        detail='The source is paused. Resume it, then retry the video.',
         request_id=request_id,
         retryable=False,
     )
@@ -232,14 +243,7 @@ class RetryMediaView(_MediaControlView):
         if error:
             return error
         if pause.is_paused(media.source):
-            return error_response(
-                status=409,
-                code='SOURCE_PAUSED',
-                title='Source is paused',
-                detail='The source is paused. Resume it, then retry the video.',
-                request_id=request_id,
-                retryable=False,
-            )
+            return _source_paused(request_id)
         if media.downloaded:
             return _media_downloaded(request_id)
         # Safe to repeat: a video already downloading, or with a download
@@ -253,11 +257,23 @@ class RetryMediaView(_MediaControlView):
             return _media_response(media)
 
         with transaction.atomic():
+            # The source row lock is the one PATCH /sources/{uuid} takes, so
+            # a pause and a retry apply one after the other (CodeRabbit
+            # review on #86).
+            source = Source.objects.select_for_update().get(pk=media.source_id)
             media = Media.objects.select_for_update().select_related('source').get(pk=media.pk)
             # A download can finish between the check above and the lock;
             # the override download below would then replace the file.
             if media.downloaded:
                 return _media_downloaded(request_id)
+            if pause.is_paused(source):
+                return _source_paused(request_id)
+            # A second retry that waited on the lock finds the first one's
+            # work queued and leaves it as it is.
+            if _running_download_task(media) or (
+                not media.skip and _not_started_download(media)
+            ):
+                return _media_response(media)
             if media.has_metadata:
                 media.save_to_metadata('_refresh_formats_attempted', 1)
                 media.save_to_metadata('formats_epoch', 1)
@@ -314,8 +330,8 @@ class SkipMediaView(_MediaControlView):
             return error_response(
                 status=409,
                 code='MEDIA_BUSY',
-                title='Video is downloading',
-                detail='The video is being downloaded right now. Retry in a minute.',
+                title='Video is busy',
+                detail='TubeSync is still processing this video. Try again shortly.',
                 request_id=request_id,
                 retryable=True,
             )

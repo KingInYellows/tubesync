@@ -134,6 +134,26 @@ class PauseResumeTestCase(ControlsTestMixin, BridgeTestCase):
         self.assertTrue(source.download_media)
         self.assertEqual(source.index_schedule, pause.default_schedule(source))
 
+    def test_pause_after_a_schedule_only_change_still_turns_downloads_off(self):
+        # CodeRabbit review on #86: a schedule-only PATCH on a source set
+        # to never index in TubeSync stages a record without pausedAt; a
+        # later pause must still turn downloads off and keep that schedule.
+        self.writable()
+        source = make_source(index_schedule=NEVER)
+        self.patch_json(source_url(source.pk), {'indexSchedule': WEEKLY})
+        source.refresh_from_db()
+        self.assertTrue(source.download_media)
+        body = json.loads(self.patch_json(source_url(source.pk), {'paused': True}).content)
+        self.assertFalse(body['settings']['downloadMedia'])
+        self.assertIsNotNone(body['settings']['pausedAt'])
+        self.assertEqual(body['settings']['indexSchedule'], WEEKLY)
+        source.refresh_from_db()
+        self.assertFalse(source.download_media)
+        self.patch_json(source_url(source.pk), {'paused': False})
+        source.refresh_from_db()
+        self.assertTrue(source.download_media)
+        self.assertEqual(source.index_schedule, WEEKLY)
+
     def test_a_source_that_indexes_nothing_can_still_be_resumed(self):
         # CodeRabbit review on #86.
         self.writable()
@@ -462,6 +482,30 @@ class RetryMediaTestCase(ControlsTestMixin, BridgeTestCase):
             response = self.post(media_url(self.source.pk, self.media.pk, 'retry'))
         self.assertEqual(response.status_code, 409)
         self.assertEqual(json.loads(response.content)['code'], 'SOURCE_PAUSED')
+        schedule.assert_not_called()
+
+    def test_a_pause_that_wins_the_source_lock_refuses_the_retry(self):
+        # CodeRabbit review on #86: the pause check is repeated under the
+        # source row lock that PATCH takes.
+        self.writable()
+        with patch.object(pause, 'is_paused', side_effect=[False, True]), \
+                patch.object(TaskHistory, 'schedule') as schedule:
+            response = self.post(media_url(self.source.pk, self.media.pk, 'retry'))
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(json.loads(response.content)['code'], 'SOURCE_PAUSED')
+        schedule.assert_not_called()
+
+    def test_a_retry_that_waited_on_the_lock_leaves_the_first_retrys_work(self):
+        # CodeRabbit review on #86: two retries both saw nothing queued;
+        # the second one must not queue the work again.
+        self.writable()
+        make_failed_task(self.media)
+        queued = object()
+        with patch('medianest_bridge.views_controls._not_started_download',
+                   side_effect=[None, queued]), \
+                patch.object(TaskHistory, 'schedule') as schedule:
+            response = self.post(media_url(self.source.pk, self.media.pk, 'retry'))
+        self.assertEqual(response.status_code, 202)
         schedule.assert_not_called()
 
     def test_a_running_download_is_left_alone(self):

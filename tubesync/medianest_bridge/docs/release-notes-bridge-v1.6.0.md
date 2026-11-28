@@ -13,8 +13,9 @@ owner. This file records what the tag would contain and what was verified.
 
 1. **Pause and resume** (`PATCH /sources/{uuid}` with `paused`). Pause sets
    the TubeSync source to never index and turns its downloads off, so a
-   queued download does nothing when it starts. A download already running
-   finishes. Resume puts back the schedule and download setting the source
+   queued download does nothing when it starts. Two exceptions: a download
+   already running finishes, and a manual download that a retry queued
+   before the pause still runs. Resume puts back the schedule and download setting the source
    had and asks for an index right away, so videos published meanwhile are
    found. What resume needs is kept in a small JSON file per source under
    `/config/medianest-bridge/paused/`, beside TubeSync's database, so there

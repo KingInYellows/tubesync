@@ -190,10 +190,15 @@ def apply_update(source_pk, *, paused=None, index_schedule=None):
     with transaction.atomic():
         source = Source.objects.select_for_update().get(pk=source_pk)
         currently_paused = is_paused(source)
-        if paused is True and (not currently_paused or read_record(source) is None):
+        record = read_record(source)
+        if paused is True and (
+            not currently_paused or record is None or not record.get('pausedAt')
+        ):
             # Also a source set to never index in TubeSync's own UI: the
             # bridge has not paused it yet, so its downloads are still on.
-            _pause(source, index_schedule=index_schedule)
+            # A record without pausedAt only holds a schedule staged by a
+            # schedule-only PATCH, not a pause (CodeRabbit review on #86).
+            _pause(source, index_schedule=index_schedule, staged=record)
         elif paused is True:
             if index_schedule is not None:
                 _set_resume_schedule(source, index_schedule)
@@ -218,8 +223,10 @@ def apply_update(source_pk, *, paused=None, index_schedule=None):
     return Source.objects.get(pk=source_pk)
 
 
-def _pause(source, *, index_schedule=None):
+def _pause(source, *, index_schedule=None, staged=None):
     previous = source.index_schedule
+    if index_schedule is None and staged:
+        index_schedule = staged.get('indexSchedule')
     if index_schedule is None:
         index_schedule = previous if previous in ALLOWED_SCHEDULES else default_schedule(source)
     _write_record(source, {
