@@ -25,6 +25,7 @@ from sync.tvshow_nfo import resolve_show_title
 
 from .error_sanitize import sanitize_error_message
 from .failure_kind import classify as classify_failure
+from .next_check import next_check_at
 from .pause import is_paused, settings_for
 from .videolist import is_videolist
 
@@ -190,6 +191,8 @@ def serialize_source(source):
         },
         'normalizedState': map_source_state(source, index_task=index_task),
         'lastCrawlAt': _iso(source.last_crawl),
+        # Contract 1.6.1 (MED-816).
+        'nextCheckAt': _iso(next_check_at(source, index_task=index_task)),
         # Contract 1.6.0 (MED-809).
         'settings': settings_for(source),
     }
