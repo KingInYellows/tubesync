@@ -124,6 +124,17 @@ def _media_downloaded(request_id):
     )
 
 
+def _media_busy(request_id):
+    return error_response(
+        status=409,
+        code='MEDIA_BUSY',
+        title='Video is busy',
+        detail='TubeSync is still processing this video. Try again shortly.',
+        request_id=request_id,
+        retryable=True,
+    )
+
+
 def _source_paused(request_id):
     return error_response(
         status=409,
@@ -327,19 +338,16 @@ class SkipMediaView(_MediaControlView):
         if media.downloaded:
             return _media_downloaded(request_id)
         if _running_download_task(media) or _running_row_saving_task(media):
-            return error_response(
-                status=409,
-                code='MEDIA_BUSY',
-                title='Video is busy',
-                detail='TubeSync is still processing this video. Try again shortly.',
-                request_id=request_id,
-                retryable=True,
-            )
+            return _media_busy(request_id)
 
         with transaction.atomic():
             media = Media.objects.select_for_update().select_related('source').get(pk=media.pk)
             if media.downloaded:
                 return _media_downloaded(request_id)
+            # A queued download a worker started after the check above is
+            # no longer selected by the revoke below (Codex review on #86).
+            if _running_download_task(media) or _running_row_saving_task(media):
+                return _media_busy(request_id)
             # Every download that could still run: not started yet, a
             # failed one huey will retry (its retry reuses the row, with
             # scheduled_at moved on, which may already be due while it

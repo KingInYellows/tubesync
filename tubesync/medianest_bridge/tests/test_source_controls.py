@@ -538,6 +538,18 @@ class SkipMediaTestCase(ControlsTestMixin, BridgeTestCase):
         self.source = make_source()
         self.media = make_media(self.source)
 
+    def test_a_download_that_started_before_the_lock_answers_busy(self):
+        # Codex review on #86: the running check is repeated under the lock.
+        self.writable()
+        running = object()
+        with patch('medianest_bridge.views_controls._running_download_task',
+                   side_effect=[None, running]):
+            response = self.post(media_url(self.source.pk, self.media.pk, 'skip'))
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(json.loads(response.content)['code'], 'MEDIA_BUSY')
+        self.media.refresh_from_db()
+        self.assertFalse(self.media.manual_skip)
+
     def test_skip_marks_the_video_and_revokes_queued_downloads(self):
         self.writable()
         future = timezone.now() + timezone.timedelta(minutes=5)
