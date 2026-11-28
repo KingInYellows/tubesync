@@ -2,8 +2,8 @@
 #
 # Canonical source: KingInYellows/medianest,
 #   docs/planning/tubesync-integration/bridge-openapi.v1.yaml
-#   @ MediaNest branch claude/project-thread-bhodkb (MED-816, 2026-11-28;
-#   becomes the squash-merge SHA on main before this merges).
+#   @ 61db623c10fa55126b024b15f3eea0aa06c21f22 (MediaNest main, PR #3615
+#   squash merge, MED-816, 2026-11-28).
 #   Contract version 1.6.1 (MED-816): adds the OPTIONAL, nullable
 #   Source.nextCheckAt. No path, request or required field changed.
 #   (Previous re-vendor: b6abd1c802cc7a20d87be2776fa03e42e3177d6e

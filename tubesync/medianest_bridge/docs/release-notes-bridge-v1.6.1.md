@@ -36,10 +36,9 @@ owner. This file records what the tag would contain and what was verified.
 
 ## Before tagging
 
-- Merge the MediaNest PR that carries contract 1.6.1 first, then point the
-  vendored contract header at its squash-merge SHA (the body is already
-  byte-identical), then update `source_sha256` in
-  `contract/contract_fixtures.json`, which hashes the whole file.
+- Done: MediaNest #3615 merged contract 1.6.1 as `61db623`. The vendored
+  contract header points at that commit (the body is byte-identical), and
+  `source_sha256` in `contract/contract_fixtures.json` matches.
 - Tag `bridge-v1.6.1` on the `main` commit that merges this PR, then run
   "MediaNest Bridge Image Refresh" by hand with `force` checked, as for
   1.6.0.
