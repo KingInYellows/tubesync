@@ -127,10 +127,24 @@ class NextCheckTestCase(BridgeTestCase):
         )
         self.assertIsNone(next_check.next_check_at(inactive, now=NOW))
 
-    def test_sweep_exactly_on_the_minute_moves_to_the_next_hour(self):
+    def test_daily_source_on_the_hour_is_queued_by_the_sweep_at_its_boundary(self):
+        # Crawled at 02:10, target 03:00 tomorrow. Both predicates put the
+        # boundary at 01:59:00; the sweep reads now() a moment after that,
+        # so it queues the index for 02:04, not an hour later.
+        source = self.source(
+            index_schedule=DAILY,
+            last_crawl=NOW.replace(hour=2, minute=10),
+            target_schedule=(NOW + timedelta(days=1)).replace(hour=3, minute=0),
+        )
+        expected = (NOW + timedelta(days=1)).replace(hour=2, minute=4)
+        self.assertEqual(next_check.next_check_at(source, now=NOW), expected)
+
+    def test_sweep_exactly_on_the_minute_counts(self):
+        on_the_minute = NOW.replace(minute=59)
+        self.assertEqual(next_check._first_sweep_after(on_the_minute), on_the_minute)
         self.assertEqual(
-            next_check._first_sweep_after(NOW.replace(minute=59)),
-            NOW.replace(minute=59) + timedelta(hours=1),
+            next_check._first_sweep_after(on_the_minute + timedelta(microseconds=1)),
+            on_the_minute + timedelta(hours=1),
         )
 
     def test_source_read_reports_next_check_at(self):

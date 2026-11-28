@@ -49,9 +49,15 @@ SWEEP_DELAY = timedelta(seconds=300)
 
 
 def _first_sweep_after(moment):
-    '''The first schedule_indexing() run strictly after `moment`.'''
+    '''
+        The first schedule_indexing() run that executes after `moment`.
+
+        The sweep's crontab fires at :59:00, and it reads timezone.now()
+        a moment after that. Its predicates are strict, so a sweep whose
+        :59:00 equals `moment` still sees a time after it and counts.
+    '''
     sweep = moment.replace(minute=SWEEP_MINUTE, second=0, microsecond=0)
-    if sweep <= moment:
+    if sweep < moment:
         sweep += timedelta(hours=1)
     return sweep
 
