@@ -380,14 +380,16 @@ class CapabilitiesView(BridgeView):
             # T2: read endpoints. T3: validate/create/sync-now (both
             # channel and playlist go through the same SourceForm-based
             # validate/create logic, so both flags flip together, not
-            # independently). updateSource/disableSource stay false -- no
-            # such endpoints exist anywhere in this app.
+            # independently). disableSource stays false -- no such
+            # endpoint exists anywhere in this app.
             'readSources': True,
             'validateChannelSource': True,
             'validatePlaylistSource': True,
             'createChannelSource': True,
             'createPlaylistSource': True,
-            'updateSource': False,
+            # Contract 1.6.0 (MED-809): PATCH /sources/{uuid}
+            # (views_controls.py, pause.py).
+            'updateSource': True,
             'disableSource': False,
             # Contract 1.4.0 (MED-657): DELETE /sources/{uuid} with files
             # kept, and with files deleted plus DELETE /folders/{key}
@@ -396,8 +398,10 @@ class CapabilitiesView(BridgeView):
             'deleteSourceFiles': True,
             'syncSource': True,
             'readMedia': True,
-            'retryMedia': False,
-            'skipMedia': False,
+            # Contract 1.6.0 (MED-810): POST .../media/{id}/retry|skip
+            # (views_controls.py).
+            'retryMedia': True,
+            'skipMedia': True,
             'enableMedia': False,
             'readTasks': False,
             'cancelTask': False,

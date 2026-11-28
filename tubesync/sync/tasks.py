@@ -948,8 +948,22 @@ def upgrade_media(media_id):
             raise CancelExecution(_('downloaded media is better'))
         download_media_file.call_local(str(media.pk), override=True)
 
+
+def keep_committed_skip(media):
+    '''
+        Tasks that load a video before a network call and then save the
+        whole row would undo a manual skip committed meanwhile (a MediaNest
+        bridge skip, MED-810). Call just before that save: a committed
+        manual skip wins over this instance's stale flags.
+    '''
+    committed = Media.objects.filter(pk=media.pk).values('manual_skip').first()
+    if committed and committed['manual_skip']:
+        media.skip = True
+        media.manual_skip = True
+
+
 @db_task(delay=60, priority=60, retries=3, retry_delay=600, queue=Val(TaskQueue.LIMIT))
-def download_media_metadata(media_id, manual=False):
+def download_media_metadata(media_id, manual=False, download_after=False):
     '''
         Downloads the metadata for a media item.
 
@@ -965,6 +979,12 @@ def download_media_metadata(media_id, manual=False):
         succeeds, trigger an actual download -- for an index-only source's
         media even though automatic scheduling is disabled for it. See
         settings.INDEX_ONLY_SKIP_METADATA.
+
+        download_after=True (with manual=True) is the MediaNest bridge's
+        "retry this video" (medianest_bridge/views_controls.py): once the
+        metadata is in, the video is downloaded even when the source's
+        filters skip it again, as a retry of a video that already had
+        metadata does.
     '''
     try:
         media = Media.objects.get(pk=media_id)
@@ -1077,6 +1097,8 @@ def download_media_metadata(media_id, manual=False):
     if media.metadata_duration:
         media.duration = media.metadata_duration
 
+    keep_committed_skip(media)
+
     # Don't filter media here, the post_save signal will handle that
     try:
         media.save()
@@ -1094,7 +1116,10 @@ def download_media_metadata(media_id, manual=False):
     if (
         manual and
         media.can_download and
-        not source.download_media
+        not media.manual_skip and
+        # A skipped video gets no automatic download either, so a bridge
+        # retry chains the manual one too (Codex review on tubesync #86).
+        (not source.download_media or (download_after and media.skip))
     ):
         # media_post_save() (triggered by media.save() above) recalculated
         # can_download from the metadata we just fetched, but its own
@@ -1192,6 +1217,7 @@ def download_media_image(media_id, url, manual=False):
         # Media.save() only updates a row read from the database, so this
         # raises when the row was deleted meanwhile (MediaNest bridge,
         # MED-730: a video taken off a video list).
+        keep_committed_skip(media)
         media.save()
     except db.DatabaseError as e:
         if Media.objects.filter(pk=media.pk).exists():
@@ -1430,6 +1456,8 @@ def refresh_formats(media_id):
             exc.reason = msg
             exc.save = save
             raise exc
+        # Media.refresh_formats() also clears skip on this instance.
+        keep_committed_skip(media)
         # the metadata has already been saved, trigger the post_save signal
         log.info(f'Saving refreshed formats for "{media.key}": {msg}')
         media.save()

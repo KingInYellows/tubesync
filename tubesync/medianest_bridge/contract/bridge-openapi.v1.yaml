@@ -2,8 +2,20 @@
 #
 # Canonical source: KingInYellows/medianest,
 #   docs/planning/tubesync-integration/bridge-openapi.v1.yaml
-#   @ 89c6fc651aee (MediaNest main, PR #3161 squash merge, MED-657;
-#   the body below is byte-identical to that commit's copy).
+#   @ b6abd1c802cc7a20d87be2776fa03e42e3177d6e (MediaNest main, PR #3594
+#   squash merge, MED-809/810/813, 2026-11-28).
+#   Contract version 1.6.0 (MED-809, MED-810, MED-813, MediaNest ADR-0038):
+#   adds PATCH /sources/{sourceUuid} (UpdateSourceRequest: paused,
+#   indexSchedule), the OPTIONAL Source.settings (SourceSettings),
+#   Source.normalizedState `paused`, POST
+#   /sources/{sourceUuid}/media/{mediaId}/retry and /skip, the MediaId
+#   parameter, Error.code MEDIA_DOWNLOADED and SOURCE_PAUSED, and the
+#   OPTIONAL MediaItem.failureKind. Capabilities.updateSource, retryMedia
+#   and skipMedia flip to true.
+#   (Previous re-vendor: MediaNest main with contract 1.5.0, MED-730:
+#   video lists.)
+#   (Previous re-vendor: 89c6fc651aee (MediaNest main, PR #3161 squash
+#   merge, MED-657).
 #   Contract version 1.4.0 (MED-657, ADR-0022): adds DELETE
 #   /sources/{sourceUuid}?deleteFiles=<bool>, DELETE /folders/{sourceKey},
 #   the SourceDeletion and FolderDeletion schemas, the SourceKey parameter,
@@ -70,7 +82,7 @@
 openapi: 3.1.0
 info:
   title: MediaNest TubeSync Bridge API
-  version: "1.5.0"
+  version: "1.6.0"
   summary: >-
     Slice-1 minimal server-to-server bridge exposed by the medianest_bridge
     Django app inside the KingInYellows/tubesync fork. Consumed only by the
@@ -94,6 +106,13 @@ info:
     with POST /sources/{sourceUuid}/videos and removes with DELETE
     /sources/{sourceUuid}/videos/{videoId}. Capability-gated
     (Capabilities.oneOffVideoDownload).
+    Contract 1.6.0 (MED-809, MED-810, MED-813, ADR-0038) adds PATCH
+    /sources/{sourceUuid} with a short list of allowed fields (pause or
+    resume a source, and its sync schedule), the OPTIONAL Source.settings
+    object, Source.normalizedState `paused`, POST
+    /sources/{sourceUuid}/media/{mediaId}/retry and /skip for one video,
+    and the OPTIONAL MediaItem.failureKind. Capability-gated
+    (Capabilities.updateSource, retryMedia, skipMedia).
 externalDocs:
   description: ADR-0006 and the reconciled technical specification
   url: ../../../docs/adr/ADR-0006-tubesync-as-youtube-acquisition-provider.md
@@ -530,6 +549,76 @@ paths:
         "429":
           $ref: "#/components/responses/RateLimited"
 
+    patch:
+      tags: [sources]
+      operationId: updateSource
+      summary: Change a source's allowed settings (pause, resume, schedule)
+      description: >-
+        Contract 1.6.0 (MED-809, ADR-0038). Changes only the fields listed
+        in UpdateSourceRequest; any other field is 400 SOURCE_INVALID, and
+        nothing is changed. Safe to repeat: sending the state a source is
+        already in changes nothing.
+
+
+        `paused: true` stops the source: TubeSync stops indexing it and
+        stops downloading its videos (a download already running
+        finishes; a queued one does nothing when it starts, except a
+        manual download a retry queued before the pause, which still
+        runs). The bridge
+        keeps the schedule and download setting the source had, and GET
+        /sources/{sourceUuid} reports normalizedState `paused`.
+        `paused: false` puts them back and asks for an index right away,
+        as POST /sources/{sourceUuid}/sync does, so videos missed while
+        paused are found and queued. When the bridge has no record of
+        the earlier schedule (the source was set to "never" in TubeSync
+        itself), resume uses the bridge's default schedule.
+
+
+        `indexSchedule` sets how often TubeSync looks for new videos, in
+        seconds. On a paused source it sets the schedule resume brings
+        back, and the source stays paused.
+
+
+        A video list (sourceType `videolist`) never indexes, so it can't be
+        paused or given a schedule: 400 SOURCE_INVALID. A source being
+        deleted is 409 SOURCE_DELETING.
+      parameters:
+        - $ref: "#/components/parameters/SourceUuid"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSourceRequest"
+      responses:
+        "200":
+          description: The source after the change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Source"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReadOnly"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: SOURCE_DELETING (retryable).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
   /sources/{sourceUuid}/sync:
     post:
       tags: [sources]
@@ -830,6 +919,106 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /sources/{sourceUuid}/media/{mediaId}/retry:
+    post:
+      tags: [media]
+      operationId: retryMedia
+      summary: Try one video's download again
+      description: >-
+        Contract 1.6.0 (MED-810, ADR-0038). Queues a new download of one
+        video that is not downloaded: a failed video, one that never
+        started, or a skipped one (retry also un-skips it, so it is the
+        undo for skip). The download runs as TubeSync's own "redownload"
+        does, with its own few automatic retries. When TubeSync has no
+        metadata for the video yet, the bridge fetches that first and
+        the download follows.
+
+
+        202 with the video as it is now (usually `queued`). Safe to repeat:
+        a video already queued or downloading is left as it is and still
+        answers 202. 409 MEDIA_DOWNLOADED when the video is already
+        downloaded (this route never deletes or replaces a file), 409
+        SOURCE_PAUSED when its source is paused (resume it first), 409
+        SOURCE_DELETING while the source is being deleted. 404
+        MEDIA_NOT_FOUND when the source has no video with this id.
+      parameters:
+        - $ref: "#/components/parameters/SourceUuid"
+        - $ref: "#/components/parameters/MediaId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "202":
+          description: Download queued, or already queued or running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaItem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReadOnly"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >-
+            MEDIA_DOWNLOADED or SOURCE_PAUSED (not retryable as is), or
+            SOURCE_DELETING (retryable).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /sources/{sourceUuid}/media/{mediaId}/skip:
+    post:
+      tags: [media]
+      operationId: skipMedia
+      summary: Stop trying to download one video
+      description: >-
+        Contract 1.6.0 (MED-810, ADR-0038). Marks one video that is not
+        downloaded as skipped, the way TubeSync's own "skip" does: it is
+        never downloaded, and a later index keeps it skipped. A queued
+        download does nothing when it starts. 202 with the video, now
+        `skipped`. Safe to repeat. POST .../retry undoes it.
+
+
+        409 MEDIA_DOWNLOADED when the video is already downloaded: this
+        route never deletes a file (removing a downloaded video is a later
+        contract change). 409 MEDIA_BUSY while it is downloading right now
+        (retryable). 409 SOURCE_DELETING while the source is being deleted.
+        404 MEDIA_NOT_FOUND when the source has no video with this id.
+      parameters:
+        - $ref: "#/components/parameters/SourceUuid"
+        - $ref: "#/components/parameters/MediaId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "202":
+          description: The video is skipped.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaItem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReadOnly"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >-
+            MEDIA_DOWNLOADED (not retryable), or MEDIA_BUSY or
+            SOURCE_DELETING (retryable).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -848,6 +1037,14 @@ components:
       name: sourceUuid
       in: path
       required: true
+      schema:
+        type: string
+        format: uuid
+    MediaId:
+      name: mediaId
+      in: path
+      required: true
+      description: A MediaItem `id` (contract 1.6.0).
       schema:
         type: string
         format: uuid
@@ -1044,6 +1241,11 @@ components:
             # Contract 1.5.0 (MED-730): DELETE /sources/{uuid}/videos/{id}
             # while that video is downloading (409, retryable).
             - MEDIA_BUSY
+            # Contract 1.6.0 (MED-810): retry or skip of a video that is
+            # already downloaded, and retry of a video whose source is
+            # paused (both 409, not retryable as is).
+            - MEDIA_DOWNLOADED
+            - SOURCE_PAUSED
         detail:
           type: string
         requestId:
@@ -1217,6 +1419,10 @@ components:
         updateSource:
           type: boolean
           default: false
+          description: >-
+            Contract 1.6.0: PATCH /sources/{sourceUuid} is available, with
+            the fields UpdateSourceRequest lists, and GET responses carry
+            Source.settings.
         disableSource:
           type: boolean
           default: false
@@ -1241,9 +1447,15 @@ components:
         retryMedia:
           type: boolean
           default: false
+          description: >-
+            Contract 1.6.0: POST /sources/{sourceUuid}/media/{mediaId}/retry
+            is available, and MediaItem carries failureKind.
         skipMedia:
           type: boolean
           default: false
+          description: >-
+            Contract 1.6.0: POST /sources/{sourceUuid}/media/{mediaId}/skip
+            is available.
         enableMedia:
           type: boolean
           default: false
@@ -1518,6 +1730,12 @@ components:
             removed; its 404 is the deleted signal. `deleted` is still never
             emitted. A consumer older than 1.4.0 maps `deleting` to
             `unknown`.
+            Contract 1.6.0: `paused` is emitted for a source that is
+            paused (settings.paused true). It wins over every other state,
+            since nothing happens to a paused source until it is resumed.
+            `disabled` stays for a source that TubeSync has set to never
+            index or download anything. A consumer older than 1.6.0 maps
+            `paused` to `unknown`.
           enum:
             - provisioning
             - active
@@ -1526,9 +1744,56 @@ components:
             - failed
             - unknown
             - deleting
+            - paused
         lastCrawlAt:
           type: [string, "null"]
           format: date-time
+        settings:
+          $ref: "#/components/schemas/SourceSettings"
+
+    SourceSettings:
+      type: object
+      description: >-
+        OPTIONAL (contract 1.6.0, MED-809). The source settings PATCH
+        /sources/{sourceUuid} can change, as they are now. Not in
+        Source.required: bridges older than 1.6.0 omit it.
+      required: [paused, pausedAt, indexSchedule, downloadMedia]
+      properties:
+        paused:
+          type: boolean
+        pausedAt:
+          type: [string, "null"]
+          format: date-time
+          description: >-
+            When the bridge paused the source; null when it is not paused,
+            or was set to "never" in TubeSync itself.
+        indexSchedule:
+          type: [integer, "null"]
+          description: >-
+            How often TubeSync looks for new videos, in seconds. On a
+            paused source, the schedule resume brings back. Null for a
+            video list, which never indexes.
+          enum: [3600, 7200, 10800, 14400, 18000, 21600, 43200, 86400, 259200, 604800, null]
+        downloadMedia:
+          type: boolean
+          description: >-
+            Whether TubeSync downloads this source's videos right now
+            (false while paused).
+
+    UpdateSourceRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: >-
+        Contract 1.6.0 (MED-809). Every field is optional; send only what
+        changes. Later contract versions add fields here (a download cap,
+        filters); a bridge refuses a field it doesn't know.
+      properties:
+        paused:
+          type: boolean
+        indexSchedule:
+          type: integer
+          enum: [3600, 7200, 10800, 14400, 18000, 21600, 43200, 86400, 259200, 604800]
 
     CreateVideoListRequest:
       type: object
@@ -1562,7 +1827,8 @@ components:
       description: >-
         Field set settled verbatim by ADR-0006 §4 / SUCCESS-SPEC §9.4 as
         the Plex-reconciliation interface. Do not add or remove fields
-        without an ADR amendment.
+        without an ADR amendment. ADR-0038 (contract 1.6.0) adds the
+        OPTIONAL failureKind, which Plex reconciliation does not read.
       required:
         - id
         - sourceId
@@ -1643,6 +1909,30 @@ components:
         error:
           type: [string, "null"]
           description: Sanitized error summary only. No raw stack traces.
+        failureKind:
+          type: [string, "null"]
+          description: >-
+            OPTIONAL (contract 1.6.0, MED-813, ADR-0038 amends ADR-0006 §4's
+            field set). Set exactly when `error` is set: the bridge's
+            reading of the error, so a caller can say in plain words why a
+            video failed. `unavailable` (removed, or the account is gone),
+            `private`, `members_only`, `age_restricted`, `geo_blocked`,
+            `upcoming` (a premiere or live stream that hasn't started),
+            `temporary` (network, rate limit or a YouTube bot check; worth
+            trying again), `disk_full`, or `unknown` when no pattern
+            matched. Not in MediaItem.required: bridges older than 1.6.0
+            omit it. Callers must tolerate values added later.
+          enum:
+            - unavailable
+            - private
+            - members_only
+            - age_restricted
+            - geo_blocked
+            - upcoming
+            - temporary
+            - disk_full
+            - unknown
+            - null
 
     MediaPage:
       type: object

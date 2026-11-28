@@ -104,9 +104,9 @@ something asserted here.
 | `GET /sources/{sourceUuid}/media` | T2 (list), response shape ADR-0006 §4-pinned | **M6's Plex reconciliation consumes this directly, per ADR-0006 §4** -- this response shape "MUST NOT change without an ADR amendment" (contract's own words, quoted, not paraphrased). |
 
 Endpoints the contract explicitly defers (out of v1.0.0 scope, per the
-contract's own `info.description`): `PATCH` sources, media
-retry/skip/enable, task listing (`DELETE` sources arrived in contract
-1.4.0, above). None of these exist anywhere in this fork; `GET /capabilities`' `false` flags for each are the bridge's own
+contract's own `info.description`): media enable and task listing
+(`DELETE` sources arrived in contract 1.4.0; `PATCH` sources and media
+retry/skip in 1.6.0). None of these exist anywhere in this fork; `GET /capabilities`' `false` flags for each are the bridge's own
 truthful statement of that (see `medianest_bridge/README.md`'s
 "Endpoints" section).
 
@@ -131,3 +131,4 @@ is created by the repository owner.
 | `bridge-v1.4.3` | fork `main` after the release-prep PR merges (includes #75, #76 and MED-668 #74) | `3b9d72f28dda9c931776f76e7428a72a24a57f82` | `bridge-openapi.v1.yaml` `1.4.0` (unchanged) | `v1.0.0` | See `release-notes-bridge-v1.4.3.md`. Renaming a source's files no longer holds SQLite's write lock for the whole run, and `save_media` no longer sleeps inside its transaction, so huey's task-history writes stop hitting "database is locked" during the nightly crawl; a history write that still finds the database locked is logged as a warning instead of failing the task (MED-695). |
 | `bridge-v1.4.4` | fork `main` after the release-prep PR merges (includes #78) | `3b9d72f28dda9c931776f76e7428a72a24a57f82` | `bridge-openapi.v1.yaml` `1.4.0` (unchanged) | `v1.0.0` | See `release-notes-bridge-v1.4.4.md`. New `{artist_title}` / `{artist_title_bounded}` media-format keys put the artist first in episode file names and NFO titles, and `manage.py medianest_plex_naming` applies them to a source's existing files without downloading again (MED-702). |
 | `bridge-v1.5.0` | fork `main` after the release-prep PR merges (includes #80) | `3b9d72f28dda9c931776f76e7428a72a24a57f82` | `bridge-openapi.v1.yaml` `1.5.0` (additive) | `v1.0.0` | See `release-notes-bridge-v1.5.0.md`. Video lists: `POST /videolists`, `POST /sources/{uuid}/videos` and `DELETE /sources/{uuid}/videos/{videoId}` hold single videos, one Plex show per MediaNest group; capability `oneOffVideoDownload` is true (MED-730). |
+| `bridge-v1.6.0` | fork `main` after the release-prep PR merges | `255b5b754ef8d47f79af58438b137e1374a63a94` (v0.18.4, #85) | `bridge-openapi.v1.yaml` `1.6.0` (additive) | `v1.0.0` (the controls need MediaNest with MED-809/810/813; older MediaNest shows a paused source as unknown) | See `release-notes-bridge-v1.6.0.md`. Pause, resume and reschedule a source (`PATCH /sources/{uuid}`), retry or skip one video, and `failureKind` on failed videos; capabilities `updateSource`, `retryMedia`, `skipMedia` are true. |

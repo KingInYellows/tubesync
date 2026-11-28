@@ -2,7 +2,8 @@ from django.urls import path
 
 from .views import CapabilitiesView, HealthLiveView, HealthReadyView, MetaView
 from .views_resolve import ResolveSourceView
-from .views_delete import FolderDeleteView, SourceDetailDeleteView
+from .views_controls import RetryMediaView, SkipMediaView, SourceDetailControlView
+from .views_delete import FolderDeleteView
 from .views_sources import SourceMediaView
 from .views_videolist import CreateVideoListView, SourceVideoDetailView, SourceVideosView
 from .views_write import CreateSourceView, SyncSourceView, ValidateSourceView
@@ -50,15 +51,27 @@ urlpatterns = [
     # SOURCE_NOT_FOUND JSON envelope (see views_sources.py's
     # _get_source_or_error), not fall through to Django's ordinary
     # URL-pattern-mismatch 404 HTML page.
-    # SourceDetailDeleteView subclasses SourceDetailView: GET is T2's
-    # getSource, DELETE is contract 1.4.0's deleteSource (MED-657).
+    # SourceDetailControlView subclasses SourceDetailDeleteView, which
+    # subclasses SourceDetailView: GET is T2's getSource, DELETE is contract
+    # 1.4.0's deleteSource (MED-657), PATCH is contract 1.6.0's updateSource
+    # (MED-809).
     path('sources/<str:source_uuid>',
-         SourceDetailDeleteView.as_view(),
+         SourceDetailControlView.as_view(),
          name='source-detail'),
 
     path('sources/<str:source_uuid>/media',
          SourceMediaView.as_view(),
          name='source-media'),
+
+    # Contract 1.6.0 (MED-810). <str:...> so a malformed media id reaches
+    # the view and gets the bridge's own 404 MEDIA_NOT_FOUND.
+    path('sources/<str:source_uuid>/media/<str:media_id>/retry',
+         RetryMediaView.as_view(),
+         name='media-retry'),
+
+    path('sources/<str:source_uuid>/media/<str:media_id>/skip',
+         SkipMediaView.as_view(),
+         name='media-skip'),
 
     path('sources/<str:source_uuid>/sync',
          SyncSourceView.as_view(),

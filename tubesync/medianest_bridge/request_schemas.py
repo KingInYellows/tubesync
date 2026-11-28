@@ -195,3 +195,37 @@ def validate_add_video_request(body):
     elif not isinstance(body['videoId'], str) or not VIDEO_ID_PATTERN.match(body['videoId']):
         errors.append('videoId must be an 11-character YouTube video ID.')
     return errors
+
+
+_ALLOWED_KEYS_UPDATE_SOURCE = frozenset({'paused', 'indexSchedule'})
+
+
+def validate_update_source_request(body):
+    '''
+        Contract 1.6.0 (MED-809): UpdateSourceRequest -- at least one of
+        `paused` (boolean) and `indexSchedule` (one of the TubeSync
+        schedules except "never"), nothing else. A field this bridge does
+        not know is refused, never ignored, so a caller sending a field
+        from a newer contract learns this bridge can't apply it.
+    '''
+    from .pause import ALLOWED_SCHEDULES
+
+    if not isinstance(body, dict):
+        return ['Request body must be a JSON object.']
+    errors = []
+    unknown = set(body.keys()) - _ALLOWED_KEYS_UPDATE_SOURCE
+    if unknown:
+        errors.append(f'Request has unknown field(s): {sorted(unknown)!r}.')
+    if not body:
+        errors.append('Request must change at least one field.')
+    if 'paused' in body and not isinstance(body['paused'], bool):
+        errors.append('paused must be a boolean.')
+    if 'indexSchedule' in body:
+        value = body['indexSchedule']
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value not in ALLOWED_SCHEDULES
+        ):
+            errors.append(f'indexSchedule must be one of {list(ALLOWED_SCHEDULES)!r}.')
+    return errors

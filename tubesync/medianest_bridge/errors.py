@@ -46,6 +46,9 @@ _SLUGS = {
     'FOLDER_NOT_FOUND': 'folder-not-found',
     # Contract 1.5.0 (MED-730).
     'MEDIA_BUSY': 'media-busy',
+    # Contract 1.6.0 (MED-810).
+    'MEDIA_DOWNLOADED': 'media-downloaded',
+    'SOURCE_PAUSED': 'source-paused',
 }
 
 

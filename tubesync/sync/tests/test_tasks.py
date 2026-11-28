@@ -8,7 +8,7 @@ from django.test import TestCase, Client, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from sync.choices import (
-    Fallback, SourceResolution, Val, YouTube_AudioCodec, YouTube_SourceType, YouTube_VideoCodec,
+    CapChoices, Fallback, SourceResolution, Val, YouTube_AudioCodec, YouTube_SourceType, YouTube_VideoCodec,
 )
 from sync.models import Source, Media
 from sync.tasks import (
@@ -17,6 +17,7 @@ from sync.tasks import (
     download_media_metadata,
     get_model_tasks,
     index_source,
+    refresh_formats,
 )
 from .fixtures import all_test_metadata
 
@@ -220,6 +221,105 @@ class ManualActionBypassesIndexOnlyGuardTestCase(TestCase):
         # only the plain automatic one.
         self.assertFalse(download_task_has_override(media))
         self.assertTrue(get_model_tasks(str(media.pk), name='download_media_file').exists())
+
+    def test_bridge_retry_downloads_a_video_the_filters_skip(self):
+        # download_after=True (the MediaNest bridge's retry): on a normal
+        # source whose download cap skips the video once its metadata is
+        # in, the automatic scheduling never downloads it, so the manual
+        # override download is chained here (Codex review on tubesync #86).
+        source = Source.objects.create(
+            key='rw-bridge-retry', name='rw-bridge-retry', directory='/tmp/rw-bridge-retry',
+            download_media=True,
+            download_cap=Val(CapChoices.CAP_7DAYS),
+            source_resolution=Val(SourceResolution.VIDEO_1080P),
+            source_vcodec=Val(YouTube_VideoCodec.VP9),
+            source_acodec=Val(YouTube_AudioCodec.OPUS),
+            prefer_60fps=False,
+            prefer_hdr=False,
+            fallback=Val(Fallback.FAIL),
+        )
+        media = Media.objects.create(
+            source=source, key='vid-bridge-retry', title='Vid Bridge Retry',
+            published=timezone.now() - timezone.timedelta(days=30),
+        )
+        fake_response = json.loads(all_test_metadata['minimal'])
+        with patch.object(Media, 'index_metadata', return_value=fake_response):
+            download_media_metadata.call_local(str(media.pk), manual=True, download_after=True)
+        media.refresh_from_db()
+        self.assertTrue(media.skip)
+        self.assertTrue(download_task_has_override(media))
+
+    def test_skip_committed_during_the_metadata_fetch_is_kept(self):
+        # CodeRabbit review on tubesync #86: the task loads the video before
+        # its network fetch; a bridge skip committed meanwhile must survive
+        # the save and get no chained download.
+        source = Source.objects.create(
+            key='rw-skip-race', name='rw-skip-race', directory='/tmp/rw-skip-race',
+            download_media=False,
+        )
+        media = Media.objects.create(
+            source=source, key='vid-skip-race', title='Vid Skip Race',
+            published=timezone.now() - timezone.timedelta(days=30),
+        )
+        fake_response = json.loads(all_test_metadata['minimal'])
+
+        def fetch_while_skipped(*args, **kwargs):
+            Media.objects.filter(pk=media.pk).update(skip=True, manual_skip=True)
+            return fake_response
+
+        with patch.object(Media, 'index_metadata', side_effect=fetch_while_skipped):
+            download_media_metadata.call_local(str(media.pk), manual=True, download_after=True)
+        media.refresh_from_db()
+        self.assertTrue(media.skip)
+        self.assertTrue(media.manual_skip)
+        self.assertTrue(media.has_metadata)
+        self.assertFalse(download_task_has_override(media))
+
+    def test_skip_committed_during_a_format_refresh_is_kept(self):
+        # Codex review on tubesync #86: Media.refresh_formats() clears skip
+        # on an instance loaded before a skip committed; the task's save
+        # must keep the committed skip.
+        source = Source.objects.create(
+            key='rw-refresh-race', name='rw-refresh-race', directory='/tmp/rw-refresh-race',
+            download_media=False,
+        )
+        media = Media.objects.create(
+            source=source, key='vid-refresh-race', title='Vid Refresh Race',
+            published=timezone.now() - timezone.timedelta(days=30),
+        )
+
+        def refresh_while_skipped(self):
+            Media.objects.filter(pk=self.pk).update(skip=True, manual_skip=True)
+            self.skip = False
+            return (True, False, 'refreshed')
+
+        with patch('sync.tasks.wait_for_errors'), \
+                patch.object(Media, 'refresh_formats', refresh_while_skipped):
+            refresh_formats.call_local(str(media.pk))
+        media.refresh_from_db()
+        self.assertTrue(media.skip)
+        self.assertTrue(media.manual_skip)
+
+    def test_skip_committed_during_a_thumbnail_fetch_is_kept(self):
+        # Codex review on tubesync #86: the thumbnail task saves the whole
+        # row it loaded before its network fetch.
+        source = Source.objects.create(
+            key='rw-thumb-race', name='rw-thumb-race', directory='/tmp/rw-thumb-race',
+            download_media=False,
+        )
+        media = Media.objects.create(
+            source=source, key='vid-thumb-race', title='Vid Thumb Race', published=timezone.now(),
+        )
+
+        def fetch_while_skipped(*args, **kwargs):
+            Media.objects.filter(pk=media.pk).update(skip=True, manual_skip=True)
+            return Image.new('RGB', (16, 16))
+
+        with patch('sync.tasks.get_remote_image', side_effect=fetch_while_skipped):
+            download_media_image.call_local(str(media.pk), media.thumbnail, manual=True)
+        media.refresh_from_db()
+        self.assertTrue(media.skip)
+        self.assertTrue(media.manual_skip)
 
     def test_manual_thumbnail_fetch_bypasses_guard(self):
         source = Source.objects.create(
