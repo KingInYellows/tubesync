@@ -15,14 +15,16 @@
        last_crawl < sweep + 61 min - index_schedule.
 
     When either one starts, common/huey.py's on_executing_remove_duplicates()
-    revokes the other queued copies, but leaves their TaskHistory rows
-    looking pending (start_at NULL, no [revoked] prefix). Two filters drop
-    them. historical_task() moves end_at on every signal, so a row still
-    waiting has end_at before its scheduled_at (the SCHEDULED signal),
-    and one the worker has dequeued at its eta, even only to drop it as
-    revoked or expired, does not. A row recorded before the last crawl is
-    also left out. A stale row that slips through only makes the reported
-    time early, never late, and the next index corrects it.
+    revokes the other queued copies in huey's storage, but leaves their
+    TaskHistory rows looking pending (start_at NULL, no [revoked] prefix).
+    So a row only counts while huey does not hold it as revoked (peeked,
+    so the revocation is not used up). historical_task() also moves end_at
+    on every signal, so a row still waiting has end_at before its
+    scheduled_at (its SCHEDULED signal), and one the worker has already
+    dequeued at its eta, even only to drop it, does not. A row is not
+    dropped for predating the last crawl: sync-now from TubeSync's own UI
+    does not remove duplicates, so the first index queued at create can
+    still be live after it.
 
     The value is an estimate to the minute for the sweep and exact for a
     queued task. It is null when no check is coming: a paused or inactive
@@ -31,8 +33,9 @@
 from datetime import timedelta
 
 from django.conf import settings
-from django.db.models import F, Q
+from django.db.models import F
 from django.utils import timezone
+from django_huey import DJANGO_HUEY, get_queue
 
 from common.models import TaskHistory
 from sync.choices import IndexSchedule, Val
@@ -43,6 +46,8 @@ from .sync_dedup import INDEX_SOURCE_TASK_NAME
 from .videolist import is_videolist
 
 _REVOKED_VERBOSE_PREFIX = '[revoked] '
+# A source rarely has more than a couple of index tasks queued.
+_MAX_PENDING_ROWS = 10
 # schedule_indexing(): crontab(minute=59) and next_hour = now + 1 h 1 min.
 SWEEP_MINUTE = 59
 SWEEP_LOOKAHEAD = timedelta(hours=1, minutes=1)
@@ -77,6 +82,18 @@ def sweep_check_at(source, *, now):
     return _first_sweep_after(floor) + SWEEP_DELAY
 
 
+def _huey_queues():
+    names = (DJANGO_HUEY or {}).get('queues', {})
+    return {q.name: q for q in map(get_queue, names)}
+
+
+def _is_revoked(task, queues):
+    queue = queues.get(task.queue)
+    if queue is None:
+        return False
+    return queue.is_revoked(task.task_id, peek=True)
+
+
 def pending_check_at(source, *, now):
     '''The soonest index_source task queued for `source`, or None.'''
     max_run_time = getattr(settings, 'MAX_RUN_TIME', 3600)
@@ -89,11 +106,14 @@ def pending_check_at(source, *, now):
         # Not yet dequeued: see the module docstring.
         end_at__lt=F('scheduled_at'),
     )
-    if source.last_crawl is not None:
-        qs = qs.filter(Q(end_at__gt=source.last_crawl))
     qs = get_model_tasks(str(source.pk), name=INDEX_SOURCE_TASK_NAME, qs=qs)
-    task = qs.order_by('scheduled_at').only('scheduled_at').first()
-    return task.scheduled_at if task else None
+    queues = None
+    for task in qs.order_by('scheduled_at').only('scheduled_at', 'task_id', 'queue')[:_MAX_PENDING_ROWS]:
+        if queues is None:
+            queues = _huey_queues()
+        if not _is_revoked(task, queues):
+            return task.scheduled_at
+    return None
 
 
 def next_check_at(source, *, index_task=None, now=None):

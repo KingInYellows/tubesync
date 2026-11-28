@@ -957,8 +957,9 @@ from the YAML rather than hand-edited.
   `run_edit_source_checks()` pass (a bad `media_format`, no raw env
   value ever echoed in an error message).
 - `test_next_check.py` -- contract 1.6.1: `nextCheckAt` from a queued
-  index or the hourly sweep, revoked, failed, stale and other sources'
-  rows ignored, null while paused, inactive or indexing.
+  index or the hourly sweep, revoked (marked or held by huey), dequeued,
+  failed and other sources' rows ignored, a live row from before the last
+  crawl kept, null while paused, inactive or indexing.
 - `test_source_controls.py` -- contract 1.6.0: pause, resume and schedule
   through `PATCH /sources/{uuid}` (record kept and removed, default
   schedule with no or a broken record, video lists and deleting sources

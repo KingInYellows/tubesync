@@ -8,9 +8,10 @@ from datetime import datetime, timedelta, timezone as dt_timezone
 from pathlib import Path
 
 from django.test import override_settings
+from django_huey import get_queue
 
 from common.models import TaskHistory
-from sync.choices import IndexSchedule, Val
+from sync.choices import IndexSchedule, TaskQueue, Val
 
 from .. import next_check
 from .base import BridgeTestCase
@@ -29,10 +30,14 @@ def at(hours=0, minutes=0):
     return NOW + timedelta(hours=hours, minutes=minutes)
 
 
+INDEX_QUEUE = get_queue(Val(TaskQueue.LIMIT))
+
+
 def queue_index(source, *, scheduled_at, recorded_at=None, **fields):
     return TaskHistory.objects.create(
         name='sync.tasks.index_source',
         task_id=str(uuid.uuid4()),
+        queue=INDEX_QUEUE.name,
         task_params=[[str(source.pk)], '{}'],
         scheduled_at=scheduled_at,
         end_at=recorded_at or NOW,
@@ -89,11 +94,22 @@ class NextCheckTestCase(BridgeTestCase):
         queue_index(source, scheduled_at=at(hours=5))
         self.assertEqual(next_check.next_check_at(source, now=NOW), NOW.replace(minute=59) + timedelta(minutes=5))
 
-    def test_queued_rows_recorded_before_the_last_crawl_are_ignored(self):
+    def test_rows_huey_holds_as_revoked_are_ignored(self):
         # on_executing_remove_duplicates() revoked it without marking it.
         source = self.source(index_schedule=WEEKLY, last_crawl=at(hours=-1), target_schedule=at(hours=160))
-        queue_index(source, scheduled_at=at(minutes=10), recorded_at=at(hours=-2))
+        row = queue_index(source, scheduled_at=at(minutes=10), recorded_at=at(hours=-2))
+        INDEX_QUEUE.revoke_by_id(row.task_id, revoke_once=True)
+        self.addCleanup(INDEX_QUEUE.restore_by_id, row.task_id)
         self.assertGreater(next_check.next_check_at(source, now=NOW), at(hours=100))
+        # Peeking leaves the revocation for the worker.
+        self.assertTrue(INDEX_QUEUE.is_revoked(row.task_id, peek=True))
+
+    def test_live_row_recorded_before_the_last_crawl_counts(self):
+        # The first index queued at create, still waiting after a sync-now
+        # from TubeSync's own UI (which does not remove duplicates).
+        source = self.source(index_schedule=WEEKLY, last_crawl=at(minutes=-1), target_schedule=at(hours=160))
+        queue_index(source, scheduled_at=at(minutes=8), recorded_at=at(minutes=-2))
+        self.assertEqual(next_check.next_check_at(source, now=NOW), at(minutes=8))
 
     def test_rows_the_worker_already_dequeued_are_ignored(self):
         # A revoked duplicate the worker dropped at its eta: the REVOKED

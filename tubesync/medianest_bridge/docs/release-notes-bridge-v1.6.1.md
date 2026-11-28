@@ -27,9 +27,9 @@ owner. This file records what the tag would contain and what was verified.
 ## Known limits
 
 - A queued index that TubeSync revoked as a duplicate keeps a row that
-  looks pending. Only rows recorded after the last crawl count, which
-  rules those out in the usual case. One that slips through can only make
-  the time early, never late, and the next index clears it.
+  looks pending. The bridge asks huey whether it holds the task as
+  revoked (a peek, so the worker still drops it), and skips rows the
+  worker has already dequeued.
 - An index waiting for a free worker can report a time a few minutes in
   the past.
 - Each source read runs one more small `TaskHistory` query.
