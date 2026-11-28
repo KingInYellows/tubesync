@@ -15,6 +15,7 @@
 '''
 import uuid
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import F, Q
 from django.http import JsonResponse
@@ -178,7 +179,14 @@ def _running_row_saving_task(media):
     end_at, as sync_dedup._is_actively_running): each loads the video
     before its network call and saves the whole row when done, which
     would undo a skip committed meanwhile.'''
-    running = TaskHistory.objects.filter(start_at__isnull=False, start_at=F('end_at')).exclude(
+    # Bounded by MAX_RUN_TIME like sync_dedup: a dead worker leaves its row
+    # looking like this forever, and must not block skip.
+    cutoff = timezone.now() - timezone.timedelta(
+        seconds=getattr(settings, 'MAX_RUN_TIME', 3600),
+    )
+    running = TaskHistory.objects.filter(
+        start_at__isnull=False, start_at=F('end_at'), end_at__gt=cutoff,
+    ).exclude(
         verbose_name__startswith=_REVOKED_VERBOSE_PREFIX,
     )
     for name in ('download_media_metadata', 'refresh_formats'):

@@ -541,6 +541,20 @@ class SkipMediaTestCase(ControlsTestMixin, BridgeTestCase):
         self.media.refresh_from_db()
         self.assertFalse(self.media.manual_skip)
 
+    def test_skip_ignores_a_metadata_task_its_worker_abandoned(self):
+        # Codex review on #86: a dead worker leaves start_at == end_at
+        # forever; past MAX_RUN_TIME it must not block skip.
+        self.writable()
+        old = timezone.now() - timezone.timedelta(days=2)
+        make_download_task(
+            self.media, name='sync.tasks.download_media_metadata',
+            start_at=old, end_at=old, scheduled_at=old,
+        )
+        response = self.post(media_url(self.source.pk, self.media.pk, 'skip'))
+        self.assertEqual(response.status_code, 202)
+        self.media.refresh_from_db()
+        self.assertTrue(self.media.manual_skip)
+
     def test_skip_while_formats_are_being_refreshed_is_busy(self):
         # Codex review on #86: refresh_formats saves the whole row too.
         self.writable()
