@@ -17,14 +17,13 @@
     When either one starts, common/huey.py's on_executing_remove_duplicates()
     revokes the other queued copies in huey's storage, but leaves their
     TaskHistory rows looking pending (start_at NULL, no [revoked] prefix).
-    So a row only counts while huey does not hold it as revoked (peeked,
-    so the revocation is not used up). historical_task() also moves end_at
-    on every signal, so a row still waiting has end_at before its
-    scheduled_at (its SCHEDULED signal), and one the worker has already
-    dequeued at its eta, even only to drop it, does not. A row is not
-    dropped for predating the last crawl: sync-now from TubeSync's own UI
-    does not remove duplicates, so the first index queued at create can
-    still be live after it.
+    So a row counts only while huey neither holds its task as revoked nor
+    has a revoked or expired signal in the task's history, which
+    historical_task() keeps in huey's storage. Both reads peek. The row's
+    own times say nothing here: end_at moves on every signal, including
+    the scheduler's ENQUEUED for a due task still waiting for a worker,
+    and sync-now from TubeSync's own UI does not remove duplicates, so a
+    row from before the last crawl can still be live.
 
     The value is an estimate to the minute for the sweep and exact for a
     queued task. It is null when no check is coming: a paused or inactive
@@ -33,10 +32,11 @@
 from datetime import timedelta
 
 from django.conf import settings
-from django.db.models import F
 from django.utils import timezone
 from django_huey import DJANGO_HUEY, get_queue
+from huey import signals as huey_signals
 
+from common.huey import storage_key_prefix as TASK_HISTORY_KEY_PREFIX
 from common.models import TaskHistory
 from sync.choices import IndexSchedule, Val
 from sync.tasks import get_model_tasks
@@ -53,6 +53,8 @@ SWEEP_MINUTE = 59
 SWEEP_LOOKAHEAD = timedelta(hours=1, minutes=1)
 # schedule_indexing() queues index_source with delay=300.
 SWEEP_DELAY = timedelta(seconds=300)
+# How long after :59:00 the sweep is assumed to read timezone.now().
+SWEEP_START_GRACE = timedelta(seconds=10)
 
 
 def _first_sweep_after(moment):
@@ -60,11 +62,11 @@ def _first_sweep_after(moment):
         The first schedule_indexing() run that executes after `moment`.
 
         The sweep's crontab fires at :59:00, and it reads timezone.now()
-        a moment after that. Its predicates are strict, so a sweep whose
-        :59:00 equals `moment` still sees a time after it and counts.
+        a moment after that, so its strict predicates pass for a boundary
+        a little past :59:00. SWEEP_START_GRACE is how far past counts.
     '''
     sweep = moment.replace(minute=SWEEP_MINUTE, second=0, microsecond=0)
-    if sweep < moment:
+    if sweep + SWEEP_START_GRACE <= moment:
         sweep += timedelta(hours=1)
     return sweep
 
@@ -87,11 +89,23 @@ def _huey_queues():
     return {q.name: q for q in map(get_queue, names)}
 
 
-def _is_revoked(task, queues):
+# historical_task() records these in the task's huey history when the
+# worker drops the task instead of running it.
+_DROPPED_SIGNALS = (huey_signals.SIGNAL_REVOKED, huey_signals.SIGNAL_EXPIRED)
+
+
+def _is_dropped(task, queues):
+    '''
+        Peeks only, so the worker still drops a revoked task, and the
+        history stays for the signals after it.
+    '''
     queue = queues.get(task.queue)
     if queue is None:
         return False
-    return queue.is_revoked(task.task_id, peek=True)
+    if queue.is_revoked(task.task_id, peek=True):
+        return True
+    history = queue.get(key=f'{TASK_HISTORY_KEY_PREFIX}{task.task_id}', peek=True)
+    return isinstance(history, dict) and any(s in history for s in _DROPPED_SIGNALS)
 
 
 def pending_check_at(source, *, now):
@@ -103,15 +117,13 @@ def pending_check_at(source, *, now):
         start_at__isnull=True,
         failed_at__isnull=True,
         scheduled_at__gt=now - timedelta(seconds=max_run_time),
-        # Not yet dequeued: see the module docstring.
-        end_at__lt=F('scheduled_at'),
     )
     qs = get_model_tasks(str(source.pk), name=INDEX_SOURCE_TASK_NAME, qs=qs)
     queues = None
     for task in qs.order_by('scheduled_at').only('scheduled_at', 'task_id', 'queue')[:_MAX_PENDING_ROWS]:
         if queues is None:
             queues = _huey_queues()
-        if not _is_revoked(task, queues):
+        if not _is_dropped(task, queues):
             return task.scheduled_at
     return None
 

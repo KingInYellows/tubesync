@@ -111,12 +111,24 @@ class NextCheckTestCase(BridgeTestCase):
         queue_index(source, scheduled_at=at(minutes=8), recorded_at=at(minutes=-2))
         self.assertEqual(next_check.next_check_at(source, now=NOW), at(minutes=8))
 
-    def test_rows_the_worker_already_dequeued_are_ignored(self):
-        # A revoked duplicate the worker dropped at its eta: the REVOKED
-        # signal moved end_at past both the last crawl and scheduled_at.
+    def test_rows_the_worker_already_dropped_are_ignored(self):
+        # A revoked duplicate the worker dropped at its eta: huey used up
+        # the revocation, and historical_task() recorded the signal.
         source = self.source(index_schedule=WEEKLY, last_crawl=at(hours=-2), target_schedule=at(hours=160))
-        queue_index(source, scheduled_at=at(minutes=-30), recorded_at=at(minutes=-29))
-        self.assertGreater(next_check.next_check_at(source, now=NOW), at(hours=100))
+        for signal in ('revoked', 'expired'):
+            with self.subTest(signal=signal):
+                row = queue_index(source, scheduled_at=at(minutes=-30), recorded_at=at(minutes=-29))
+                key = f'task_history:{row.task_id}'
+                INDEX_QUEUE.put(key=key, data={'name': 'index_source', signal: 1.0})
+                self.addCleanup(INDEX_QUEUE.get, key=key)
+                self.assertGreater(next_check.next_check_at(source, now=NOW), at(hours=100))
+                row.delete()
+
+    def test_due_row_re_enqueued_while_workers_are_busy_counts(self):
+        # The scheduler's ENQUEUED moved end_at past scheduled_at.
+        source = self.source(index_schedule=WEEKLY, last_crawl=at(hours=-2), target_schedule=at(hours=160))
+        queue_index(source, scheduled_at=at(minutes=-5), recorded_at=at(minutes=-5) + timedelta(seconds=1))
+        self.assertEqual(next_check.next_check_at(source, now=NOW), at(minutes=-5))
 
     def test_overdue_row_still_waiting_for_a_worker_counts(self):
         source = self.source(index_schedule=WEEKLY, last_crawl=at(hours=-2), target_schedule=at(hours=160))
@@ -168,11 +180,15 @@ class NextCheckTestCase(BridgeTestCase):
         expected = (NOW + timedelta(days=1)).replace(hour=2, minute=4)
         self.assertEqual(next_check.next_check_at(source, now=NOW), expected)
 
-    def test_sweep_exactly_on_the_minute_counts(self):
+    def test_sweep_counts_a_boundary_just_past_the_minute(self):
         on_the_minute = NOW.replace(minute=59)
         self.assertEqual(next_check._first_sweep_after(on_the_minute), on_the_minute)
         self.assertEqual(
-            next_check._first_sweep_after(on_the_minute + timedelta(microseconds=1)),
+            next_check._first_sweep_after(on_the_minute + timedelta(milliseconds=500)),
+            on_the_minute,
+        )
+        self.assertEqual(
+            next_check._first_sweep_after(on_the_minute + timedelta(seconds=30)),
             on_the_minute + timedelta(hours=1),
         )
 

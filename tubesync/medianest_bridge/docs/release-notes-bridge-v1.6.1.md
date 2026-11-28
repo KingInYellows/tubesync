@@ -27,9 +27,12 @@ owner. This file records what the tag would contain and what was verified.
 ## Known limits
 
 - A queued index that TubeSync revoked as a duplicate keeps a row that
-  looks pending. The bridge asks huey whether it holds the task as
-  revoked (a peek, so the worker still drops it), and skips rows the
-  worker has already dequeued.
+  looks pending. The bridge peeks at huey's storage: a task huey holds
+  as revoked, or whose history has a revoked or expired signal, does not
+  count. The worker still drops it as before.
+- The sweep is assumed to run within 10 seconds of :59:00. A source
+  whose boundary falls later in that minute is reported for the next
+  hour's sweep.
 - An index waiting for a free worker can report a time a few minutes in
   the past.
 - Each source read runs one more small `TaskHistory` query.
