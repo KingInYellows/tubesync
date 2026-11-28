@@ -124,6 +124,15 @@ class NextCheckTestCase(BridgeTestCase):
                 self.assertGreater(next_check.next_check_at(source, now=NOW), at(hours=100))
                 row.delete()
 
+    def test_live_row_after_many_dropped_rows_counts(self):
+        source = self.source(index_schedule=WEEKLY, last_crawl=at(hours=-2), target_schedule=at(hours=160))
+        for minute in range(12):
+            row = queue_index(source, scheduled_at=at(minutes=-40 + minute), recorded_at=at(minutes=-41))
+            INDEX_QUEUE.revoke_by_id(row.task_id, revoke_once=True)
+            self.addCleanup(INDEX_QUEUE.restore_by_id, row.task_id)
+        queue_index(source, scheduled_at=at(minutes=10))
+        self.assertEqual(next_check.next_check_at(source, now=NOW), at(minutes=10))
+
     def test_due_row_re_enqueued_while_workers_are_busy_counts(self):
         # The scheduler's ENQUEUED moved end_at past scheduled_at.
         source = self.source(index_schedule=WEEKLY, last_crawl=at(hours=-2), target_schedule=at(hours=160))

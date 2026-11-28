@@ -46,8 +46,6 @@ from .sync_dedup import INDEX_SOURCE_TASK_NAME
 from .videolist import is_videolist
 
 _REVOKED_VERBOSE_PREFIX = '[revoked] '
-# A source rarely has more than a couple of index tasks queued.
-_MAX_PENDING_ROWS = 10
 # schedule_indexing(): crontab(minute=59) and next_hour = now + 1 h 1 min.
 SWEEP_MINUTE = 59
 SWEEP_LOOKAHEAD = timedelta(hours=1, minutes=1)
@@ -120,7 +118,9 @@ def pending_check_at(source, *, now):
     )
     qs = get_model_tasks(str(source.pk), name=INDEX_SOURCE_TASK_NAME, qs=qs)
     queues = None
-    for task in qs.order_by('scheduled_at').only('scheduled_at', 'task_id', 'queue')[:_MAX_PENDING_ROWS]:
+    # Every candidate, not a first few: dropped rows keep their place in
+    # the order. The MAX_RUN_TIME window keeps the list short.
+    for task in qs.order_by('scheduled_at').only('scheduled_at', 'task_id', 'queue').iterator():
         if queues is None:
             queues = _huey_queues()
         if not _is_dropped(task, queues):
