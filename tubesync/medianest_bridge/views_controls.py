@@ -154,7 +154,9 @@ def _not_started_download(media):
     queued = get_model_tasks(
         str(media.pk),
         name='download_media_file',
-        qs=TaskHistory.objects.filter(start_at__isnull=True).exclude(
+        # failed_at set means the row is finished even when its EXECUTING
+        # update was lost to a locked SQLite database (common/huey.py).
+        qs=TaskHistory.objects.filter(start_at__isnull=True, failed_at__isnull=True).exclude(
             verbose_name__startswith=_REVOKED_VERBOSE_PREFIX,
         ),
     )
