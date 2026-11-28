@@ -16,11 +16,13 @@
 
     When either one starts, common/huey.py's on_executing_remove_duplicates()
     revokes the other queued copies, but leaves their TaskHistory rows
-    looking pending (start_at NULL, no [revoked] prefix). Such a row was
-    recorded before the index that revoked it, so only pending rows
-    recorded after the last crawl count. A stale row that slips through
-    only makes the reported time early, never late, and the next index
-    corrects it.
+    looking pending (start_at NULL, no [revoked] prefix). Two filters drop
+    them. historical_task() moves end_at on every signal, so a row still
+    waiting has end_at before its scheduled_at (the SCHEDULED signal),
+    and one the worker has dequeued at its eta, even only to drop it as
+    revoked or expired, does not. A row recorded before the last crawl is
+    also left out. A stale row that slips through only makes the reported
+    time early, never late, and the next index corrects it.
 
     The value is an estimate to the minute for the sweep and exact for a
     queued task. It is null when no check is coming: a paused or inactive
@@ -29,7 +31,7 @@
 from datetime import timedelta
 
 from django.conf import settings
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 
 from common.models import TaskHistory
@@ -84,6 +86,8 @@ def pending_check_at(source, *, now):
         start_at__isnull=True,
         failed_at__isnull=True,
         scheduled_at__gt=now - timedelta(seconds=max_run_time),
+        # Not yet dequeued: see the module docstring.
+        end_at__lt=F('scheduled_at'),
     )
     if source.last_crawl is not None:
         qs = qs.filter(Q(end_at__gt=source.last_crawl))

@@ -3,6 +3,7 @@
 '''
 import json
 import tempfile
+import uuid
 from datetime import datetime, timedelta, timezone as dt_timezone
 from pathlib import Path
 
@@ -31,7 +32,7 @@ def at(hours=0, minutes=0):
 def queue_index(source, *, scheduled_at, recorded_at=None, **fields):
     return TaskHistory.objects.create(
         name='sync.tasks.index_source',
-        task_id=f'{source.pk}-{scheduled_at.isoformat()}-{fields.get("verbose_name", "")}',
+        task_id=str(uuid.uuid4()),
         task_params=[[str(source.pk)], '{}'],
         scheduled_at=scheduled_at,
         end_at=recorded_at or NOW,
@@ -93,6 +94,18 @@ class NextCheckTestCase(BridgeTestCase):
         source = self.source(index_schedule=WEEKLY, last_crawl=at(hours=-1), target_schedule=at(hours=160))
         queue_index(source, scheduled_at=at(minutes=10), recorded_at=at(hours=-2))
         self.assertGreater(next_check.next_check_at(source, now=NOW), at(hours=100))
+
+    def test_rows_the_worker_already_dequeued_are_ignored(self):
+        # A revoked duplicate the worker dropped at its eta: the REVOKED
+        # signal moved end_at past both the last crawl and scheduled_at.
+        source = self.source(index_schedule=WEEKLY, last_crawl=at(hours=-2), target_schedule=at(hours=160))
+        queue_index(source, scheduled_at=at(minutes=-30), recorded_at=at(minutes=-29))
+        self.assertGreater(next_check.next_check_at(source, now=NOW), at(hours=100))
+
+    def test_overdue_row_still_waiting_for_a_worker_counts(self):
+        source = self.source(index_schedule=WEEKLY, last_crawl=at(hours=-2), target_schedule=at(hours=160))
+        queue_index(source, scheduled_at=at(minutes=-5), recorded_at=at(minutes=-10))
+        self.assertEqual(next_check.next_check_at(source, now=NOW), at(minutes=-5))
 
     def test_revoked_and_failed_rows_are_ignored(self):
         source = self.source(index_schedule=WEEKLY, last_crawl=at(hours=-1), target_schedule=at(hours=160))
