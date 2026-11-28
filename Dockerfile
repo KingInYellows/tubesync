@@ -352,14 +352,18 @@ COPY --from=ffmpeg-download /verified /verified
 ARG FFMPEG_PREFIX_FILE
 ARG FFMPEG_SUFFIX_FILE
 ARG TARGETARCH
+# Busybox's built-in xz decoder stops at a 64 MiB dictionary, and the
+# yt-dlp FFmpeg-Builds archives use 256 MiB since autobuild-2026-11-25
+# (busybox tar: "corrupted data"). Decompress with XZ Utils instead.
 RUN set -eux ; \
+    apk add --no-cache xz ; \
     mkdir -v /extracted ; \
     cd /extracted ; \
     ln -s "/verified/${TARGETARCH}"/"${FFMPEG_PREFIX_FILE}"*"${FFMPEG_SUFFIX_FILE}" "/tmp/ffmpeg${FFMPEG_SUFFIX_FILE}" ; \
-    tar -tf "/tmp/ffmpeg${FFMPEG_SUFFIX_FILE}" | grep '/bin/\(ffmpeg\|ffprobe\)' > /tmp/files ; \
-    tar -xop \
+    xz -dc "/tmp/ffmpeg${FFMPEG_SUFFIX_FILE}" | tar -tf - | grep '/bin/\(ffmpeg\|ffprobe\)' > /tmp/files ; \
+    xz -dc "/tmp/ffmpeg${FFMPEG_SUFFIX_FILE}" | tar -xop \
       --strip-components=2 \
-      -f "/tmp/ffmpeg${FFMPEG_SUFFIX_FILE}" \
+      -f - \
       -T /tmp/files ; \
 \
     ls -AlR /extracted ;
